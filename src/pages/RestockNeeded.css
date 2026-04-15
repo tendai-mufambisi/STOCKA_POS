@@ -1,0 +1,402 @@
+.restock-page {
+  padding: 2rem;
+  background: #f8f9fa;
+  min-height: 100vh;
+}
+
+.page-header {
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  font-size: 2.5rem;
+  color: #333;
+  margin: 0;
+  font-weight: 700;
+}
+
+.page-header p {
+  color: #666;
+  margin: 0.5rem 0 0 0;
+}
+
+.error-banner {
+  background: #fee;
+  color: #c33;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  border-left: 4px solid #c33;
+}
+
+.overview-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.overview-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  transition: all 0.3s ease;
+}
+
+.overview-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.card-icon {
+  width: 50px;
+  height: 50px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2e7d32 0%, #1a5c2a 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+}
+
+.card-icon.critical {
+  background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+}
+
+.card-content {
+  flex: 1;
+}
+
+.card-label {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.card-value {
+  font-size: 1.8rem;
+  color: #333;
+  font-weight: 700;
+}
+
+.controls {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+
+.sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.sort-controls span {
+  font-weight: 600;
+  color: #333;
+}
+
+.sort-btn {
+  padding: 0.6rem 1.2rem;
+  border: 2px solid #ddd;
+  background: white;
+  color: #333;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.3s;
+}
+
+.sort-btn:hover {
+  border-color: #2e7d32;
+  color: #2e7d32;
+}
+
+.sort-btn.active {
+  background: linear-gradient(135deg, #2e7d32 0%, #1a5c2a 100%);
+  color: white;
+  border-color: transparent;
+}
+
+.restock-table {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow-x: auto;
+  margin-bottom: 2rem;
+}
+
+.restock-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.restock-table th {
+  background: #f0f0f0;
+  padding: 1rem;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid #e0e0e0;
+  font-size: 0.9rem;
+}
+
+.restock-table td {
+  padding: 1rem;
+  border-bottom: 1px solid #eee;
+  font-size: 0.9rem;
+}
+
+.restock-table tr:hover {
+  background: #f9f9f9;
+}
+
+.restock-table tr.urgency-critical {
+  background: #ffe8e8;
+}
+
+.restock-table tr.urgency-critical:hover {
+  background: #ffd6d6;
+}
+
+.restock-table tr.urgency-high {
+  background: #fff4e8;
+}
+
+.restock-table tr.urgency-high:hover {
+  background: #ffe8d6;
+}
+
+.product-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.detail-link {
+  background: none;
+  border: none;
+  color: #2e7d32;
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.detail-link:hover {
+  color: #1a5c2a;
+}
+
+.number {
+  text-align: right;
+  font-weight: 600;
+  color: #333;
+}
+
+.number.shortfall {
+  color: #dc3545;
+  font-weight: 700;
+}
+
+.sub-text {
+  font-size: 0.8rem;
+  color: #999;
+  font-weight: normal;
+}
+
+.urgency {
+  text-align: center;
+  font-weight: 600;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.urgency.critical {
+  background: #fde0e0;
+  color: #c82333;
+}
+
+.urgency.high {
+  background: #fff1de;
+  color: #f59e0b;
+}
+
+.urgency.medium {
+  background: #e8f0ff;
+  color: #2e7d32;
+}
+
+.supplier {
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 2rem;
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e0e0e0;
+}
+
+.empty-state .icon {
+  font-size: 3rem;
+  color: #28a745;
+  margin-bottom: 1rem;
+}
+
+.empty-state h3 {
+  color: #333;
+  margin: 1rem 0;
+}
+
+.empty-state p {
+  color: #666;
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 500px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 1.5rem;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: #666;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.3s;
+}
+
+.close-btn:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.modal-body {
+  padding: 2rem;
+  max-height: calc(80vh - 100px);
+  overflow-y: auto;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-item span:first-child {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.detail-item .value {
+  font-size: 1.3rem;
+  color: #333;
+  font-weight: 700;
+}
+
+.detail-item .value.shortfall {
+  color: #dc3545;
+}
+
+.recommendation {
+  background: #f5f7ff;
+  border-left: 4px solid #2e7d32;
+  padding: 1.5rem;
+  border-radius: 8px;
+}
+
+.recommendation h4 {
+  margin-top: 0;
+  color: #2e7d32;
+}
+
+.recommendation p {
+  margin: 0;
+  color: #555;
+  line-height: 1.6;
+}
+
+.loading {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+}
+
+@media (max-width: 900px) {
+  .overview-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .restock-table {
+    overflow-x: auto;
+  }
+}
