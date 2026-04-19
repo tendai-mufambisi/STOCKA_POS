@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser } from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
+import { mapReceiptToBluetoothPayload } from '../hooks/useReceiptPrinter'
 import './Settings.css'
 
 function Settings({ user }) {
@@ -22,7 +23,7 @@ function Settings({ user }) {
     email: '',
     currency: 'USD',
     printer_name: '',
-    printer_port: '',
+    printer_port: 'COM3',
     auto_print: 1,
     print_duplicate: 0
   })
@@ -41,7 +42,9 @@ function Settings({ user }) {
 
   // Printer states
   const [availablePrinters, setAvailablePrinters] = useState([])
+  const [availableComPorts, setAvailableComPorts] = useState([])
   const [scanningPrinters, setScanningPrinters] = useState(false)
+  const [scanningComPorts, setScanningComPorts] = useState(false)
   const [testingPrinter, setTestingPrinter] = useState(false)
   const [printStatus, setPrintStatus] = useState('')
 
@@ -95,7 +98,10 @@ function Settings({ user }) {
     try {
       const shop = await getShop()
       if (shop) {
-        setFormData(shop)
+        setFormData({
+          ...shop,
+          printer_port: (shop.printer_port && String(shop.printer_port).trim()) || 'COM3'
+        })
       }
       setLoading(false)
     } catch (err) {
@@ -144,26 +150,63 @@ function Settings({ user }) {
     }
   }
 
+  const handleScanComPorts = async () => {
+    setScanningComPorts(true)
+    setError('')
+    setPrintStatus('')
+    try {
+      const scan = window.stocka?.printer?.scanCom || window.stocka?.printer?.scanComPorts
+      if (typeof scan !== 'function') {
+        setError('COM port scan is not available in this build.')
+        return
+      }
+      const result = await scan()
+      if (result.success && result.ports?.length) {
+        setAvailableComPorts(result.ports)
+        setPrintStatus(`Found ${result.ports.length} COM port(s)`)
+        setTimeout(() => setPrintStatus(''), 4000)
+      } else {
+        setError(result.error || 'No COM ports returned. Enter a port manually (e.g. COM3).')
+      }
+    } catch (err) {
+      console.error('COM scan error:', err)
+      setError('Failed to scan COM ports: ' + err.message)
+    } finally {
+      setScanningComPorts(false)
+    }
+  }
+
   const handleTestPrint = async () => {
     setError('')
     setPrintStatus('')
-    if (!formData.printer_port) {
-      setError('Please select a printer first')
-      return
-    }
+    const port = (formData.printer_port && String(formData.printer_port).trim()) || 'COM3'
 
     setTestingPrinter(true)
     try {
-      const result = await window.stocka.printer.test(formData.printer_port)
+      const testReceipt = {
+        receipt_number: 'TEST-001',
+        date: new Date().toLocaleString(),
+        cashier: 'Test',
+        items: [
+          { product_name: 'Test Item 1', quantity: 1, selling_price: 10.0, subtotal: 10.0 },
+          { product_name: 'Test Item 2', quantity: 2, selling_price: 15.0, subtotal: 30.0 }
+        ],
+        subtotal: 40.0,
+        tax: 0.0,
+        total: 40.0
+      }
+      const payload = mapReceiptToBluetoothPayload(testReceipt, { name: formData.name || 'Stocka' }, {})
+
+      const result = await window.stocka.printer.printBluetooth(port, payload)
       if (result.success) {
-        setPrintStatus('Test print sent successfully! Check your printer.')
-        setTimeout(() => setPrintStatus(''), 5000)
+        setPrintStatus('Test receipt sent to the thermal printer. Check COM ' + port + '.')
+        setTimeout(() => setPrintStatus(''), 6000)
       } else {
         setError(result.error || 'Test print failed')
       }
     } catch (err) {
       console.error('Test print error:', err)
-      setError('Failed to send test print. Printer may be disconnected.')
+      setError(err.message || 'Failed to send test print. Check the COM port and Bluetooth pairing.')
     } finally {
       setTestingPrinter(false)
     }
@@ -568,11 +611,80 @@ function Settings({ user }) {
         {activeTab === 'printer' && isAdmin && (
           <div className="settings-section">
             <h3>🖨️ Printer Settings</h3>
-            
+
+            <div style={{ marginBottom: '30px', padding: '20px', backgroundColor: '#f0f7ff', borderRadius: '8px', border: '1px solid #cfe8ff' }}>
+              <h4 style={{ marginTop: 0 }}>Bluetooth / serial thermal (ESC/POS)</h4>
+              <p style={{ marginBottom: '15px', color: '#555', fontSize: '14px' }}>
+                Stocka prints receipts over a <strong>COM port</strong> at <strong>9600 baud</strong> (e.g. BT-58L on Bluetooth paired as COM3).
+                Enter the port or scan, then run a test print.
+              </p>
+
+              <div className="form-row" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: '12px' }}>
+                <div className="form-group" style={{ minWidth: '200px', flex: '1 1 200px' }}>
+                  <label htmlFor="com_port_input">COM port</label>
+                  <input
+                    id="com_port_input"
+                    type="text"
+                    placeholder="COM3"
+                    value={formData.printer_port ?? 'COM3'}
+                    onChange={(e) => setFormData({ ...formData, printer_port: e.target.value })}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleScanComPorts}
+                  disabled={scanningComPorts}
+                >
+                  {scanningComPorts ? '🔍 Scanning COM…' : '🔌 Scan COM ports'}
+                </button>
+              </div>
+
+              {availableComPorts.length > 0 && (
+                <div style={{ marginTop: '15px' }}>
+                  <label htmlFor="com_port_select" style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
+                    Detected ports
+                  </label>
+                  <select
+                    id="com_port_select"
+                    value={formData.printer_port || ''}
+                    onChange={(e) => setFormData({ ...formData, printer_port: e.target.value })}
+                    style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd', width: '100%', maxWidth: '400px' }}
+                  >
+                    {availableComPorts.map((p) => (
+                      <option key={p.path} value={p.path}>
+                        {p.name || p.path}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div style={{ marginTop: '18px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleTestPrint}
+                  disabled={testingPrinter}
+                >
+                  {testingPrinter ? '🖨️ Printing…' : '🖨️ Test Print'}
+                </button>
+                <p style={{ marginTop: '10px', fontSize: '13px', color: '#666' }}>
+                  Sends a short ESC/POS test receipt to the selected COM port. Success or errors appear below.
+                </p>
+              </div>
+
+              {printStatus && (
+                <div style={{ marginTop: '12px', padding: '10px 12px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '14px' }}>
+                  {printStatus}
+                </div>
+              )}
+            </div>
+
             <div style={{ marginBottom: '30px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
-              <h4 style={{ marginTop: 0 }}>Detect Printer</h4>
+              <h4 style={{ marginTop: 0 }}>Optional: Windows-named printers</h4>
               <p style={{ marginBottom: '15px', color: '#666', fontSize: '14px' }}>
-                Click the button below to scan for available USB/Bluetooth thermal printers connected to your computer.
+                Scan installed Windows printers if you use other tools that need a display name. Sales receipts use the COM port above.
               </p>
               <button
                 type="button"
@@ -583,22 +695,21 @@ function Settings({ user }) {
               >
                 {scanningPrinters ? '🔍 Scanning...' : '🔍 Scan for Printers'}
               </button>
-              
+
               {availablePrinters.length > 0 && (
                 <div style={{ marginTop: '15px' }}>
                   <label htmlFor="printer_select" style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
-                    Available Printers:
+                    Windows printer name (reference)
                   </label>
                   <select
                     id="printer_select"
-                    value={formData.printer_port || ''}
+                    value={formData.printer_name || ''}
                     onChange={(e) => {
                       const port = e.target.value
                       const printer = availablePrinters.find(p => p.port === port)
                       setFormData({
                         ...formData,
-                        printer_port: port,
-                        printer_name: printer?.name || ''
+                        printer_name: printer?.name || port || ''
                       })
                     }}
                     style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd', width: '100%', maxWidth: '400px' }}
@@ -610,22 +721,6 @@ function Settings({ user }) {
                       </option>
                     ))}
                   </select>
-                </div>
-              )}
-
-              {formData.printer_port && (
-                <div style={{ marginTop: '15px' }}>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={handleTestPrint}
-                    disabled={testingPrinter}
-                  >
-                    {testingPrinter ? '🖨️ Printing...' : '🖨️ Test Print'}
-                  </button>
-                  <p style={{ marginTop: '8px', fontSize: '13px', color: '#666' }}>
-                    Click to send a test receipt to your printer
-                  </p>
                 </div>
               )}
             </div>

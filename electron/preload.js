@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld('stocka', {
      */
     scanComPorts: () => ipcRenderer.invoke('printer:scan-com'),
 
+    /** Alias for scanComPorts */
+    scanCom: () => ipcRenderer.invoke('printer:scan-com'),
+
     /**
      * Test print to verify connection
      * @param {string} printerPort - The printer port to test

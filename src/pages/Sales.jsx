@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift, updateShiftSalesForPaymentMethod } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
-import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
+import { useReceiptPrinter, DEFAULT_BLUETOOTH_COM_PORT } from '../hooks/useReceiptPrinter'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import './Sales.css'
 import {
@@ -94,7 +94,7 @@ function Sales({ user }) {
         setShopInfo(null)
         setPrinterSettings({
           printer_name: undefined,
-          printer_port: undefined,
+          printer_port: DEFAULT_BLUETOOTH_COM_PORT,
           auto_print: 0,
           print_duplicate: 0
         })
@@ -104,7 +104,7 @@ function Sales({ user }) {
       setShopInfo(shop)
       const settings = {
         printer_name: shop?.printer_name,
-        printer_port: shop?.printer_port,
+        printer_port: (shop?.printer_port && String(shop.printer_port).trim()) || DEFAULT_BLUETOOTH_COM_PORT,
         auto_print: shop?.auto_print ?? 1,
         print_duplicate: shop?.print_duplicate ?? 0
       }
@@ -458,8 +458,7 @@ function Sales({ user }) {
               // Use the new printReceipt function to format and print
               const success = await printReceipt(receiptData, shopInfo, {
                 isDuplicate: false,
-                withBarcode: true,
-                printerName: printerSettings?.printer_name || ''
+                portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
               })
 
               if (!success) {
@@ -475,8 +474,7 @@ function Sales({ user }) {
                 try {
                   await printReceipt(receiptData, shopInfo, {
                     isDuplicate: true,
-                    withBarcode: true,
-                    printerName: printerSettings?.printer_name || ''
+                    portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
                   })
                 } catch (err) {
                   console.warn('Failed to print duplicate:', err)
@@ -972,7 +970,10 @@ function Sales({ user }) {
                         date: new Date().toLocaleString()
                       }
                       const shop = await getShop()
-                      await printReceipt(receiptData, shop, { isDuplicate: false, withBarcode: true })
+                      await printReceipt(receiptData, shop, {
+                        isDuplicate: false,
+                        portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
+                      })
                     } catch (err) {
                       console.error('Error printing receipt:', err)
                       setError('Failed to fetch sale details for printing')
@@ -994,7 +995,7 @@ function Sales({ user }) {
                 {isPrinting ? '🖨️ Printing...' : '🖨️ Print Receipt'}
               </button>
               <button
-                onClick={() => printTestReceipt()}
+                onClick={() => printTestReceipt(printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT)}
                 disabled={isPrinting}
                 style={{
                   padding: '8px 16px',
