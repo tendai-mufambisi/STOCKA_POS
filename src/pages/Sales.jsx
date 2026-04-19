@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, openShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId } from '../database/db'
+import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift, updateShiftSalesForPaymentMethod } from '../database/db'
 import { hasPermission } from '../utils/permissions'
-import { generateReceiptNumber, getNextReceiptCounter } from '../utils/printerUtils'
+import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
+import ClosingFloatModal from '../components/ClosingFloatModal'
 import './Sales.css'
 import {
-  FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2
+  FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2, FiLogOut
 } from 'react-icons/fi'
 
 function Sales({ user }) {
@@ -43,6 +45,11 @@ function Sales({ user }) {
   // Shift State
   const [currentShift, setCurrentShift] = useState(null)
   const [shiftWarning, setShiftWarning] = useState('')
+  const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
+  const [isClosingShift, setIsClosingShift] = useState(false)
+
+  // Printer Hook
+  const { printReceipt, printTestReceipt, isPrinting, printError, printSuccess } = useReceiptPrinter()
 
   // Printer State
   const [shopInfo, setShopInfo] = useState(null)
@@ -80,6 +87,20 @@ function Sales({ user }) {
     try {
       const shop = await getShop()
       console.log('📋 Shop info loaded:', { printer_name: shop?.printer_name, printer_port: shop?.printer_port, auto_print: shop?.auto_print })
+      
+      if (!shop) {
+        setError('⚠️ Shop not configured. Please go to Settings to configure your shop and printer.')
+        console.warn('❌ No shop data found in database')
+        setShopInfo(null)
+        setPrinterSettings({
+          printer_name: undefined,
+          printer_port: undefined,
+          auto_print: 0,
+          print_duplicate: 0
+        })
+        return
+      }
+      
       setShopInfo(shop)
       const settings = {
         printer_name: shop?.printer_name,
@@ -91,6 +112,7 @@ function Sales({ user }) {
       setPrinterSettings(settings)
     } catch (err) {
       console.error('❌ Failed to load shop info:', err)
+      setError('Failed to load shop configuration')
     }
   }
 
@@ -402,6 +424,11 @@ function Sales({ user }) {
       // Add sale and get the ID
       const saleId = await addSale(sale, cart)
 
+      // Update shift sales totals if shift is active
+      if (currentShift?.id) {
+        await updateShiftSalesForPaymentMethod(currentShift.id, method, cartTotal)
+      }
+
       // Generate and store receipt number
       try {
         const lastReceipt = await getLastReceiptNumber()
@@ -419,49 +446,53 @@ function Sales({ user }) {
         }
 
         // Auto-print if enabled and printer is configured
-        if (printerSettings?.auto_print === 1 && printerSettings?.printer_port) {
-          console.log('🖨️ Auto-print triggered for receipt:', receiptNumber, 'to port:', printerSettings.printer_port)
-          try {
-            // Send to printer via IPC
-            const printResult = await window.stocka.printer.printReceipt(
-              printerSettings.printer_port,
-              receiptData,
-              shopInfo,
-              false // not a duplicate
-            )
+        if (printerSettings?.auto_print === 1) {
+          // Check if shop info is available
+          if (!shopInfo) {
+            console.warn('⚠️ Auto-print skipped: Shop not configured')
+            setError('⚠️ Shop not configured. Please configure your shop in Settings to enable printing.')
+            setTimeout(() => setError(''), 5000)
+          } else {
+            console.log('🖨️ Auto-print triggered for receipt:', receiptNumber)
+            try {
+              // Use the new printReceipt function to format and print
+              const success = await printReceipt(receiptData, shopInfo, {
+                isDuplicate: false,
+                withBarcode: true,
+                printerName: printerSettings?.printer_name || ''
+              })
 
-            if (!printResult.success) {
-              // Show error with details from printer
-              const errorMsg = printResult.error 
-                ? `Print failed: ${printResult.error}`
-                : 'Print failed — sale was still recorded successfully'
-              setError(`⚠️ ${errorMsg}`)
+              if (!success) {
+                // Show error - sale was still recorded successfully
+                setError(`⚠️ Printer error: Sale was recorded but printing failed`)
+                setTimeout(() => setError(''), 5000)
+              } else {
+                console.log('✅ Auto-print succeeded')
+              }
+
+              // If print_duplicate is enabled, print again
+              if (success && printerSettings?.print_duplicate === 1) {
+                try {
+                  await printReceipt(receiptData, shopInfo, {
+                    isDuplicate: true,
+                    withBarcode: true,
+                    printerName: printerSettings?.printer_name || ''
+                  })
+                } catch (err) {
+                  console.warn('Failed to print duplicate:', err)
+                }
+              }
+            } catch (err) {
+              console.error('Auto-print error:', err)
+              // Don't block the sale for printer errors
+              setError(`⚠️ Printer error: Sale recorded but print failed`)
               setTimeout(() => setError(''), 5000)
             }
-
-            // If print_duplicate is enabled, print again
-            if (printResult.success && printerSettings?.print_duplicate === 1) {
-              try {
-                await window.stocka.printer.printReceipt(
-                  printerSettings.printer_port,
-                  receiptData,
-                  shopInfo,
-                  false // not duplicate on second print either
-                )
-              } catch (err) {
-                console.warn('Failed to print duplicate:', err)
-              }
-            }
-          } catch (err) {
-            console.error('Printer communication error:', err)
-            // Don't block the sale for printer errors
-            setError(`⚠️ Printer error: ${err.message || 'Sale recorded but print failed'}`)
-            setTimeout(() => setError(''), 5000)
           }
         } else {
           console.log('⚠️ Auto-print disabled or not configured:', {
             auto_print: printerSettings?.auto_print,
-            printer_port: printerSettings?.printer_port
+            printer_name: printerSettings?.printer_name
           })
         }
       } catch (err) {
@@ -496,6 +527,42 @@ function Sales({ user }) {
 
   const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
   const change = Math.max(0, parseFloat(cashTendered || 0) - cartTotal)
+
+  const handleCloseShiftClick = () => {
+    if (!currentShift) {
+      setError('No active shift to close')
+      return
+    }
+    setShowClosingFloatModal(true)
+  }
+
+  const handleClosingFloatSubmit = async (closingFloat, notes) => {
+    setIsClosingShift(true)
+    try {
+      // Close the shift in the database
+      const closedShift = await closeShift(currentShift.id, closingFloat, notes)
+      
+      setShowClosingFloatModal(false)
+      setCurrentShift(null)
+      
+      // Show confirmation and navigate to dashboard
+      setError(`✓ Shift closed. Status: ${closedShift.reconciliation_status}`)
+      
+      // Log out after 2 seconds
+      setTimeout(() => {
+        localStorage.removeItem('stocka_user')
+        window.location.href = '/'
+      }, 2000)
+    } catch (err) {
+      console.error('Failed to close shift:', err)
+      setError('Failed to close shift. Please try again.')
+      setIsClosingShift(false)
+    }
+  }
+
+  const handleClosingFloatCancel = () => {
+    setShowClosingFloatModal(false)
+  }
 
   if (loading) {
     return <div className="sales-page"><div className="loading">Loading...</div></div>
@@ -714,6 +781,36 @@ function Sales({ user }) {
                 </div>
               </>
             )}
+
+            {/* Close Shift Button */}
+            {currentShift && (
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #eee' }}>
+                <button
+                  onClick={handleCloseShiftClick}
+                  disabled={isClosingShift}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    backgroundColor: '#ff9800',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: isClosingShift ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    opacity: isClosingShift ? 0.6 : 1,
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <FiLogOut size={18} />
+                  {isClosingShift ? 'Closing Shift...' : 'Close My Shift'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -848,6 +945,71 @@ function Sales({ user }) {
               <p>Payment: <strong>{lastSale.payment_method}</strong></p>
               <p>Change: <strong>${lastSale.change.toFixed(2)}</strong></p>
             </div>
+
+            {/* Printer Status */}
+            {printError && (
+              <div style={{ color: '#d32f2f', marginTop: '10px', fontSize: '12px', padding: '8px', backgroundColor: '#ffebee', borderRadius: '4px' }}>
+                ❌ Print Error: {printError}
+              </div>
+            )}
+            {printSuccess && (
+              <div style={{ color: '#388e3c', marginTop: '10px', fontSize: '12px', padding: '8px', backgroundColor: '#e8f5e9', borderRadius: '4px' }}>
+                ✅ Receipt printed successfully!
+              </div>
+            )}
+
+            {/* Print Buttons */}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'center' }}>
+              <button
+                onClick={async () => {
+                  if (lastSale) {
+                    try {
+                      // Fetch sale items to complete receipt data
+                      const items = await getSaleItems(lastSale.id)
+                      const receiptData = {
+                        ...lastSale,
+                        items: items || [],
+                        date: new Date().toLocaleString()
+                      }
+                      const shop = await getShop()
+                      await printReceipt(receiptData, shop, { isDuplicate: false, withBarcode: true })
+                    } catch (err) {
+                      console.error('Error printing receipt:', err)
+                      setError('Failed to fetch sale details for printing')
+                      setTimeout(() => setError(''), 3000)
+                    }
+                  }
+                }}
+                disabled={isPrinting}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: isPrinting ? '#ccc' : '#2196F3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: isPrinting ? 'not-allowed' : 'pointer',
+                  fontSize: '12px'
+                }}
+              >
+                {isPrinting ? '🖨️ Printing...' : '🖨️ Print Receipt'}
+              </button>
+              <button
+                onClick={() => printTestReceipt()}
+                disabled={isPrinting}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: isPrinting ? '#ccc' : '#FF9800',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: isPrinting ? 'not-allowed' : 'pointer',
+                  fontSize: '12px'
+                }}
+              >
+                {isPrinting ? '⏳ Testing...' : '🧪 Test Print'}
+              </button>
+            </div>
+
             <small>Auto-closing in 3 seconds...</small>
           </div>
         </div>
@@ -952,6 +1114,16 @@ function Sales({ user }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Closing Float Modal */}
+      {showClosingFloatModal && currentShift && (
+        <ClosingFloatModal
+          shift={currentShift}
+          onConfirm={handleClosingFloatSubmit}
+          onCancel={handleClosingFloatCancel}
+          isLoading={isClosingShift}
+        />
       )}
     </div>
   )

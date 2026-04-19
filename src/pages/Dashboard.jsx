@@ -11,12 +11,13 @@ import Reports from './Reports'
 import Branches from './Branches'
 import Settings from './Settings'
 import ShiftDashboard from './ShiftDashboard'
+import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import DirectPurchases from './DirectPurchases'
 import ExpiryTracking from './ExpiryTracking'
 import Notifications from '../components/Notifications'
-import { getDashboardStats, getSales, getExpenses, getProducts, getCurrentShift, updateShift, deleteHoldsOnLogout } from '../database/db'
+import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift } from '../database/db'
 
 import {
   FiHome,
@@ -47,62 +48,37 @@ function Dashboard() {
   const [dashboardStats, setDashboardStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
-  const [closingFloatValue, setClosingFloatValue] = useState('')
-  const [closingFloatNotes, setClosingFloatNotes] = useState('')
-  const [closingFloatError, setClosingFloatError] = useState('')
+  const [activeCashiers, setActiveCashiers] = useState([])
+  const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
 
   const handleLogout = () => {
-    // For Cashier: Show closing float modal
-    if (user.role === 'Cashier') {
-      setShowClosingFloatModal(true)
-      return
-    }
-    
-    // For Admin/Manager: Logout directly
     performLogout()
   }
 
-  const handleConfirmClosingFloat = async () => {
+  const performLogout = async () => {
     try {
-      setClosingFloatError('')
-      
-      // Validate closing float value
-      if (!closingFloatValue || parseFloat(closingFloatValue) < 0) {
-        setClosingFloatError('Please enter a valid closing float amount')
-        return
+      // If user is a cashier with an active shift, close it first
+      if (user?.role === 'Cashier' && user?.current_shift_id) {
+        try {
+          // Close the shift with zeros for all payment methods (will be auto-calculated as short/balanced)
+          const closingFloat = {
+            closing_usd_cash: 0,
+            closing_zwg_cash: 0,
+            closing_swipe_usd: 0,
+            closing_swipe_zwg: 0,
+            closing_ecocash_usd: 0,
+            closing_ecocash_zwg: 0
+          }
+          await closeShift(user.current_shift_id, closingFloat, 'Shift auto-closed on logout')
+        } catch (err) {
+          console.warn('Could not close shift on logout:', err)
+          // Continue with logout even if shift close fails
+        }
       }
-      
-      // Get current shift
-      const currentShift = await getCurrentShift(user.id)
-      if (currentShift) {
-        // Calculate expected float
-        const expected = currentShift.start_float + (currentShift.total_sales || 0) - (currentShift.total_expenses || 0)
-        const variance = parseFloat(closingFloatValue) - expected
-        
-        // Update shift with closing details
-        await updateShift(currentShift.id, {
-          end_float: parseFloat(closingFloatValue),
-          closing_timestamp: new Date().toISOString(),
-          float_variance: variance,
-          closing_notes: closingFloatNotes,
-          status: 'closed'
-        })
-        
-        // Delete all holds for this shift (session cleanup)
-        await deleteHoldsOnLogout(currentShift.id)
-      }
-      
-      // Proceed with logout
-      setShowClosingFloatModal(false)
-      performLogout()
     } catch (err) {
-      console.error('Failed to close shift:', err)
-      setClosingFloatError('Failed to close shift. Please try again.')
+      console.warn('Error during logout cleanup:', err)
     }
-  }
-
-  const performLogout = () => {
+    
     // Clear all authentication and session data
     localStorage.removeItem('stocka_user')
     localStorage.removeItem('stocka_db_init')
@@ -144,6 +120,20 @@ function Dashboard() {
         getExpenses(),
         getProducts()
       ])
+      
+      // Load active cashiers if user is admin or manager
+      if (user.role === 'Admin' || user.role === 'Manager') {
+        setActiveCashiersLoading(true)
+        try {
+          const shifts = await getActiveShifts()
+          setActiveCashiers(shifts || [])
+        } catch (err) {
+          console.error('Failed to load active cashiers:', err)
+          setActiveCashiers([])
+        } finally {
+          setActiveCashiersLoading(false)
+        }
+      }
       
       const today = new Date().toISOString().split('T')[0]
       const todayStart = new Date(today).getTime()
@@ -190,6 +180,7 @@ function Dashboard() {
     { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance', roles: ['Admin', 'Manager'] },
+    { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'purchases',  icon: 'package',    label: 'Direct Purchases',  group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'expiry',     icon: 'calendar',   label: 'Expiry Tracking',   group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'branches',   icon: 'map-pin',    label: 'Branches',         group: 'ops',     roles: ['Admin'] },
@@ -347,6 +338,8 @@ function Dashboard() {
                   recentSales={dashboardStats?.recentSales || []}
                   renderIcon={renderIcon}
                   renderNavIcon={renderNavIcon}
+                  activeCashiers={activeCashiers}
+                  activeCashiersLoading={activeCashiersLoading}
                 />
       case 'products':
         return <Products />
@@ -360,6 +353,8 @@ function Dashboard() {
         return <Expenses />
       case 'reports':
         return <Reports user={user} />
+      case 'cashier-sessions':
+        return <CashierSessions />
       case 'endofday':
         return <EndOfDay user={user} />
       case 'shifts':
@@ -452,73 +447,12 @@ function Dashboard() {
         </div>}
         {renderPage()}
       </main>
-
-      {/* Closing Float Modal for Cashiers */}
-      {showClosingFloatModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h2>Close Shift</h2>
-            </div>
-            <div className="modal-body">
-              <p>Please enter the amount of cash currently in the drawer</p>
-              {closingFloatError && (
-                <div className="error-message" style={{marginBottom: '15px', padding: '10px', backgroundColor: '#fee', border: '1px solid #f99', borderRadius: '4px', color: '#c00'}}>
-                  {closingFloatError}
-                </div>
-              )}
-              <div className="form-group">
-                <label>Closing Float Amount</label>
-                <input
-                  type="number"
-                  placeholder="Enter amount"
-                  value={closingFloatValue}
-                  onChange={(e) => setClosingFloatValue(e.target.value)}
-                  step="0.01"
-                  min="0"
-                  autoFocus
-                  style={{width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '16px'}}
-                />
-              </div>
-              <div className="form-group">
-                <label>Notes (optional)</label>
-                <textarea
-                  placeholder="Add any notes about this shift..."
-                  value={closingFloatNotes}
-                  onChange={(e) => setClosingFloatNotes(e.target.value)}
-                  rows="3"
-                  style={{width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '14px', fontFamily: 'inherit'}}
-                />
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button 
-                className="btn-cancel" 
-                onClick={() => {
-                  setShowClosingFloatModal(false)
-                  setClosingFloatError('')
-                }}
-                style={{padding: '10px 20px', backgroundColor: '#f0f0f0', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer'}}
-              >
-                Cancel
-              </button>
-              <button 
-                className="btn-primary"
-                onClick={handleConfirmClosingFloat}
-                style={{padding: '10px 20px', backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginLeft: '10px'}}
-              >
-                Confirm & Logout
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
 // ── DASHBOARD HOME ──
-function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon }) {
+function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading }) {
   const today = new Date().toLocaleDateString('en-ZW', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
@@ -611,6 +545,60 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
           ))}
         </div>
       </div>
+
+      {/* Live Cashiers Widget (Admin/Manager only) */}
+      {(user.role === 'Admin' || user.role === 'Manager') && (
+        <div className="dashboard-section live-cashiers-widget">
+          <div className="section-header">
+            <h3>⏱️ Live Cashiers</h3>
+            <button 
+              className="section-link"
+              onClick={() => setActivePage('cashier-sessions')}
+            >
+              View All Sessions →
+            </button>
+          </div>
+          {activeCashiersLoading ? (
+            <div className="loading-state">
+              <p>Loading active sessions...</p>
+            </div>
+          ) : activeCashiers && activeCashiers.length > 0 ? (
+            <div className="live-cashiers-content">
+              <div className="cashiers-stats">
+                <div className="stat-box">
+                  <div className="stat-label">Active Cashiers</div>
+                  <div className="stat-number">{activeCashiers.length}</div>
+                </div>
+                <div className="stat-box">
+                  <div className="stat-label">Total Sales (Today)</div>
+                  <div className="stat-number">
+                    ${activeCashiers.reduce((sum, shift) => sum + (shift.total_sales_value || 0), 0).toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              
+              {activeCashiers.some(shift => Math.abs(shift.overall_variance || 0) > 0.01) && (
+                <div className="variance-alerts">
+                  <div className="alert-header">⚠️ Shifts with Variances</div>
+                  {activeCashiers.filter(shift => Math.abs(shift.overall_variance || 0) > 0.01).map((shift, idx) => (
+                    <div key={idx} className="variance-alert-item">
+                      <span className="cashier-name">{shift.cashier_username}</span>
+                      <span className={shift.overall_variance < 0 ? 'shortage' : 'overage'}>
+                        {shift.overall_variance < 0 ? '- $' : '+ $'}{Math.abs(shift.overall_variance).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <div className="empty-icon">{renderIcon('clock', 32)}</div>
+              <p>No active cashier sessions</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="dashboard-grid">
         <div className="dashboard-section">

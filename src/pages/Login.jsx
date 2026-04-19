@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import './Login.css'
-import { getUserByUsername, addUser, updateUser, validateUserPassword } from '../database/db'
+import { getUserByUsername, addUser, updateUser, validateUserPassword, getExistingOpenShift, startShift } from '../database/db'
+import OpeningFloatModal from '../components/OpeningFloatModal'
 
 function Login() {
   const [username, setUsername] = useState('')
@@ -9,26 +10,46 @@ function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [initialized, setInitialized] = useState(false)
+  const [showOpeningModal, setShowOpeningModal] = useState(false)
+  const [currentUser, setCurrentUser] = useState(null)
+  const [existingShift, setExistingShift] = useState(null)
   const navigate = useNavigate()
 
   // Initialize default admin user on first load
   useEffect(() => {
     const initializeDefaultAdmin = async () => {
       try {
-        const existingAdmin = await getUserByUsername('admin')
+        let existingAdmin = null
+        try {
+          existingAdmin = await getUserByUsername('admin')
+        } catch (err) {
+          console.warn('Could not check for existing admin user:', err)
+        }
+        
         if (!existingAdmin) {
           // Create default admin user
-          await addUser({
-            username: 'admin',
-            password: 'admin123',
-            role: 'Admin',
-            created_by: 'system'
-          })
+          try {
+            await addUser({
+              username: 'admin',
+              password: 'admin123',
+              role: 'Admin',
+              created_by: 'system'
+            })
+            console.log('Default admin user created')
+          } catch (addErr) {
+            // If UNIQUE constraint error, admin already exists (just ignore)
+            const errorStr = addErr.toString ? addErr.toString() : String(addErr)
+            if (errorStr.includes('UNIQUE constraint')) {
+              console.log('Default admin user already exists')
+            } else {
+              console.warn('Failed to create default admin:', addErr)
+            }
+          }
         }
         setInitialized(true)
       } catch (err) {
         console.error('Failed to initialize default admin:', err)
-        setInitialized(true)
+        setInitialized(true) // Still mark as initialized even on error
       }
     }
     initializeDefaultAdmin()
@@ -73,18 +94,30 @@ function Login() {
       const userToStore = {
         id: user.id,
         username: user.username,
+        name: user.username, // Use username as display name if no name field
         role: user.role
       }
       localStorage.setItem('stocka_user', JSON.stringify(userToStore))
       
-      // TODO: Implement opening float modal here
-      // For Cashier role: Check if there's an open shift for today
-      // If yes: Show modal asking to confirm opening float amount
-      // If no: Admin needs to allocate float before cashier can open shift
-      // await getCurrentShift(user.id) or await getShiftsByDate(today, user.id)
-      // Display modal with opening float confirmation
-      
-      navigate('/dashboard')
+      // For Cashier role: Show opening float modal
+      if (user.role === 'Cashier') {
+        // Check if there's an existing open shift for this cashier
+        const openShift = await getExistingOpenShift(user.username)
+        if (openShift) {
+          setExistingShift(openShift)
+          // For now, just navigate. In future, offer option to resume or start fresh
+          setLoading(false)
+          navigate('/dashboard')
+        } else {
+          setCurrentUser(userToStore)
+          setShowOpeningModal(true)
+          setLoading(false)  // Reset loading so modal inputs are active
+        }
+      } else {
+        // Admin and Manager: Skip opening float, go straight to dashboard
+        setLoading(false)
+        navigate('/dashboard')
+      }
     } catch (err) {
       console.error('Login failed:', err)
       setError('An error occurred during login. Please try again.')
@@ -92,8 +125,39 @@ function Login() {
     }
   }
 
+  const handleOpeningFloatSubmit = async (openingFloat) => {
+    setLoading(true)
+    try {
+      // Start the shift in database
+      await startShift(currentUser, openingFloat)
+      
+      setShowOpeningModal(false)
+      setLoading(false)
+      navigate('/dashboard')
+    } catch (err) {
+      console.error('Failed to start shift:', err)
+      setError('Failed to start shift. Please try again.')
+      setLoading(false)
+    }
+  }
+
+  const handleOpeningFloatCancel = () => {
+    setShowOpeningModal(false)
+    setCurrentUser(null)
+    setLoading(false)
+  }
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') handleLogin()
+  }
+
+  if (showOpeningModal && currentUser) {
+    return <OpeningFloatModal 
+      user={currentUser} 
+      onConfirm={handleOpeningFloatSubmit}
+      onCancel={handleOpeningFloatCancel}
+      isLoading={loading}
+    />
   }
 
   return (

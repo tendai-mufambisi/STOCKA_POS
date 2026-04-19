@@ -848,3 +848,94 @@
 .cashier-action-btn.primary .action-hint {
   color: rgba(255, 255, 255, 0.8);
 }
+
+/* Live Cashiers Widget */
+.live-cashiers-widget {
+  background: linear-gradient(135deg, #fff9f0 0%, #fffbf5 100%);
+  border: 2px solid #ffe8cc;
+  margin-bottom: 24px;
+}
+
+.live-cashiers-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cashiers-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.stat-box {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  border: 1px solid #e0e0e0;
+}
+
+.stat-box .stat-label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.stat-box .stat-number {
+  font-size: 20px;
+  font-weight: 700;
+  color: #2e7d32;
+}
+
+.variance-alerts {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  border-left: 4px solid #ff6f00;
+}
+
+.alert-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ff6f00;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.variance-alert-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 13px;
+}
+
+.variance-alert-item:last-child {
+  border-bottom: none;
+}
+
+.variance-alert-item .cashier-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.variance-alert-item .shortage {
+  color: #d32f2f;
+  font-weight: 600;
+}
+
+.variance-alert-item .overage {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.loading-state {
+  text-align: center;
+  padding: 24px;
+  color: #999;
+  font-style: italic;
+}

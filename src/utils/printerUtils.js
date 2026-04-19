@@ -1,237 +1,123 @@
+const { SerialPort } = require('serialport');
+
+// ESC/POS Commands
+const ESC = 0x1B;
+const GS = 0x1D;
+
+const COMMANDS = {
+  INIT: Buffer.from([ESC, 0x40]),
+  ALIGN_CENTER: Buffer.from([ESC, 0x61, 0x01]),
+  ALIGN_LEFT: Buffer.from([ESC, 0x61, 0x00]),
+  BOLD_ON: Buffer.from([ESC, 0x45, 0x01]),
+  BOLD_OFF: Buffer.from([ESC, 0x45, 0x00]),
+  DOUBLE_SIZE: Buffer.from([ESC, 0x21, 0x11]),
+  NORMAL_SIZE: Buffer.from([ESC, 0x21, 0x00]),
+  CUT: Buffer.from([GS, 0x56, 0x00]),
+  LINE_FEED: Buffer.from('\n'),
+};
+
 /**
- * Printer utilities for ESC/POS thermal receipt printing
- * Handles receipt formatting and ESC/POS command generation
+ * Bluetooth Receipt Printer Handler
+ * Uses SerialPort and ESC/POS commands for 2-inch thermal printers
  */
-
-// ESC/POS command constants
-const ESC = '\x1B'
-const GS = '\x1D'
-
-/**
- * Generate ESC/POS commands for a receipt
- * @param {Object} receipt - Receipt data object
- * @param {Object} shopInfo - Shop information
- * @param {boolean} isDuplicate - Whether this is a duplicate/reprint
- * @returns {Buffer} Buffer of ESC/POS commands
- */
-export const generateReceiptCommands = (receipt, shopInfo, isDuplicate = false) => {
-  let commands = []
-
-  // Initialize printer
-  commands.push(ESC + '@') // Reset printer
-
-  // Select font and size
-  commands.push(ESC + '!' + String.fromCharCode(0x08)) // Normal font, size
-
-  // ═══════════════════════════════════════════
-  // HEADER
-  // ═══════════════════════════════════════════
-
-  // Center alignment
-  commands.push(ESC + 'a' + String.fromCharCode(1))
-
-  // Shop name (large, bold)
-  commands.push(ESC + 'E' + String.fromCharCode(1)) // Emphasized on
-  commands.push(ESC + '!' + String.fromCharCode(0x38)) // Large font
-  commands.push((shopInfo.name || 'STOCKA SHOP') + '\n')
-  commands.push(ESC + 'E' + String.fromCharCode(0)) // Emphasized off
-  commands.push(ESC + '!' + String.fromCharCode(0)) // Normal font
-
-  // Shop address
-  commands.push(shopInfo.address || 'Address not set')
-  commands.push('\n')
-
-  // Shop phone
-  commands.push(shopInfo.phone || 'Phone not set')
-  commands.push('\n')
-
-  // Divider line
-  commands.push('-' + Array(38).fill('-').join(''))
-  commands.push('\n')
-
-  // ═══════════════════════════════════════════
-  // SALE INFO
-  // ═══════════════════════════════════════════
-
-  // Left alignment
-  commands.push(ESC + 'a' + String.fromCharCode(0))
-
-  // Date and Time
-  const saleDate = new Date(receipt.created_at || new Date())
-  const dateStr = formatDate(saleDate)
-  const timeStr = formatTime(saleDate)
-  commands.push(`Date: ${dateStr}  Time: ${timeStr}\n`)
-
-  // Receipt number
-  commands.push(`Receipt No: ${receipt.receipt_number || 'N/A'}\n`)
-
-  // Cashier name
-  commands.push(`Cashier: ${receipt.cashier || 'N/A'}\n`)
-
-  // Reprint watermark
-  if (isDuplicate) {
-    commands.push(ESC + 'a' + String.fromCharCode(1)) // Center
-    commands.push(ESC + 'E' + String.fromCharCode(1)) // Emphasized
-    commands.push('** REPRINT **\n')
-    commands.push(ESC + 'E' + String.fromCharCode(0)) // Emphasized off
-    commands.push(ESC + 'a' + String.fromCharCode(0)) // Left align
+class ReceiptPrinter {
+  constructor(portPath = 'COM3', baudRate = 9600) {
+    this.portPath = portPath;
+    this.baudRate = baudRate;
+    this.port = null;
   }
 
-  // Divider line
-  commands.push('-' + Array(38).fill('-').join(''))
-  commands.push('\n')
+  async connect() {
+    return new Promise((resolve, reject) => {
+      this.port = new SerialPort({
+        path: this.portPath,
+        baudRate: this.baudRate,
+      });
 
-  // ═══════════════════════════════════════════
-  // ITEMS TABLE
-  // ═══════════════════════════════════════════
+      this.port.on('open', () => {
+        console.log(`Printer connected on ${this.portPath}`);
+        resolve(true);
+      });
 
-  // Table header
-  commands.push('Item              Qty  Price    Total\n')
-  commands.push('-' + Array(38).fill('-').join(''))
-  commands.push('\n')
-
-  // Items
-  if (receipt.items && receipt.items.length > 0) {
-    receipt.items.forEach(item => {
-      const itemName = truncateString(item.product_name || item.name, 16)
-      const qty = (item.quantity || 0).toString().padStart(4, ' ')
-      const price = formatMoney(item.selling_price || item.price)
-      const total = formatMoney(item.subtotal || (item.quantity * item.selling_price))
-      
-      commands.push(`${itemName.padEnd(16)} ${qty} ${price.padStart(7)} ${total.padStart(7)}\n`)
-    })
+      this.port.on('error', (err) => {
+        console.error('Printer error:', err.message);
+        reject(err);
+      });
+    });
   }
 
-  // Divider line
-  commands.push('-' + Array(38).fill('-').join(''))
-  commands.push('\n')
+  async printReceipt(receiptData) {
+    if (!this.port || !this.port.isOpen) {
+      await this.connect();
+    }
 
-  // ═══════════════════════════════════════════
-  // TOTALS
-  // ═══════════════════════════════════════════
+    const {
+      storeName,
+      items,
+      subtotal,
+      tax,
+      total,
+      cashier,
+      date,
+    } = receiptData;
 
-  // Center alignment
-  commands.push(ESC + 'a' + String.fromCharCode(1))
+    const lines = [
+      COMMANDS.INIT,
+      COMMANDS.ALIGN_CENTER,
+      COMMANDS.BOLD_ON,
+      COMMANDS.DOUBLE_SIZE,
+      Buffer.from(`${storeName}\n`),
+      COMMANDS.NORMAL_SIZE,
+      COMMANDS.BOLD_OFF,
+      Buffer.from('--------------------------------\n'),
+      Buffer.from(`Date: ${date}\n`),
+      Buffer.from(`Cashier: ${cashier}\n`),
+      Buffer.from('--------------------------------\n'),
+      COMMANDS.ALIGN_LEFT,
+    ];
 
-  // Total (bold)
-  commands.push(ESC + 'E' + String.fromCharCode(1)) // Emphasized on
-  commands.push(`TOTAL: ${formatMoney(receipt.total || 0)}\n`)
-  commands.push(ESC + 'E' + String.fromCharCode(0)) // Emphasized off
+    // Add items
+    items.forEach(item => {
+      const name = item.name.padEnd(20).slice(0, 20);
+      const price = `$${item.price.toFixed(2)}`.padStart(10);
+      lines.push(Buffer.from(`${name}${price}\n`));
+    });
 
-  // Payment method
-  commands.push(`Payment: ${receipt.payment_method || 'USD Cash'}\n`)
+    lines.push(
+      Buffer.from('--------------------------------\n'),
+      Buffer.from(`${'Subtotal'.padEnd(20)}${`$${subtotal.toFixed(2)}`.padStart(10)}\n`),
+      Buffer.from(`${'Tax'.padEnd(20)}${`$${tax.toFixed(2)}`.padStart(10)}\n`),
+      COMMANDS.BOLD_ON,
+      Buffer.from(`${'TOTAL'.padEnd(20)}${`$${total.toFixed(2)}`.padStart(10)}\n`),
+      COMMANDS.BOLD_OFF,
+      Buffer.from('--------------------------------\n'),
+      COMMANDS.ALIGN_CENTER,
+      Buffer.from('Thank you for your purchase!\n'),
+      Buffer.from('\n\n\n'),
+      COMMANDS.CUT,
+    );
 
-  // Cash tendered and change
-  if (receipt.cash_tendered !== undefined) {
-    commands.push(`Cash Tendered: ${formatMoney(receipt.cash_tendered)}\n`)
+    return new Promise((resolve, reject) => {
+      this.port.write(Buffer.concat(lines), (err) => {
+        if (err) reject(err);
+        else resolve(true);
+      });
+    });
   }
 
-  if (receipt.change_given !== undefined) {
-    commands.push(ESC + 'E' + String.fromCharCode(1)) // Emphasized
-    commands.push(`CHANGE: ${formatMoney(receipt.change_given)}\n`)
-    commands.push(ESC + 'E' + String.fromCharCode(0)) // Emphasized off
+  disconnect() {
+    if (this.port && this.port.isOpen) {
+      this.port.close();
+    }
   }
-
-  // ═══════════════════════════════════════════
-  // FOOTER
-  // ═════════════════════════════════════════════
-
-  commands.push('\n')
-  commands.push('-' + Array(38).fill('-').join(''))
-  commands.push('\n')
-
-  // Thank you message
-  commands.push(`Thank you for shopping with ${shopInfo.name || 'STOCKA SHOP'}!\n`)
-
-  // Powered by message (small text)
-  commands.push(ESC + '!' + String.fromCharCode(0x00)) // Tiny font
-  commands.push('Powered by Stocka\n')
-  commands.push(ESC + '!' + String.fromCharCode(0)) // Normal font
-
-  // Feed paper and cut
-  commands.push('\n\n\n')
-  commands.push(GS + 'V' + String.fromCharCode(66)) // Partial cut
-  commands.push(ESC + '@') // Reset printer
-
-  return Buffer.from(commands.join(''))
 }
+
+module.exports = ReceiptPrinter
 
 /**
- * Format date as DD/MM/YYYY
+ * NOTE: Receipt utility functions (generateReceiptNumber, getNextReceiptCounter, formatDate, formatTime, etc.)
+ * have been moved to receiptUtils.js to avoid bundling Node.js modules in the browser.
+ * 
+ * printerUtils.js is ONLY for use in Electron main process via IPC.
+ * See receiptUtils.js for browser-safe utilities.
  */
-const formatDate = (date) => {
-  const day = String(date.getDate()).padStart(2, '0')
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const year = date.getFullYear()
-  return `${day}/${month}/${year}`
-}
-
-/**
- * Format time as HH:MM AM/PM
- */
-const formatTime = (date) => {
-  let hours = date.getHours()
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const ampm = hours >= 12 ? 'PM' : 'AM'
-  hours = hours % 12
-  hours = hours ? hours : 12
-  return `${String(hours).padStart(2, '0')}:${minutes} ${ampm}`
-}
-
-/**
- * Format number as currency
- */
-const formatMoney = (amount) => {
-  const num = parseFloat(amount || 0)
-  return `$${num.toFixed(2)}`
-}
-
-/**
- * Truncate string to max length
- */
-const truncateString = (str, maxLength) => {
-  if (!str) return ''
-  return str.length > maxLength ? str.substring(0, maxLength) : str
-}
-
-/**
- * Generate receipt number in format YYYYMMDD-XXXX
- * @param {number} dailyCounter - Counter for today (incremented number)
- * @returns {string} Receipt number
- */
-export const generateReceiptNumber = (dailyCounter = 1) => {
-  const today = new Date()
-  const year = today.getFullYear()
-  const month = String(today.getMonth() + 1).padStart(2, '0')
-  const day = String(today.getDate()).padStart(2, '0')
-  const counter = String(dailyCounter).padStart(4, '0')
-  return `${year}${month}${day}-${counter}`
-}
-
-/**
- * Get receipt counter for today
- * Extracts the counter from the last receipt number if it's from today
- * @param {string} lastReceiptNumber - Last receipt number
- * @returns {number} Counter for next receipt (or 1 if new day)
- */
-export const getNextReceiptCounter = (lastReceiptNumber) => {
-  if (!lastReceiptNumber) return 1
-
-  const today = new Date()
-  const year = today.getFullYear()
-  const month = String(today.getMonth() + 1).padStart(2, '0')
-  const day = String(today.getDate()).padStart(2, '0')
-  const todayPrefix = `${year}${month}${day}`
-
-  const parts = lastReceiptNumber.split('-')
-  const prefix = parts[0]
-
-  // If the prefix matches today's date, increment the counter
-  if (prefix === todayPrefix && parts[1]) {
-    const counter = parseInt(parts[1], 10)
-    return counter + 1
-  }
-
-  // Otherwise start from 1 (new day)
-  return 1
-}

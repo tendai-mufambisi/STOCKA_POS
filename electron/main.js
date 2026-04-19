@@ -1,8 +1,18 @@
+/** @typedef {import('@serialport/bindings-interface').PortInfo} PortInfo */
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
-const { SerialPort } = require('serialport')
+const printer = require('node-printer')
+const { PosPrinter } = require('@plick/electron-pos-printer')
 
 const isDev = process.env.NODE_ENV === 'development'
+
+// Import ReceiptPrinter for Bluetooth/COM port printing
+let ReceiptPrinter = null
+try {
+  ReceiptPrinter = require('../src/utils/printerUtils.js')
+} catch (err) {
+  console.warn('⚠️ ReceiptPrinter not available:', err.message)
+}
 
 // Global to store reference to main window for IPC
 let mainWindow = null
@@ -55,97 +65,146 @@ app.on('window-all-closed', () => {
 })
 
 // ══════════════════════════════════════════════════════════
-// PRINTER IPC HANDLERS
+// PRINTER IPC HANDLERS - Using Windows Print API
 // ══════════════════════════════════════════════════════════
 
 /**
- * Scan for available COM ports where thermal printers may be connected
- * Uses SerialPort to list all available ports
+ * Scan for available Windows printers (thermal receipt printers)
+ * SIMPLIFIED: Returns common printers and system default
  */
 ipcMain.handle('printer:scan', async () => {
   try {
-    const devices = []
-    const { SerialPort } = require('serialport')
+    console.log(`🖨️ [SCANNER] Scanning for available printers...`)
 
-    console.log(`🖨️ [SCANNER] ========== COM PORT SCAN ==========`)
-    console.log(`🖨️ [SCANNER] Scanning for available COM ports...`)
+    const devices = [
+      {
+        name: 'Default Printer (Auto-detect)',
+        port: 'default',
+        type: 'default'
+      }
+    ]
 
-    try {
-      const ports = await SerialPort.list()
-      
-      if (ports.length === 0) {
-        console.log(`⚠️ [SCANNER] No COM ports found`)
-      } else {
-        console.log(`✅ [SCANNER] Found ${ports.length} COM port(s)`)
-        
-        ports.forEach((port, idx) => {
-          console.log(`\n📍 [SCANNER] Port ${idx + 1}:`)
-          console.log(`   Path: ${port.path}`)
-          console.log(`   Manufacturer: ${port.manufacturer || 'Unknown'}`)
-          console.log(`   SerialNumber: ${port.serialNumber || 'Unknown'}`)
-          console.log(`   PnPId: ${port.pnpId || 'Unknown'}`)
+    // Try to get list from node-printer with a timeout
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        console.warn('⚠️ [SCANNER] Using default printer (scan timed out)')
+        resolve({
+          success: true,
+          printers: devices,
+          count: devices.length,
+          message: 'Using default printer. If this is wrong, specify printer in Settings.'
+        })
+      }, 2000)
+
+      try {
+        printer.list((err, printers) => {
+          clearTimeout(timeout)
+
+          if (err || !printers || printers.length === 0) {
+            console.log('ℹ️ [SCANNER] No additional printers detected')
+            resolve({
+              success: true,
+              printers: devices,
+              count: devices.length,
+              message: 'Using default printer'
+            })
+            return
+          }
+
+          console.log(`✅ [SCANNER] Found ${printers.length} printer(s)`)
           
-          // Detect if this is likely a thermal printer
-          const description = `${port.manufacturer || ''} ${port.pnpId || ''} ${port.path}`.toLowerCase()
-          const isProbablyPrinter = description.includes('printer') || 
-                                    description.includes('thermal') ||
-                                    description.includes('usb') ||
-                                    description.includes('bluetooth') ||
-                                    port.path === 'COM3' // Your working port
-          
-          devices.push({
-            name: `${port.path} - ${port.manufacturer || 'Unknown Device'}`,
-            port: port.path,
-            type: 'serial'
+          // Add detected printers
+          printers.forEach((name, idx) => {
+            console.log(`   ${idx + 1}. ${name}`)
+            devices.push({
+              name: name,
+              port: name,
+              type: 'windows_printer'
+            })
           })
-          
-          console.log(`   ${isProbablyPrinter ? '✅ Likely printer' : 'ℹ️ Unknown device'}`)
+
+          resolve({
+            success: true,
+            printers: devices,
+            count: devices.length
+          })
+        })
+      } catch (e) {
+        clearTimeout(timeout)
+        console.warn('⚠️ [SCANNER] Error listing printers:', e.message)
+        resolve({
+          success: true,
+          printers: devices,
+          count: devices.length,
+          message: 'Using default printer'
         })
       }
-
-      // Add COM3 as fallback even if not detected (since that's what works for you)
-      if (!devices.find(d => d.port === 'COM3')) {
-        console.log(`\n📍 [SCANNER] Adding COM3 as fallback option (your working port)`)
-        devices.push({
-          name: 'COM3 (Manual)',
-          port: 'COM3',
-          type: 'serial'
-        })
-      }
-
-    } catch (err) {
-      console.error(`❌ [SCANNER] Port scan error: ${err.message}`)
-      // Still offer COM3 as fallback
-      devices.push({
-        name: 'COM3 (Manual)',
-        port: 'COM3',
-        type: 'serial'
-      })
-    }
-
-    console.log(`🖨️ [SCANNER] ========== SCAN COMPLETE ==========`)
-    console.log(`✅ [SCANNER] Total ports found: ${devices.length}`)
-    devices.forEach(d => {
-      console.log(`   📠 ${d.name}`)
     })
-
-    return {
-      success: true,
-      printers: devices,
-      count: devices.length,
-      diagnosticMessage: devices.length === 0 
-        ? 'No COM ports found. Ensure printer is connected via USB/Bluetooth and powered on.'
-        : undefined
-    }
   } catch (error) {
-    console.error('❌ [SCANNER] Fatal scan error:', error)
+    console.error('❌ [SCANNER] Fatal error:', error.message)
     return {
       success: false,
-      error: 'Scan failed: ' + error.message,
-      printers: [
-        { name: 'COM3 (Manual)', port: 'COM3', type: 'serial' }
-      ],
-      count: 1
+      error: error.message,
+      printers: [],
+      count: 0
+    }
+  }
+})
+
+/**
+ * Scan for COM ports (alternative to Windows printer scan)
+ * Useful for direct Bluetooth/Serial printers
+ */
+ipcMain.handle('printer:scan-com', async () => {
+  try {
+    console.log(`🖨️ [COM SCAN] Scanning for available COM ports...`)
+    
+    // Try to use SerialPort to list available ports
+    let ports = []
+    
+    try {
+      if (ReceiptPrinter && typeof ReceiptPrinter === 'function') {
+        // If SerialPort is available, use it
+        const { SerialPort } = require('serialport')
+        ports = await SerialPort.list()
+      }
+    } catch (err) {
+      console.warn('⚠️ SerialPort not available, using fallback list')
+    }
+    
+    // If no ports found, provide common COM ports
+    if (ports.length === 0) {
+      console.log('📍 No ports detected, offering common COM ports as options')
+      ports = [
+        { path: 'COM1', manufacturer: 'Unknown' },
+        { path: 'COM3', manufacturer: 'Unknown (Common Bluetooth)' },
+        { path: 'COM4', manufacturer: 'Unknown' },
+        { path: 'COM5', manufacturer: 'Unknown' },
+        { path: 'COM6', manufacturer: 'Unknown' }
+      ]
+    }
+    
+    console.log(`✅ Found ${ports.length} COM port(s)`)
+    ports.forEach((port, idx) => {
+      console.log(`   ${idx + 1}. ${port.path} - ${port.manufacturer || 'Unknown'}`)
+    })
+    
+    return {
+      success: true,
+      ports: ports.map(p => ({
+        path: p.path,
+        name: `${p.path} (${p.manufacturer || 'Unknown'})`,
+        type: 'com_port'
+      })),
+      count: ports.length
+    }
+  } catch (error) {
+    console.error('❌ COM port scan error:', error)
+    return {
+      success: false,
+      error: error.message,
+      ports: [],
+      count: 0
     }
   }
 })
@@ -153,16 +212,16 @@ ipcMain.handle('printer:scan', async () => {
 /**
  * Test print - send test receipt to printer
  */
-ipcMain.handle('printer:test', async (event, printerPort) => {
+ipcMain.handle('printer:test', async (event, printerName) => {
   try {
-    if (!printerPort) {
+    if (!printerName) {
       return {
         success: false,
-        error: 'No printer port specified'
+        error: 'No printer specified. Please select a printer or scan for printers.'
       }
     }
 
-    console.log(`🖨️ [TEST PRINT] Sending test receipt to ${printerPort}`)
+    console.log(`🖨️ [TEST PRINT] Sending test receipt to ${printerName}`)
 
     // Generate a simple test receipt
     const testReceipt = {
@@ -185,7 +244,7 @@ ipcMain.handle('printer:test', async (event, printerPort) => {
     }
 
     // Use the same print mechanism as regular receipts
-    return await useWindowsPrintAPI(printerPort, generateReceiptCommands(testReceipt, testShopInfo, false))
+    return await sendToWindowsPrinter(printerName, generateReceiptCommands(testReceipt, testShopInfo, false))
   } catch (error) {
     console.error('Test print error:', error)
     return {
@@ -196,29 +255,54 @@ ipcMain.handle('printer:test', async (event, printerPort) => {
 })
 
 /**
- * Print receipt
- */
-/**
  * Send receipt to thermal printer via Windows Print API
- * Uses the proper printer driver instead of direct COM port writes
+ * Uses printer name (Windows printer) instead of COM port
  */
-ipcMain.handle('printer:print-receipt', async (event, printerPort, receiptData, shopInfo, isDuplicate = false) => {
+ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, shopInfo, isDuplicate = false) => {
   try {
-    if (!printerPort) {
+    if (!printerName) {
       return {
         success: false,
-        error: 'No printer port specified'
+        error: 'No printer configured. Please set up printer in Settings, then try again.'
       }
     }
 
     // Generate ESC/POS commands for receipt
     const escposCommands = generateReceiptCommands(receiptData, shopInfo, isDuplicate)
     
-    console.log(`🖨️ [PRINTER] Printing receipt "${receiptData.receipt_number}" to ${printerPort}`)
-    console.log(`🖨️ [PRINTER] ESC/POS buffer size: ${escposCommands.length} bytes`)
+    console.log(`🖨️ [PRINTER] Printing receipt "${receiptData.receipt_number}" to ${printerName}`)
+    console.log(`📊 [PRINTER] ESC/POS buffer size: ${escposCommands.length} bytes`)
 
-    // Use Windows Print API via PowerShell - this uses the proper printer driver
-    return await useWindowsPrintAPI(printerPort, escposCommands)
+    // Try to print with up to 2 retries if busy
+    let lastError = null
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await sendToWindowsPrinter(printerName, escposCommands)
+        if (result.success) {
+          console.log(`✅ [PRINTER] Print succeeded on attempt ${attempt}`)
+          return result
+        } else {
+          lastError = result.error
+          if (attempt < 2) {
+            console.log(`⚠️ [PRINTER] Attempt ${attempt} failed, retrying...`)
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 500))
+          }
+        }
+      } catch (err) {
+        lastError = err.message
+        if (attempt < 2) {
+          console.log(`⚠️ [PRINTER] Attempt ${attempt} error, retrying...`)
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+      }
+    }
+
+    console.error(`❌ [PRINTER] Failed after 2 attempts: ${lastError}`)
+    return {
+      success: false,
+      error: lastError || 'Failed to print after multiple attempts'
+    }
 
   } catch (error) {
     console.error('❌ [PRINTER] Critical error:', error)
@@ -230,62 +314,40 @@ ipcMain.handle('printer:print-receipt', async (event, printerPort, receiptData, 
 })
 
 /**
- * Send raw ESC/POS bytes to thermal printer via SerialPort (COM port)
- * Direct, simple, and reliable method that works with Bluetooth 2-inch thermal printers
+ * Send raw ESC/POS bytes to thermal printer via Windows Print API
+ * Uses node-printer to send data to any Windows printer (including Bluetooth)
+ * @param {string} printerName - Name of the Windows printer
+ * @param {Buffer} escposCommands - ESC/POS binary commands
+ * @returns {Promise} Result object with success status
  */
-async function useWindowsPrintAPI(printerPort, escposCommands) {
+async function sendToWindowsPrinter(printerName, escposCommands) {
   return new Promise((resolve) => {
     try {
-      console.log(`🖨️ [PRINTER] Opening SerialPort: ${printerPort}`)
+      console.log(`🖨️ [PRINTER] Sending to Windows printer: ${printerName}`)
       console.log(`📊 [PRINTER] Buffer size: ${escposCommands.length} bytes`)
 
-      // Open connection to printer COM port
-      const port = new SerialPort({
-        path: printerPort,
-        baudRate: 9600,
-        timeout: 5000
-      })
+      // Prepare print job configuration
+      const printOptions = {
+        printer: printerName,
+        type: 'RAW', // Send raw ESC/POS data
+        data: escposCommands
+      }
 
-      port.on('open', () => {
-        console.log(`✅ [PRINTER] Port ${printerPort} opened successfully`)
-        
-        // Write ESC/POS commands to printer
-        port.write(escposCommands, (err) => {
-          if (err) {
-            console.error(`❌ [PRINTER] Write error: ${err.message}`)
-            port.close()
-            resolve({
-              success: false,
-              error: `Failed to write to ${printerPort}: ${err.message}`
-            })
-            return
-          }
+      // Send to printer
+      printer.printDirect(printOptions, (err, res) => {
+        if (err) {
+          console.error(`❌ [PRINTER] Print error: ${err.message}`)
+          resolve({
+            success: false,
+            error: `Failed to print: ${err.message}`
+          })
+          return
+        }
 
-          console.log(`✅ [PRINTER] Sent ${escposCommands.length} bytes to printer`)
-          
-          // Close port after a short delay to ensure data is sent
-          setTimeout(() => {
-            port.close((closeErr) => {
-              if (closeErr) {
-                console.warn(`⚠️ [PRINTER] Close warning: ${closeErr.message}`)
-              } else {
-                console.log(`✅ [PRINTER] Port closed`)
-              }
-              
-              resolve({
-                success: true,
-                message: 'Receipt printed successfully'
-              })
-            })
-          }, 500)
-        })
-      })
-
-      port.on('error', (err) => {
-        console.error(`❌ [PRINTER] Port error: ${err.message}`)
+        console.log(`✅ [PRINTER] Sent ${escposCommands.length} bytes to printer`)
         resolve({
-          success: false,
-          error: `Printer ${printerPort} error: ${err.message}`
+          success: true,
+          message: 'Receipt printed successfully'
         })
       })
 
@@ -300,15 +362,134 @@ async function useWindowsPrintAPI(printerPort, escposCommands) {
 }
 
 /**
- * Get saved printer settings from renderer process
- * The renderer will have the actual settings in localStorage/db
+ * Get saved printer settings
  */
 ipcMain.handle('printer:get-settings', async () => {
   return {
     printer_name: null,
-    printer_port: null,
     auto_print: true,
     print_duplicate: false
+  }
+})
+
+/**
+ * Print using @plick/electron-pos-printer (PRIMARY METHOD)
+ * Robust, reliable printing to any system printer including Bluetooth
+ * @param {string} printerName - Name of the printer (auto-detects if not provided)
+ * @param {Array} receiptData - Array of print objects (text, table, barCode, etc.)
+ */
+ipcMain.handle('printer:print-pos', async (event, printerName, receiptData) => {
+  try {
+    if (!receiptData || !Array.isArray(receiptData)) {
+      return {
+        success: false,
+        error: 'Invalid receipt data. Expected array of print objects.'
+      }
+    }
+
+    if (receiptData.length === 0) {
+      return {
+        success: false,
+        error: 'Receipt is empty. Nothing to print.'
+      }
+    }
+
+    console.log(`🖨️ [POS PRINTER] Printing receipt...`)
+    console.log(`📍 Printer: ${printerName || 'Default (auto-detect)'}`)
+    console.log(`📊 Items: ${receiptData.length} print objects`)
+
+    // Configure printer options
+    const printOptions = {
+      preview: false,
+      silent: true,
+      width: 58, // 2-inch printer width (58mm = ~22 characters)
+      margin: '0 0 0 0'
+    }
+
+    // Add printer name if specified and non-empty
+    if (printerName && typeof printerName === 'string' && printerName.trim()) {
+      printOptions.printerName = printerName.trim()
+    }
+
+    // Execute print with timeout to prevent hanging
+    const printPromise = PosPrinter.print(receiptData, printOptions)
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Print operation timed out after 10 seconds')), 10000)
+    )
+
+    await Promise.race([printPromise, timeoutPromise])
+
+    console.log(`✅ [POS PRINTER] Receipt printed successfully`)
+    return {
+      success: true,
+      message: 'Receipt printed successfully'
+    }
+  } catch (error) {
+    console.error(`❌ [POS PRINTER] Print error:`, error)
+    
+    // Safely get error message (handle cases where error is not a standard Error object)
+    const errorMessage = error?.message || String(error) || 'Unknown error'
+    
+    // Provide helpful error messages
+    let userMessage = errorMessage
+    
+    // Detect specific errors and provide guidance
+    if (errorMessage.includes('Convert undefined or null')) {
+      userMessage = 'No printer configured. Please go to Settings and configure your printer name, or ensure at least one printer is installed on your system.'
+    } else if (errorMessage.includes('Printer not found')) {
+      userMessage = 'Printer not found. Please check the printer name in Settings and verify the printer is installed.'
+    } else if (errorMessage.includes('timeout')) {
+      userMessage = 'Printing timed out. Please check printer connection and try again.'
+    } else if (errorMessage.includes('access') || errorMessage.includes('permission')) {
+      userMessage = 'Permission denied. Please check printer access or try running the app as administrator.'
+    } else if (errorMessage.includes('not installed') || errorMessage.includes('not available')) {
+      userMessage = 'Printer driver may not be installed properly. Please reinstall your printer driver.'
+    }
+
+    return {
+      success: false,
+      error: userMessage,
+      details: errorMessage
+    }
+  }
+})
+
+/**
+ * Print via Bluetooth/COM port using SerialPort
+ * Alternative method for 2-inch Bluetooth thermal printers
+ */
+ipcMain.handle('printer:print-bluetooth', async (event, portPath, receiptData) => {
+  try {
+    if (!ReceiptPrinter) {
+      return {
+        success: false,
+        error: 'ReceiptPrinter not available. SerialPort may not be installed.'
+      }
+    }
+
+    if (!portPath) {
+      return {
+        success: false,
+        error: 'No COM port specified'
+      }
+    }
+
+    console.log(`🖨️ [BLUETOOTH] Printing to ${portPath}`)
+
+    const printer = new ReceiptPrinter(portPath, 9600)
+    await printer.printReceipt(receiptData)
+    printer.disconnect()
+
+    return {
+      success: true,
+      message: 'Receipt printed successfully via Bluetooth'
+    }
+  } catch (error) {
+    console.error('❌ [BLUETOOTH] Print error:', error)
+    return {
+      success: false,
+      error: error.message || 'Failed to print via Bluetooth'
+    }
   }
 })
 

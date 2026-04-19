@@ -24,7 +24,17 @@ function ShiftDashboard({ user }) {
     try {
       setLoading(true)
       const status = filterStatus === 'all' ? null : filterStatus
-      const shifts = await getAllShifts(status)
+      const rawShifts = await getAllShifts(status)
+      // Map database fields to display fields
+      const shifts = rawShifts.map(shift => ({
+        ...shift,
+        cashier_name: shift.cashier_display_name || shift.cashier_username,
+        start_time: shift.started_at,
+        end_time: shift.closed_at,
+        total_sales: (shift.sales_usd_cash || 0) + (shift.sales_zwg_cash || 0) + 
+                     (shift.sales_swipe_usd || 0) + (shift.sales_swipe_zwg || 0) + 
+                     (shift.sales_ecocash_usd || 0) + (shift.sales_ecocash_zwg || 0)
+      }))
       setAllShifts(shifts)
     } catch (err) {
       setError('Failed to load shifts')

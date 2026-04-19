@@ -138,29 +138,54 @@ function Notifications({ user }) {
               </div>
             ) : (
               <div className="notifications-list">
-                {notifications.map(notif => (
-                  <div
-                    key={notif.id}
-                    className={`notification-item ${notif.type === 'OUT_OF_STOCK' ? 'critical' : 'warning'}`}
-                  >
-                    <div className="notif-icon">
-                      {notif.type === 'OUT_OF_STOCK' ? <FiAlertOctagon size={20} color="#FF5252" /> : <FiAlertTriangle size={20} color="#FFC107" />}
-                    </div>
-                    <div className="notif-content">
-                      <div className="notif-message">{notif.message}</div>
-                      <div className="notif-time">
-                        {new Date(notif.created_at).toLocaleString('en-ZW')}
-                      </div>
-                    </div>
-                    <button
-                      className="dismiss-btn"
-                      onClick={() => handleDismiss(notif.id, notif.product_id)}
-                      title="Dismiss"
+                {notifications.map(notif => {
+                  let iconType = 'warning'
+                  let iconColor = '#FFC107'
+                  let iconElement = <FiAlertTriangle size={20} color={iconColor} />
+                  
+                  // Determine icon based on notification type
+                  if (notif.type === 'OUT_OF_STOCK') {
+                    iconType = 'critical'
+                    iconColor = '#FF5252'
+                    iconElement = <FiAlertOctagon size={20} color={iconColor} />
+                  } else if (notif.type === 'SHIFT_CLOSED') {
+                    iconType = 'info'
+                    iconColor = '#2196F3'
+                    iconElement = <FiCheck size={20} color={iconColor} />
+                  } else if (notif.type === 'SHIFT_SHORTAGE') {
+                    iconType = 'critical'
+                    iconColor = '#d32f2f'
+                    iconElement = <FiAlertOctagon size={20} color={iconColor} />
+                  } else if (notif.type === 'SHIFT_LONG') {
+                    iconType = 'warning'
+                    iconColor = '#ff6f00'
+                    iconElement = <FiAlertTriangle size={20} color={iconColor} />
+                  }
+                  
+                  return (
+                    <div
+                      key={notif.id}
+                      className={`notification-item ${iconType}`}
                     >
-                      <FiX size={16} />
-                    </button>
-                  </div>
-                ))}
+                      <div className="notif-icon">
+                        {iconElement}
+                      </div>
+                      <div className="notif-content">
+                        <div className="notif-message">{notif.message}</div>
+                        <div className="notif-time">
+                          {new Date(notif.created_at).toLocaleString('en-ZW')}
+                        </div>
+                      </div>
+                      <button
+                        className="dismiss-btn"
+                        onClick={() => handleDismiss(notif.id, notif.product_id)}
+                        title="Dismiss"
+                      >
+                        <FiX size={16} />
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>

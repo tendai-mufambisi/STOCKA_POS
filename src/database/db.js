@@ -269,27 +269,58 @@ const createTables = () => {
     )
   `)
 
-  // Shifts table
+  // Shifts table - Complete Cashier Session Management
   db.run(`
     CREATE TABLE IF NOT EXISTS shifts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      cashier_id INTEGER NOT NULL,
-      cashier_name TEXT NOT NULL,
-      start_time TEXT NOT NULL,
-      start_float REAL NOT NULL,
-      opening_confirmed_at TEXT,
-      end_time TEXT,
-      end_float REAL,
-      closing_timestamp TEXT,
-      total_sales REAL DEFAULT 0,
-      total_expenses REAL DEFAULT 0,
-      float_variance REAL,
+      cashier_username TEXT NOT NULL,
+      cashier_display_name TEXT NOT NULL,
+      branch_id INTEGER,
       status TEXT DEFAULT 'open',
+      
+      -- Opening float (what cashier declared at start)
+      opening_usd_cash REAL DEFAULT 0,
+      opening_zwg_cash REAL DEFAULT 0,
+      opening_swipe_usd REAL DEFAULT 0,
+      opening_swipe_zwg REAL DEFAULT 0,
+      opening_ecocash_usd REAL DEFAULT 0,
+      opening_ecocash_zwg REAL DEFAULT 0,
+      
+      -- Sales totals (auto-calculated from sales table)
+      sales_usd_cash REAL DEFAULT 0,
+      sales_zwg_cash REAL DEFAULT 0,
+      sales_swipe_usd REAL DEFAULT 0,
+      sales_swipe_zwg REAL DEFAULT 0,
+      sales_ecocash_usd REAL DEFAULT 0,
+      sales_ecocash_zwg REAL DEFAULT 0,
+      total_sales_count INTEGER DEFAULT 0,
+      total_sales_value REAL DEFAULT 0,
+      
+      -- Closing float (what cashier physically counted)
+      closing_usd_cash REAL,
+      closing_zwg_cash REAL,
+      closing_swipe_usd REAL,
+      closing_swipe_zwg REAL,
+      closing_ecocash_usd REAL,
+      closing_ecocash_zwg REAL,
+      
+      -- Variance (auto-calculated: expected vs actual)
+      variance_usd_cash REAL,
+      variance_zwg_cash REAL,
+      variance_swipe_usd REAL,
+      variance_swipe_zwg REAL,
+      variance_ecocash_usd REAL,
+      variance_ecocash_zwg REAL,
+      overall_variance REAL,
+      
+      -- Reconciliation status
+      reconciliation_status TEXT DEFAULT 'pending',
       notes TEXT,
-      opening_notes TEXT,
-      closing_notes TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (cashier_id) REFERENCES users(id)
+      
+      -- Timestamps
+      started_at TEXT DEFAULT (datetime('now')),
+      closed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
     )
   `)
 
@@ -414,20 +445,89 @@ const runMigrations = () => {
     const shiftsResult = db.exec("PRAGMA table_info(shifts)")
     const shiftsColumns = extractResults(shiftsResult).map(col => col.name)
     
-    // Define required columns for shifts table
-    const shiftsRequiredColumns = {
-      'opening_confirmed_at': 'TEXT',
-      'closing_timestamp': 'TEXT',
-      'float_variance': 'REAL',
-      'opening_notes': 'TEXT',
-      'closing_notes': 'TEXT'
-    }
+    // Check if shifts table needs complete restructuring (from old schema to new schema)
+    const hasOldShiftsSchema = shiftsColumns.length > 0 && !shiftsColumns.includes('cashier_username')
     
-    // Add missing columns to shifts table
-    for (const [columnName, columnDef] of Object.entries(shiftsRequiredColumns)) {
-      if (!shiftsColumns.includes(columnName)) {
-        console.log(`Adding ${columnName} column to shifts table...`)
-        db.run(`ALTER TABLE shifts ADD COLUMN ${columnName} ${columnDef}`)
+    if (hasOldShiftsSchema) {
+      console.log('Detected old shifts table schema. Restructuring...')
+      // Drop old shifts table and recreate with new schema
+      try {
+        db.run('DROP TABLE IF EXISTS shifts')
+        
+        // Recreate with new comprehensive schema
+        db.run(`
+          CREATE TABLE IF NOT EXISTS shifts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cashier_username TEXT NOT NULL,
+            cashier_display_name TEXT NOT NULL,
+            branch_id INTEGER,
+            status TEXT DEFAULT 'open',
+            
+            -- Opening float (what cashier declared at start)
+            opening_usd_cash REAL DEFAULT 0,
+            opening_zwg_cash REAL DEFAULT 0,
+            opening_swipe_usd REAL DEFAULT 0,
+            opening_swipe_zwg REAL DEFAULT 0,
+            opening_ecocash_usd REAL DEFAULT 0,
+            opening_ecocash_zwg REAL DEFAULT 0,
+            
+            -- Sales totals (auto-calculated from sales table)
+            sales_usd_cash REAL DEFAULT 0,
+            sales_zwg_cash REAL DEFAULT 0,
+            sales_swipe_usd REAL DEFAULT 0,
+            sales_swipe_zwg REAL DEFAULT 0,
+            sales_ecocash_usd REAL DEFAULT 0,
+            sales_ecocash_zwg REAL DEFAULT 0,
+            total_sales_count INTEGER DEFAULT 0,
+            total_sales_value REAL DEFAULT 0,
+            
+            -- Closing float (what cashier physically counted)
+            closing_usd_cash REAL,
+            closing_zwg_cash REAL,
+            closing_swipe_usd REAL,
+            closing_swipe_zwg REAL,
+            closing_ecocash_usd REAL,
+            closing_ecocash_zwg REAL,
+            
+            -- Variance (auto-calculated: expected vs actual)
+            variance_usd_cash REAL,
+            variance_zwg_cash REAL,
+            variance_swipe_usd REAL,
+            variance_swipe_zwg REAL,
+            variance_ecocash_usd REAL,
+            variance_ecocash_zwg REAL,
+            overall_variance REAL,
+            
+            -- Reconciliation status
+            reconciliation_status TEXT DEFAULT 'pending',
+            notes TEXT,
+            
+            -- Timestamps
+            started_at TEXT DEFAULT (datetime('now')),
+            closed_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+        `)
+        console.log('Shifts table restructured successfully')
+      } catch (err) {
+        console.error('Failed to restructure shifts table:', err)
+      }
+    } else if (shiftsColumns.length > 0) {
+      // Define required columns for shifts table (for adding missing columns only)
+      const shiftsRequiredColumns = {
+        'opening_confirmed_at': 'TEXT',
+        'closing_timestamp': 'TEXT',
+        'float_variance': 'REAL',
+        'opening_notes': 'TEXT',
+        'closing_notes': 'TEXT'
+      }
+      
+      // Add missing columns to shifts table
+      for (const [columnName, columnDef] of Object.entries(shiftsRequiredColumns)) {
+        if (!shiftsColumns.includes(columnName)) {
+          console.log(`Adding ${columnName} column to shifts table...`)
+          db.run(`ALTER TABLE shifts ADD COLUMN ${columnName} ${columnDef}`)
+        }
       }
     }
 
@@ -1419,51 +1519,70 @@ export const markNotificationAsRead = async (id) => {
 
 // ── STATS FUNCTIONS ──
 export const getDashboardStats = async () => {
-  const database = await getDb()
-  const today = new Date().toISOString().split('T')[0]
-  
-  const productCount = getScalarValue(
-    database.exec('SELECT COUNT(*) as count FROM products'),
-    0
-  )
-  
-  const lowStockCount = getScalarValue(
-    database.exec('SELECT COUNT(*) as count FROM products WHERE current_quantity <= reorder_level'),
-    0
-  )
-  
-  const stockValue = getScalarValue(
-    database.exec(`
-      SELECT COALESCE(SUM(p.current_quantity * COALESCE(
-        (SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1),
+  try {
+    const database = await getDb()
+    const today = new Date().toISOString().split('T')[0]
+    
+    const productCount = getScalarValue(
+      database.exec('SELECT COUNT(*) as count FROM products'),
+      0
+    )
+    
+    const lowStockCount = getScalarValue(
+      database.exec('SELECT COUNT(*) as count FROM products WHERE current_quantity <= reorder_level'),
+      0
+    )
+    
+    const stockValue = getScalarValue(
+      database.exec(`
+        SELECT COALESCE(SUM(p.current_quantity * COALESCE(
+          (SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1),
+          0
+        )), 0) as value FROM products p
+      `),
+      0
+    )
+    
+    const todaySales = getScalarValue(
+      database.exec(`SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE date(created_at) = ?`, [today]),
+      0
+    )
+    
+    const todayExpenses = getScalarValue(
+      database.exec(`SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date(date) = ?`, [today]),
+      0
+    )
+    
+    // Try to get customer count, but default to 0 if table doesn't exist
+    let customerCount = 0
+    try {
+      customerCount = getScalarValue(
+        database.exec('SELECT COUNT(*) as count FROM customers'),
         0
-      )), 0) as value FROM products p
-    `),
-    0
-  )
-  
-  const todaySales = getScalarValue(
-    database.exec(`SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE date(created_at) = ?`, [today]),
-    0
-  )
-  
-  const todayExpenses = getScalarValue(
-    database.exec(`SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date(date) = ?`, [today]),
-    0
-  )
-  
-  const customerCount = getScalarValue(
-    database.exec('SELECT COUNT(*) as count FROM customers'),
-    0
-  )
-  
-  return {
-    productCount,
-    lowStockCount,
-    stockValue,
-    todaySales,
-    todayExpenses,
-    customerCount
+      )
+    } catch (err) {
+      // Customers table might not exist, that's okay
+      customerCount = 0
+    }
+    
+    return {
+      productCount,
+      lowStockCount,
+      stockValue,
+      todaySales,
+      todayExpenses,
+      customerCount
+    }
+  } catch (error) {
+    console.error('Failed to get dashboard stats:', error)
+    return {
+      productCount: 0,
+      lowStockCount: 0,
+      stockValue: 0,
+      todaySales: 0,
+      todayExpenses: 0,
+      customerCount: 0
+    }
   }
 }
 
@@ -1548,134 +1667,233 @@ export const getLowStockItems = async () => {
   return extractResults(result)
 }
 
-// ── SHIFT FUNCTIONS ──
+// ── SHIFT FUNCTIONS (Cashier Session Management) ──
 
 /**
- * Open a new shift for a cashier
- * @param {number} cashierId - User ID
- * @param {string} cashierName - User name
- * @param {number} startFloat - Opening cash amount
- * @param {string} openingNotes - Optional opening notes
- * @returns {Promise<number>} - Shift ID
+ * Start a new shift with opening float declaration
+ * @param {Object} userData - { id, username, name }
+ * @param {Object} openingFloat - { opening_usd_cash, opening_zwg_cash, opening_swipe_usd, opening_swipe_zwg, opening_ecocash_usd, opening_ecocash_zwg }
+ * @param {number} branchId - Optional branch ID
+ * @returns {Promise<Object>} - Shift object with ID
  */
-export const openShift = async (cashierId, cashierName, startFloat, openingNotes = '') => {
+export const startShift = async (userData, openingFloat, branchId = null) => {
   try {
     const database = await getDb()
-    const startTime = new Date().toISOString()
+    const startedAt = new Date().toISOString()
     
+    // Insert the shift record
     database.run(
-      `INSERT INTO shifts (cashier_id, cashier_name, start_time, start_float, status, opening_notes)
-       VALUES (?, ?, ?, ?, 'open', ?)`,
-      [cashierId, cashierName, startTime, startFloat, openingNotes]
+      `INSERT INTO shifts (
+        cashier_username, cashier_display_name, branch_id, status,
+        opening_usd_cash, opening_zwg_cash, opening_swipe_usd, opening_swipe_zwg, 
+        opening_ecocash_usd, opening_ecocash_zwg,
+        started_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userData.username,
+        userData.name || userData.username,
+        branchId,
+        'open',
+        openingFloat.opening_usd_cash || 0,
+        openingFloat.opening_zwg_cash || 0,
+        openingFloat.opening_swipe_usd || 0,
+        openingFloat.opening_swipe_zwg || 0,
+        openingFloat.opening_ecocash_usd || 0,
+        openingFloat.opening_ecocash_zwg || 0,
+        startedAt
+      ]
     )
     
+    // Get the last inserted shift ID
+    const lastIdResult = database.exec('SELECT last_insert_rowid() as id')
+    const shiftId = getScalarValue(lastIdResult, null)
+    
+    if (!shiftId) {
+      throw new Error('Failed to get shift ID after insert')
+    }
+    
+    // Update user's current_shift_id
+    database.run('UPDATE users SET current_shift_id = ? WHERE id = ?', [shiftId, userData.id])
     saveDb()
     
-    // Get the new shift ID
-    const result = database.exec('SELECT last_insert_rowid() as id')
-    const shiftId = extractResults(result)[0]?.id
+    console.log(`Shift ${shiftId} started for cashier ${userData.username}`)
     
-    return shiftId
+    // Fetch and return the created shift
+    const createdShift = await getShiftById(shiftId)
+    if (!createdShift) {
+      console.warn(`Warning: Could not fetch newly created shift ${shiftId}`)
+    }
+    return createdShift
   } catch (error) {
-    console.error('Failed to open shift:', error)
+    console.error('Failed to start shift:', error)
     throw error
   }
 }
 
-
-
 /**
- * Close a shift and reconcile totals
+ * Update sales totals for a shift based on payment method
  * @param {number} shiftId - Shift ID
- * @param {number} endFloat - Closing cash amount
- * @param {string} notes - Optional notes
- * @returns {Promise<Object>} - Shift details with balance info
+ * @param {string} paymentMethod - 'USD Cash', 'ZWG Cash', 'Swipe USD', 'Swipe ZWG', 'EcoCash USD', 'EcoCash ZWG'
+ * @param {number} amount - Sale amount
+ * @returns {Promise<void>}
  */
-export const closeShift = async (shiftId, endFloat, notes = '') => {
+export const updateShiftSalesForPaymentMethod = async (shiftId, paymentMethod, amount) => {
   try {
     const database = await getDb()
-    const endTime = new Date().toISOString()
+    let updateField = ''
     
-    // Get the shift
+    switch (paymentMethod) {
+      case 'USD Cash':
+        updateField = 'sales_usd_cash'
+        break
+      case 'ZWG Cash':
+        updateField = 'sales_zwg_cash'
+        break
+      case 'Swipe USD':
+        updateField = 'sales_swipe_usd'
+        break
+      case 'Swipe ZWG':
+        updateField = 'sales_swipe_zwg'
+        break
+      case 'EcoCash USD':
+        updateField = 'sales_ecocash_usd'
+        break
+      case 'EcoCash ZWG':
+        updateField = 'sales_ecocash_zwg'
+        break
+      default:
+        return
+    }
+    
+    database.run(
+      `UPDATE shifts SET ${updateField} = ${updateField} + ?, total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`,
+      [amount, amount, shiftId]
+    )
+    
+    saveDb()
+  } catch (error) {
+    console.error('Failed to update shift sales:', error)
+    throw error
+  }
+}
+
+/**
+ * Close a shift with closing float and reconciliation
+ * @param {number} shiftId - Shift ID
+ * @param {Object} closingFloat - { closing_usd_cash, closing_zwg_cash, ... }
+ * @param {string} notes - Optional notes
+ * @returns {Promise<Object>} - Shift with reconciliation data
+ */
+export const closeShift = async (shiftId, closingFloat, notes = '') => {
+  try {
+    const database = await getDb()
+    const closedAt = new Date().toISOString()
+    
     const shift = await getShiftById(shiftId)
     if (!shift) {
       throw new Error('Shift not found')
     }
     
-    // Calculate totals for this shift
-    const salesStmt = database.prepare(
-      `SELECT SUM(total) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
-    )
-    salesStmt.bind([shiftId])
-    const salesResults = []
-    while (salesStmt.step()) {
-      salesResults.push(salesStmt.getAsObject())
-    }
-    salesStmt.free()
-    const totalSales = salesResults[0]?.total || 0
+    // Calculate variances for each payment method
+    const variance_usd_cash = (closingFloat.closing_usd_cash || 0) - ((shift.opening_usd_cash || 0) + (shift.sales_usd_cash || 0))
+    const variance_zwg_cash = (closingFloat.closing_zwg_cash || 0) - ((shift.opening_zwg_cash || 0) + (shift.sales_zwg_cash || 0))
+    const variance_swipe_usd = (closingFloat.closing_swipe_usd || 0) - ((shift.opening_swipe_usd || 0) + (shift.sales_swipe_usd || 0))
+    const variance_swipe_zwg = (closingFloat.closing_swipe_zwg || 0) - ((shift.opening_swipe_zwg || 0) + (shift.sales_swipe_zwg || 0))
+    const variance_ecocash_usd = (closingFloat.closing_ecocash_usd || 0) - ((shift.opening_ecocash_usd || 0) + (shift.sales_ecocash_usd || 0))
+    const variance_ecocash_zwg = (closingFloat.closing_ecocash_zwg || 0) - ((shift.opening_ecocash_zwg || 0) + (shift.sales_ecocash_zwg || 0))
     
-    const expensesStmt = database.prepare(
-      `SELECT SUM(amount) as total FROM expenses WHERE shift_id = ?`
-    )
-    expensesStmt.bind([shiftId])
-    const expensesResults = []
-    while (expensesStmt.step()) {
-      expensesResults.push(expensesStmt.getAsObject())
-    }
-    expensesStmt.free()
-    const totalExpenses = expensesResults[0]?.total || 0
+    const overall_variance = variance_usd_cash + variance_zwg_cash + variance_swipe_usd + variance_swipe_zwg + variance_ecocash_usd + variance_ecocash_zwg
     
-    // Update shift with closure info
+    // Determine reconciliation status
+    let reconciliation_status = 'balanced'
+    if (Math.abs(overall_variance) > 0.01) {
+      reconciliation_status = overall_variance > 0 ? 'over' : 'short'
+    }
+    
+    // Update shift with closing data
     database.run(
-      `UPDATE shifts SET end_time = ?, end_float = ?, total_sales = ?, total_expenses = ?, status = 'closed', notes = ? WHERE id = ?`,
-      [endTime, endFloat, totalSales, totalExpenses, notes, shiftId]
+      `UPDATE shifts SET 
+        closing_usd_cash = ?,
+        closing_zwg_cash = ?,
+        closing_swipe_usd = ?,
+        closing_swipe_zwg = ?,
+        closing_ecocash_usd = ?,
+        closing_ecocash_zwg = ?,
+        variance_usd_cash = ?,
+        variance_zwg_cash = ?,
+        variance_swipe_usd = ?,
+        variance_swipe_zwg = ?,
+        variance_ecocash_usd = ?,
+        variance_ecocash_zwg = ?,
+        overall_variance = ?,
+        reconciliation_status = ?,
+        notes = ?,
+        closed_at = ?,
+        status = 'closed'
+      WHERE id = ?`,
+      [
+        closingFloat.closing_usd_cash || 0,
+        closingFloat.closing_zwg_cash || 0,
+        closingFloat.closing_swipe_usd || 0,
+        closingFloat.closing_swipe_zwg || 0,
+        closingFloat.closing_ecocash_usd || 0,
+        closingFloat.closing_ecocash_zwg || 0,
+        variance_usd_cash,
+        variance_zwg_cash,
+        variance_swipe_usd,
+        variance_swipe_zwg,
+        variance_ecocash_usd,
+        variance_ecocash_zwg,
+        overall_variance,
+        reconciliation_status,
+        notes,
+        closedAt,
+        shiftId
+      ]
     )
+    
+    // Clear user's current_shift_id
+    database.run('UPDATE users SET current_shift_id = NULL WHERE username = ?', [shift.cashier_username])
     
     saveDb()
     
-    // Return shift with balance info
-    return {
-      ...shift,
-      end_time: endTime,
-      end_float: endFloat,
-      total_sales: totalSales,
-      total_expenses: totalExpenses,
-      expected_cash: shift.start_float + totalSales - totalExpenses,
-      actual_cash: endFloat,
-      balance: endFloat - (shift.start_float + totalSales - totalExpenses)
+    // Create notifications for shift closure events
+    const closedShift = await getShiftById(shiftId)
+    if (closedShift) {
+      // Calculate shift duration in hours
+      const startTime = new Date(shift.started_at).getTime()
+      const endTime = new Date(closedAt).getTime()
+      const durationHours = (endTime - startTime) / (1000 * 60 * 60)
+      
+      // Notification 1: Shift closure notification (for all shifts)
+      await createNotification({
+        type: 'SHIFT_CLOSED',
+        message: `Cashier ${shift.cashier_username} closed shift at ${new Date(closedAt).toLocaleTimeString()} — Status: ${reconciliation_status.toUpperCase()}`,
+      })
+      
+      // Notification 2: Shortage alert (if shortage > $5)
+      if (overall_variance < -5) {
+        const shortageAmount = Math.abs(overall_variance).toFixed(2)
+        await createNotification({
+          type: 'SHIFT_SHORTAGE',
+          message: `⚠️ Alert: Cashier ${shift.cashier_username} short by $${shortageAmount} (Shift ended at ${new Date(closedAt).toLocaleTimeString()})`,
+        })
+      }
+      
+      // Notification 3: Long shift alert (if duration > 10 hours)
+      if (durationHours > 10) {
+        const hours = Math.floor(durationHours)
+        const minutes = Math.round((durationHours - hours) * 60)
+        await createNotification({
+          type: 'SHIFT_LONG',
+          message: `⏱️ Alert: Cashier ${shift.cashier_username} was on shift for ${hours}h ${minutes}m (Long shift detected)`,
+        })
+      }
     }
+    
+    return closedShift
   } catch (error) {
     console.error('Failed to close shift:', error)
-    throw error
-  }
-}
-
-/**
- * Update shift fields
- * @param {number} shiftId - Shift ID
- * @param {Object} updates - Object with fields to update
- * @returns {Promise<void>}
- */
-export const updateShift = async (shiftId, updates) => {
-  try {
-    const database = await getDb()
-    
-    // Build dynamic SET clause
-    const setClause = Object.keys(updates)
-      .map(key => `${key} = ?`)
-      .join(', ')
-    
-    const values = [...Object.values(updates), shiftId]
-    
-    database.run(
-      `UPDATE shifts SET ${setClause} WHERE id = ?`,
-      values
-    )
-    
-    await new Promise(resolve => setTimeout(resolve, 50))
-    saveDb()
-  } catch (error) {
-    console.error('Failed to update shift:', error)
     throw error
   }
 }
@@ -1695,7 +1913,13 @@ export const getShiftById = async (shiftId) => {
       result.push(stmt.getAsObject())
     }
     stmt.free()
-    return result.length > 0 ? result[0] : null
+    const shift = result.length > 0 ? result[0] : null
+    if (shift) {
+      console.log(`Found shift ${shiftId}: cashier=${shift.cashier_username}, status=${shift.status}`)
+    } else {
+      console.warn(`Shift ${shiftId} not found`)
+    }
+    return shift
   } catch (error) {
     console.error('Failed to get shift:', error)
     return null
@@ -1704,16 +1928,16 @@ export const getShiftById = async (shiftId) => {
 
 /**
  * Get current open shift for a cashier
- * @param {number} cashierId - User ID
+ * @param {string} cashierUsername - Cashier username
  * @returns {Promise<Object|null>} - Current open shift or null
  */
-export const getCurrentShift = async (cashierId) => {
+export const getCurrentShift = async (cashierUsername) => {
   try {
     const database = await getDb()
     const stmt = database.prepare(
-      `SELECT * FROM shifts WHERE cashier_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1`
+      `SELECT * FROM shifts WHERE cashier_username = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`
     )
-    stmt.bind([cashierId])
+    stmt.bind([cashierUsername])
     const result = []
     while (stmt.step()) {
       result.push(stmt.getAsObject())
@@ -1727,23 +1951,32 @@ export const getCurrentShift = async (cashierId) => {
 }
 
 /**
- * Get all shifts for a cashier (optionally filtered by status)
- * @param {number} cashierId - User ID
+ * Check if cashier has existing open shift
+ * @param {string} cashierUsername - Cashier username
+ * @returns {Promise<Object|null>} - Open shift if exists
+ */
+export const getExistingOpenShift = async (cashierUsername) => {
+  return getCurrentShift(cashierUsername)
+}
+
+/**
+ * Get all shifts for a cashier
+ * @param {string} cashierUsername - Cashier username
  * @param {string} status - 'open' | 'closed' | null for all
  * @returns {Promise<Array>} - Array of shifts
  */
-export const getShiftsByCashier = async (cashierId, status = null) => {
+export const getShiftsByCashier = async (cashierUsername, status = null) => {
   try {
     const database = await getDb()
-    let query = 'SELECT * FROM shifts WHERE cashier_id = ?'
-    const params = [cashierId]
+    let query = 'SELECT * FROM shifts WHERE cashier_username = ?'
+    const params = [cashierUsername]
     
     if (status) {
       query += ' AND status = ?'
       params.push(status)
     }
     
-    query += ' ORDER BY start_time DESC'
+    query += ' ORDER BY started_at DESC'
     
     const stmt = database.prepare(query)
     stmt.bind(params)
@@ -1778,16 +2011,18 @@ export const getAllShifts = async (status = null, fromDate = null, toDate = null
     }
     
     if (fromDate) {
-      query += ' AND start_time >= ?'
+      query += ' AND started_at >= ?'
       params.push(fromDate)
     }
     
     if (toDate) {
-      query += ' AND start_time <= ?'
+      query += ' AND started_at <= ?'
       params.push(toDate)
     }
     
-    query += ' ORDER BY start_time DESC'
+    query += ' ORDER BY started_at DESC'
+    
+    console.log(`Querying shifts: status=${status}, fromDate=${fromDate}, toDate=${toDate}`)
     
     const stmt = database.prepare(query)
     stmt.bind(params)
@@ -1796,6 +2031,8 @@ export const getAllShifts = async (status = null, fromDate = null, toDate = null
       result.push(stmt.getAsObject())
     }
     stmt.free()
+    
+    console.log(`getAllShifts returned ${result.length} shifts with status=${status}`)
     return result
   } catch (error) {
     console.error('Failed to get all shifts:', error)
@@ -1804,9 +2041,24 @@ export const getAllShifts = async (status = null, fromDate = null, toDate = null
 }
 
 /**
- * Get shift summary with sales and expenses
+ * Get all active (open) shifts right now
+ * @returns {Promise<Array>} - Array of active shifts
+ */
+export const getActiveShifts = async () => {
+  try {
+    const shifts = await getAllShifts('open')
+    console.log(`Found ${shifts.length} active shifts`)
+    return shifts
+  } catch (error) {
+    console.error('Failed to get active shifts:', error)
+    return []
+  }
+}
+
+/**
+ * Get shift summary with sales data
  * @param {number} shiftId - Shift ID
- * @returns {Promise<Object>} - Shift with calculated totals
+ * @returns {Promise<Object>} - Shift with summary data
  */
 export const getShiftSummary = async (shiftId) => {
   try {
@@ -1817,62 +2069,95 @@ export const getShiftSummary = async (shiftId) => {
     
     const database = await getDb()
     
-    // Get completed sales
+    // Get sales count and total
     const salesStmt = database.prepare(
-      `SELECT SUM(total) as total, COUNT(*) as count FROM sales WHERE shift_id = ? AND status = 'completed'`
+      `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
     )
     salesStmt.bind([shiftId])
-    const salesResults = []
+    let salesCount = 0
+    let salesTotal = 0
     while (salesStmt.step()) {
-      salesResults.push(salesStmt.getAsObject())
+      const row = salesStmt.getAsObject()
+      salesCount = row.count || 0
+      salesTotal = row.total || 0
     }
     salesStmt.free()
-    const salesData = salesResults[0] || { total: 0, count: 0 }
     
-    // Get expenses
-    const expensesStmt = database.prepare(
-      `SELECT SUM(amount) as total, COUNT(*) as count FROM expenses WHERE shift_id = ?`
-    )
-    expensesStmt.bind([shiftId])
-    const expensesResults = []
-    while (expensesStmt.step()) {
-      expensesResults.push(expensesStmt.getAsObject())
-    }
-    expensesStmt.free()
-    const expensesData = expensesResults[0] || { total: 0, count: 0 }
-    
-    // Get held sales
+    // Get held sales count
     const heldStmt = database.prepare(
       `SELECT COUNT(*) as count FROM sales WHERE shift_id = ? AND status = 'held'`
     )
     heldStmt.bind([shiftId])
-    const heldResults = []
+    let heldCount = 0
     while (heldStmt.step()) {
-      heldResults.push(heldStmt.getAsObject())
+      const row = heldStmt.getAsObject()
+      heldCount = row.count || 0
     }
     heldStmt.free()
-    const heldCount = heldResults[0]?.count || 0
     
-    // Calculate balance
-    const expectedCash = shift.start_float + salesData.total - expensesData.total
-    const actualCash = shift.end_float || 0
+    // Get expenses count and total
+    const expensesStmt = database.prepare(
+      `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`
+    )
+    expensesStmt.bind([shiftId])
+    let expensesCount = 0
+    let expensesTotal = 0
+    while (expensesStmt.step()) {
+      const row = expensesStmt.getAsObject()
+      expensesCount = row.count || 0
+      expensesTotal = row.total || 0
+    }
+    expensesStmt.free()
+    
+    // Compute derived fields for compatibility with ShiftDashboard
+    const openingFloatSum = (shift.opening_usd_cash || 0) + 
+                           (shift.opening_zwg_cash || 0) + 
+                           (shift.opening_swipe_usd || 0) + 
+                           (shift.opening_swipe_zwg || 0) + 
+                           (shift.opening_ecocash_usd || 0) + 
+                           (shift.opening_ecocash_zwg || 0)
+    
+    const closingFloatSum = (shift.closing_usd_cash || 0) + 
+                           (shift.closing_zwg_cash || 0) + 
+                           (shift.closing_swipe_usd || 0) + 
+                           (shift.closing_swipe_zwg || 0) + 
+                           (shift.closing_ecocash_usd || 0) + 
+                           (shift.closing_ecocash_zwg || 0)
+    
+    const totalSales = (shift.sales_usd_cash || 0) + 
+                      (shift.sales_zwg_cash || 0) + 
+                      (shift.sales_swipe_usd || 0) + 
+                      (shift.sales_swipe_zwg || 0) + 
+                      (shift.sales_ecocash_usd || 0) + 
+                      (shift.sales_ecocash_zwg || 0)
+    
+    const expectedCash = openingFloatSum + totalSales
+    const actualCash = closingFloatSum
     const balance = actualCash - expectedCash
     
     return {
       ...shift,
-      sales: {
-        count: salesData.count,
-        total: salesData.total
-      },
-      expenses: {
-        count: expensesData.count,
-        total: expensesData.total
-      },
-      held_count: heldCount,
+      start_float: openingFloatSum,
+      end_float: closingFloatSum,
       expected_cash: expectedCash,
       actual_cash: actualCash,
       balance: balance,
-      is_balanced: Math.abs(balance) < 0.01 // Allow 1 cent rounding error
+      total_sales: totalSales,
+      total_expenses: expensesTotal,
+      sales: {
+        count: salesCount,
+        total: salesTotal
+      },
+      expenses: {
+        count: expensesCount,
+        total: expensesTotal
+      },
+      held_count: heldCount,
+      sales_count: salesCount,
+      duration_minutes: shift.closed_at ? 
+        Math.floor((new Date(shift.closed_at) - new Date(shift.started_at)) / 60000) : 
+        Math.floor((new Date() - new Date(shift.started_at)) / 60000),
+      is_balanced: Math.abs(shift.overall_variance || 0) < 0.01
     }
   } catch (error) {
     console.error('Failed to get shift summary:', error)

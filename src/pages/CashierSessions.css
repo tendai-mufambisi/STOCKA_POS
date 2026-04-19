@@ -1,0 +1,284 @@
+.cashier-sessions {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: #f9f9f9;
+}
+
+.sessions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.sessions-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #333;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.header-actions label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #666;
+  cursor: pointer;
+}
+
+.header-actions input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.sessions-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid #eee;
+}
+
+.tab {
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+  border-bottom: 3px solid transparent;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: -2px;
+}
+
+.tab:hover {
+  color: #333;
+}
+
+.tab.active {
+  color: #2196F3;
+  border-bottom-color: #2196F3;
+}
+
+.sessions-content {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.shifts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 16px;
+}
+
+.shift-card {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 16px;
+  background: white;
+  transition: all 0.2s;
+}
+
+.shift-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+.shift-card.active-card {
+  border-color: #4CAF50;
+  background: #f9fff9;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.card-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+
+.status-badge {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-badge.active {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.card-body {
+  margin-bottom: 12px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  font-size: 13px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.info-row:last-child {
+  border-bottom: none;
+}
+
+.info-row .label {
+  color: #666;
+  font-weight: 500;
+}
+
+.info-row .value {
+  color: #333;
+  font-weight: 600;
+}
+
+.payment-breakdown {
+  border-top: 1px solid #eee;
+}
+
+.card-footer {
+  display: flex;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #eee;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 24px;
+  color: #999;
+}
+
+.empty-state svg {
+  color: #ddd;
+  margin-bottom: 16px;
+}
+
+.empty-state h2 {
+  margin: 16px 0 8px 0;
+  font-size: 20px;
+  color: #666;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 14px;
+  color: #999;
+}
+
+.filters-panel {
+  background: #f5f5f5;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.filter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-group label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+}
+
+.filter-group input,
+.filter-group select {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  background: white;
+  color: #333;
+}
+
+.filter-group input:focus,
+.filter-group select:focus {
+  outline: none;
+  border-color: #2196F3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.1);
+}
+
+.table-container {
+  overflow-x: auto;
+}
+
+.shifts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.shifts-table thead {
+  background: #f5f5f5;
+  border-bottom: 2px solid #eee;
+}
+
+.shifts-table th {
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 1px solid #eee;
+}
+
+.shifts-table td {
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+  color: #666;
+}
+
+.shifts-table tbody tr:hover {
+  background: #f9f9f9;
+}
+
+.shifts-table button {
+  padding: 6px 12px;
+  background: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.shifts-table button:hover {
+  background: #1976d2;
+}
+
+.loading {
+  text-align: center;
+  padding: 60px 24px;
+  color: #999;
+  font-size: 16px;
+}
