@@ -248,6 +248,41 @@
   border-color: #2e7d32;
 }
 
+.qty-input {
+  width: 45px;
+  height: 32px;
+  border: 2px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0;
+  text-align: center;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.qty-input:focus {
+  border-color: #2e7d32;
+  background: #f9f9f9;
+  box-shadow: 0 0 0 3px rgba(46, 125, 50, 0.1);
+}
+
+.qty-input:hover {
+  border-color: #2e7d32;
+}
+
+/* Remove spinner buttons from number input */
+.qty-input::-webkit-outer-spin-button,
+.qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.qty-input[type=number] {
+  -moz-appearance: textfield;
+}
+
 .item-subtotal {
   font-weight: 600;
   color: #333;

@@ -135,3 +135,60 @@
   color: white;
   font-size: 16px;
 }
+
+.step-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #333;
+  margin: 0 0 24px 0;
+}
+
+.disabled-input {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+  color: #999;
+}
+
+.disabled-input:focus {
+  border-color: #ddd;
+  box-shadow: none;
+}
+
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #999;
+}
+
+.setup-button-group {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.setup-back-btn {
+  flex: 1;
+  padding: 12px;
+  background: #f0f0f0;
+  color: #333;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.setup-back-btn:hover {
+  background: #e5e5e5;
+  border-color: #999;
+}
+
+.setup-back-btn:active {
+  transform: translateY(0);
+}
+
+.setup-submit-btn {
+  flex: 1;
+}

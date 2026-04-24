@@ -52,8 +52,24 @@ export const getDb = async () => {
       // Load initSqlJs function
       const initFunc = await loadInitSqlJs()
       
+      // Determine the correct base path for assets
+      // In Electron, window.location.pathname will be /C:/Users/.../dist/index.html
+      // We need to extract the directory portion
+      const getWasmPath = (file) => {
+        const pathname = window.location.pathname
+        // Check if running in Electron (file:// protocol) or web server
+        if (window.location.protocol === 'file:') {
+          // Get the directory of the current HTML file
+          const dir = pathname.substring(0, pathname.lastIndexOf('/'))
+          return dir + '/' + file
+        } else {
+          // Web server, use root-relative path
+          return '/' + file
+        }
+      }
+      
       const SQL = await initFunc({
-        locateFile: file => `/${file}`
+        locateFile: getWasmPath
       })
       
       console.log(`SQL.js loaded in ${performance.now() - start}ms`)
@@ -550,8 +566,32 @@ const runMigrations = () => {
         db.run(`ALTER TABLE shops ADD COLUMN ${columnName} ${columnDef}`)
       }
     }
+
+    // Create default admin user if it doesn't exist
+    ensureDefaultAdminUser()
   } catch (error) {
     console.warn('Migration error (non-fatal):', error)
+  }
+}
+
+// Create default admin user (admin/admin123) if no users exist
+const ensureDefaultAdminUser = () => {
+  try {
+    const result = db.exec('SELECT COUNT(*) as count FROM users')
+    const userCount = getScalarValue(result, 0)
+    
+    if (userCount === 0) {
+      console.log('Creating default admin user...')
+      const passwordHash = hashPasswordSync('admin123')
+      db.run(
+        `INSERT INTO users (username, password, password_hash, role, is_active, created_by)
+         VALUES (?, ?, ?, 'Admin', 1, 'system')`,
+        ['admin', '', passwordHash]
+      )
+      console.log('✅ Default admin user created (username: admin, password: admin123)')
+    }
+  } catch (error) {
+    console.warn('Failed to ensure default admin user:', error)
   }
 }
 
@@ -582,11 +622,30 @@ export const getShop = async () => {
 
 export const initializeShop = async (shopData) => {
   const database = await getDb()
+  
+  // Insert shop details
   database.run(
     `INSERT INTO shops (name, address, phone, email, currency, setup_complete)
      VALUES (?, ?, ?, ?, ?, 1)`,
     [shopData.name, shopData.address, shopData.phone, shopData.email, shopData.currency]
   )
+  
+  // Create admin user with shop name as username
+  if (shopData.adminPassword) {
+    try {
+      const passwordHash = hashPasswordSync(shopData.adminPassword)
+      database.run(
+        `INSERT INTO users (username, password, password_hash, role, is_active, created_by)
+         VALUES (?, ?, ?, 'Admin', 1, 'system')`,
+        [shopData.name, '', passwordHash]
+      )
+      console.log(`✅ Admin user created with username: ${shopData.name}`)
+    } catch (error) {
+      console.error('Failed to create admin user:', error)
+      throw error
+    }
+  }
+  
   saveDb()
 }
 
@@ -1339,6 +1398,61 @@ export const getUserByUsername = async (username) => {
   }
   stmt.free()
   return result[0] || null
+}
+
+/**
+ * Login a user with username and password
+ * @param {string} username - Username
+ * @param {string} password - Plain text password
+ * @returns {Promise<Object|null>} - User object if login successful, null otherwise
+ */
+export const loginUser = async (username, password) => {
+  try {
+    if (!username || !password) {
+      return null
+    }
+    
+    const user = await getUserByUsername(username)
+    if (!user) {
+      console.log('User not found:', username)
+      return null
+    }
+    
+    // Check if user is active
+    if (!user.is_active) {
+      console.log('User is inactive:', username)
+      return null
+    }
+    
+    // Compare password with hash
+    const passwordMatch = await comparePassword(password, user.password_hash)
+    if (!passwordMatch) {
+      console.log('Password mismatch for user:', username)
+      return null
+    }
+    
+    // Update last login time
+    const database = await getDb()
+    database.run(
+      `UPDATE users SET last_login = ? WHERE id = ?`,
+      [new Date().toISOString(), user.id]
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    saveDb()
+    
+    console.log('✅ User logged in:', username)
+    
+    // Return user data without sensitive info
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      is_active: user.is_active
+    }
+  } catch (error) {
+    console.error('Login error:', error)
+    return null
+  }
 }
 
 export const addUser = async (user) => {

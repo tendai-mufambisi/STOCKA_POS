@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift, updateShiftSalesForPaymentMethod } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
-import { useReceiptPrinter, DEFAULT_BLUETOOTH_COM_PORT } from '../hooks/useReceiptPrinter'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import './Sales.css'
 import {
@@ -86,15 +86,12 @@ function Sales({ user }) {
   const loadShopInfo = async () => {
     try {
       const shop = await getShop()
-      console.log('📋 Shop info loaded:', { printer_name: shop?.printer_name, printer_port: shop?.printer_port, auto_print: shop?.auto_print })
       
       if (!shop) {
-        setError('⚠️ Shop not configured. Please go to Settings to configure your shop and printer.')
-        console.warn('❌ No shop data found in database')
+        setError('Shop not configured. Please go to Settings to configure your shop and printer.')
         setShopInfo(null)
         setPrinterSettings({
-          printer_name: undefined,
-          printer_port: DEFAULT_BLUETOOTH_COM_PORT,
+          printer_name: '',
           auto_print: 0,
           print_duplicate: 0
         })
@@ -103,15 +100,12 @@ function Sales({ user }) {
       
       setShopInfo(shop)
       const settings = {
-        printer_name: shop?.printer_name,
-        printer_port: (shop?.printer_port && String(shop.printer_port).trim()) || DEFAULT_BLUETOOTH_COM_PORT,
+        printer_name: shop?.printer_name || '',
         auto_print: shop?.auto_print ?? 1,
         print_duplicate: shop?.print_duplicate ?? 0
       }
-      console.log('🖨️ Printer settings configured:', settings)
       setPrinterSettings(settings)
     } catch (err) {
-      console.error('❌ Failed to load shop info:', err)
       setError('Failed to load shop configuration')
     }
   }
@@ -176,12 +170,20 @@ function Sales({ user }) {
     const existingItem = cart.find(item => item.product_id === product.id)
 
     if (existingItem) {
+      const newQuantity = existingItem.quantity + 1
+      // Validate that new quantity doesn't exceed available stock
+      if (newQuantity > product.current_quantity) {
+        setError(`Only ${product.current_quantity} units of "${product.name}" available in stock`)
+        setTimeout(() => setError(''), 4000)
+        return
+      }
+      
       setCart(cart.map(item =>
         item.product_id === product.id
           ? {
               ...item,
-              quantity: item.quantity + 1,
-              subtotal: (item.quantity + 1) * item.selling_price
+              quantity: newQuantity,
+              subtotal: newQuantity * item.selling_price
             }
           : item
       ))
@@ -200,19 +202,27 @@ function Sales({ user }) {
   }
 
   const updateCartQuantity = (productId, quantity) => {
-    if (quantity <= 0) {
-      removeFromCart(productId)
-    } else {
-      setCart(cart.map(item =>
-        item.product_id === productId
-          ? {
-              ...item,
-              quantity,
-              subtotal: quantity * item.selling_price
-            }
-          : item
-      ))
+    // Validate quantity against available stock
+    const product = products.find(p => p.id === productId)
+    if (!product) return
+
+    // Check if quantity exceeds available stock
+    if (quantity > product.current_quantity) {
+      setError(`Only ${product.current_quantity} units of "${product.name}" available in stock`)
+      setTimeout(() => setError(''), 4000)
+      return
     }
+
+    // Keep items in cart even with 0 quantity - don't remove them
+    setCart(cart.map(item =>
+      item.product_id === productId
+        ? {
+            ...item,
+            quantity,
+            subtotal: quantity > 0 ? quantity * item.selling_price : 0
+          }
+        : item
+    ))
   }
 
   const removeFromCart = (productId) => {
@@ -224,6 +234,13 @@ function Sales({ user }) {
     if (cart.length === 0) {
       setError('Cart is empty')
       setTimeout(() => setError(''), 3000)
+      return
+    }
+    // Check if any items have invalid/empty quantities
+    const hasInvalidQuantity = cart.some(item => !item.quantity || item.quantity <= 0)
+    if (hasInvalidQuantity) {
+      setError('All items must have a valid quantity (greater than 0)')
+      setTimeout(() => setError(''), 4000)
       return
     }
     setCheckoutStep('paymentMethod')
@@ -372,8 +389,9 @@ function Sales({ user }) {
 
   const handlePaymentMethodSelect = (method) => {
     setSelectedPaymentForCheckout(method)
-    // If payment method contains "Cash", go to cash tendered step
-    if (method.includes('Cash')) {
+    // If payment method is Cash (USD or ZWG), go to cash tendered step
+    // EcoCash and Card payments don't require amount tendered
+    if (method === 'USD Cash' || method === 'ZWG Cash') {
       setCheckoutStep('cashTendered')
     } else {
       // For non-cash (Card, EcoCash), skip to completion
@@ -383,6 +401,11 @@ function Sales({ user }) {
 
   const handleCashTenderedChange = (e) => {
     setCheckoutCashTendered(e.target.value)
+  }
+
+  const handleCashInputClick = (e) => {
+    // Select all text when clicked so user can easily delete it with backspace
+    e.target.select()
   }
 
   const handleBackNavigation = () => {
@@ -397,8 +420,9 @@ function Sales({ user }) {
   const handleCompleteCheckout = async (method, cashAmount) => {
     const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
     
-    // Validate cash if payment method is cash
-    if (method.includes('Cash')) {
+    // Validate cash only for Cash payment methods (not EcoCash or Card)
+    const isCashPayment = method === 'USD Cash' || method === 'ZWG Cash'
+    if (isCashPayment) {
       const cash = parseFloat(cashAmount)
       if (!cashAmount || cash < cartTotal) {
         setError('Insufficient cash tendered')
@@ -408,7 +432,7 @@ function Sales({ user }) {
 
     setIsProcessing(true)
     try {
-      const cashAmount_ = method.includes('Cash') ? parseFloat(cashAmount) : 0
+      const cashAmount_ = isCashPayment ? parseFloat(cashAmount) : 0
       const change = Math.max(0, cashAmount_ - cartTotal)
 
       const sale = {
@@ -449,24 +473,20 @@ function Sales({ user }) {
         if (printerSettings?.auto_print === 1) {
           // Check if shop info is available
           if (!shopInfo) {
-            console.warn('⚠️ Auto-print skipped: Shop not configured')
-            setError('⚠️ Shop not configured. Please configure your shop in Settings to enable printing.')
+            setError('Shop not configured. Please configure your shop in Settings to enable printing.')
             setTimeout(() => setError(''), 5000)
           } else {
-            console.log('🖨️ Auto-print triggered for receipt:', receiptNumber)
             try {
               // Use the new printReceipt function to format and print
               const success = await printReceipt(receiptData, shopInfo, {
                 isDuplicate: false,
-                portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
+                printerName: printerSettings?.printer_name || ''
               })
 
               if (!success) {
                 // Show error - sale was still recorded successfully
-                setError(`⚠️ Printer error: Sale was recorded but printing failed`)
+                setError('Printer error: Sale was recorded but printing failed')
                 setTimeout(() => setError(''), 5000)
-              } else {
-                console.log('✅ Auto-print succeeded')
               }
 
               // If print_duplicate is enabled, print again
@@ -474,27 +494,20 @@ function Sales({ user }) {
                 try {
                   await printReceipt(receiptData, shopInfo, {
                     isDuplicate: true,
-                    portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
+                    printerName: printerSettings?.printer_name || ''
                   })
                 } catch (err) {
-                  console.warn('Failed to print duplicate:', err)
+                  // Silently fail duplicate print
                 }
               }
             } catch (err) {
-              console.error('Auto-print error:', err)
               // Don't block the sale for printer errors
-              setError(`⚠️ Printer error: Sale recorded but print failed`)
+              setError('Printer error: Sale recorded but print failed')
               setTimeout(() => setError(''), 5000)
             }
           }
-        } else {
-          console.log('⚠️ Auto-print disabled or not configured:', {
-            auto_print: printerSettings?.auto_print,
-            printer_name: printerSettings?.printer_name
-          })
         }
       } catch (err) {
-        console.error('Receipt number or print error:', err)
         // Don't fail the sale due to receipt/print errors
       }
       
@@ -721,11 +734,18 @@ function Sales({ user }) {
             ) : (
               <>
                 <div className="cart-items">
-                  {cart.map(item => (
+                  {cart.map(item => {
+                    const product = products.find(p => p.id === item.product_id)
+                    const availableQty = product?.current_quantity || 0
+                    
+                    return (
                     <div key={item.product_id} className="cart-item">
                       <div className="item-info">
                         <div className="item-name">{item.product_name}</div>
                         <div className="item-price">${item.selling_price.toFixed(2)} x {item.quantity}</div>
+                        <div className="item-available" style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                          Available: {availableQty} units
+                        </div>
                       </div>
                       <div className="item-quantity">
                         <button
@@ -734,7 +754,25 @@ function Sales({ user }) {
                         >
                           −
                         </button>
-                        <span>{item.quantity}</span>
+                        <input
+                          type="number"
+                          value={item.quantity || ''}
+                          onChange={(e) => {
+                            const value = e.target.value
+                            // Allow empty, 0, or valid numbers
+                            if (value === '') {
+                              // Allow empty state temporarily so user can see it being cleared
+                              updateCartQuantity(item.product_id, 0)
+                            } else {
+                              const quantity = parseInt(value, 10)
+                              if (!isNaN(quantity) && quantity > 0) {
+                                updateCartQuantity(item.product_id, quantity)
+                              }
+                            }
+                          }}
+                          onClick={(e) => e.target.select()}
+                          className="qty-input"
+                        />
                         <button
                           className="qty-btn"
                           onClick={() => updateCartQuantity(item.product_id, item.quantity + 1)}
@@ -750,7 +788,8 @@ function Sales({ user }) {
                         ✕
                       </button>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
 
                 <div className="cart-summary">
@@ -894,6 +933,7 @@ function Sales({ user }) {
                 placeholder="0.00"
                 value={checkoutCashTendered}
                 onChange={handleCashTenderedChange}
+                onClick={handleCashInputClick}
                 className="cash-input-large"
                 step="0.01"
                 autoFocus
@@ -972,10 +1012,9 @@ function Sales({ user }) {
                       const shop = await getShop()
                       await printReceipt(receiptData, shop, {
                         isDuplicate: false,
-                        portPath: printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT
+                        printerName: printerSettings?.printer_name || ''
                       })
                     } catch (err) {
-                      console.error('Error printing receipt:', err)
                       setError('Failed to fetch sale details for printing')
                       setTimeout(() => setError(''), 3000)
                     }
@@ -995,7 +1034,7 @@ function Sales({ user }) {
                 {isPrinting ? '🖨️ Printing...' : '🖨️ Print Receipt'}
               </button>
               <button
-                onClick={() => printTestReceipt(printerSettings?.printer_port || DEFAULT_BLUETOOTH_COM_PORT)}
+                onClick={() => printTestReceipt(printerSettings?.printer_name || '')}
                 disabled={isPrinting}
                 style={{
                   padding: '8px 16px',

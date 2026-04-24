@@ -308,15 +308,6 @@
 
 .loading {
   text-align: center;
-  padding: 3rem;
-  font-size: 1.1rem;
-  color: #666;
-}
-  border-left: 4px solid #28a745;
-}
-
-.loading {
-  text-align: center;
   padding: 2rem;
   color: #666;
 }

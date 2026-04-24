@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import ShopSetup from './pages/ShopSetup'
+import ErrorBoundary from './components/ErrorBoundary'
 import { getShop } from './database/db'
 import { FiPackage } from 'react-icons/fi'
 
@@ -73,17 +74,40 @@ function App() {
     )
   }
 
+  // If there was an error, show a fallback
+  if (loadingError) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        background: '#f0f4f0',
+        color: '#c62828',
+        fontSize: '18px',
+        fontFamily: 'system-ui, -apple-system, sans-serif'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <h2>Database Error</h2>
+          <p>Unable to initialize database. Please restart the application.</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={
-          setupComplete === null || setupComplete === false ? <Navigate to="/setup" /> : isLoggedIn ? <Navigate to="/dashboard" /> : <Navigate to="/login" />
-        } />
-        <Route path="/setup" element={setupComplete ? <Navigate to="/login" /> : <ShopSetup onSetupComplete={() => setSetupComplete(true)} />} />
-        <Route path="/login" element={isLoggedIn ? <Navigate to="/dashboard" /> : <Login />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={
+            setupComplete === null || setupComplete === false ? <Navigate to="/setup" /> : isLoggedIn ? <Navigate to="/dashboard" /> : <Navigate to="/login" />
+          } />
+          <Route path="/setup" element={setupComplete ? <Navigate to="/login" /> : <ShopSetup onSetupComplete={() => setSetupComplete(true)} />} />
+          <Route path="/login" element={isLoggedIn ? <Navigate to="/dashboard" /> : <Login />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+        </Routes>
+      </HashRouter>
+    </ErrorBoundary>
   )
 }
 

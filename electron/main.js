@@ -1,23 +1,32 @@
 /** @typedef {import('@serialport/bindings-interface').PortInfo} PortInfo */
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
-const printer = require('node-printer')
+const nodePrinter = require('node-printer')
 const { PosPrinter } = require('@plick/electron-pos-printer')
+const logger = require('./logger')
 
-const isDev = process.env.NODE_ENV === 'development'
+// Set userData path before app is ready (must be first)
+const userDataPath = path.join(process.env.APPDATA || process.env.HOME, 'Stocka')
+app.setPath('userData', userDataPath)
+
+logger.info('🚀 Stocka Application Starting')
+logger.info(`Node Environment: ${process.env.NODE_ENV || 'production'}`)
+logger.info(`User Data Path: ${userDataPath}`)
 
 // Import ReceiptPrinter for Bluetooth/COM port printing
 let ReceiptPrinter = null
 try {
-  ReceiptPrinter = require('../src/utils/printerUtils.js')
+  ReceiptPrinter = require(path.join(app.getAppPath(), 'src', 'utils', 'printerUtils.js'))
 } catch (err) {
-  console.warn('⚠️ ReceiptPrinter not available:', err.message)
+  logger.warn('⚠️ ReceiptPrinter not available: ' + err.message)
 }
 
 // Global to store reference to main window for IPC
 let mainWindow = null
 
 function createWindow() {
+  logger.info('📦 Creating BrowserWindow')
+  
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 750,
@@ -34,34 +43,70 @@ function createWindow() {
   })
 
   // Load Vite dev server in development, built files in production
-  if (isDev) {
+  if (!app.isPackaged) {
+    logger.info('🔧 Development mode - Loading from localhost:5173')
     mainWindow.loadURL('http://localhost:5173')
     mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    logger.info('📂 Production mode - Loading from dist/index.html')
+    mainWindow.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'))
   }
+
+  // Handle load errors
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    logger.error('❌ Failed to load page', { errorCode, errorDescription })
+  })
+
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    logger.error('💥 Renderer process gone', details)
+    dialog.showErrorBox(
+      'Stocka - Application Error',
+      'The application encountered an error and needs to restart.\n\nIf this keeps happening, please contact support.'
+    )
+    app.relaunch()
+    app.quit()
+  })
 
   // Show window when ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
+    logger.info('✅ Window ready to show.....')
     mainWindow.show()
+    
   })
 
   // Clean up on close
   mainWindow.on('closed', () => {
+    logger.info('🔒 Window closed')
     mainWindow = null
   })
 }
 
 app.whenReady().then(() => {
+  logger.info('⚡ App ready')
   createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    logger.info('🔄 App activated')
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  logger.info('🚪 All windows closed')
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  logger.error('💥 Uncaught Exception', error)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('💥 Unhandled Rejection', { reason, promise })
 })
 
 // ══════════════════════════════════════════════════════════
@@ -69,79 +114,114 @@ app.on('window-all-closed', () => {
 // ══════════════════════════════════════════════════════════
 
 /**
+ * NEW: Clean single-path printer handler
+ * Print receipt to Windows printer by name (not COM port)
+ */
+ipcMain.handle('printer:print-by-name', async (event, printerName, receiptData, shopInfo, isDuplicate = false) => {
+  try {
+    if (!printerName || typeof printerName !== 'string') {
+      return { success: false, error: 'No printer name provided. Go to Settings → Printer, scan, and save a printer.' }
+    }
+
+    const escposCommands = generateReceiptCommands(receiptData, shopInfo || {}, isDuplicate)
+    logger.info(`🖨️ [PRINT-BY-NAME] Printing to "${printerName}", buffer: ${escposCommands.length} bytes`)
+
+    return await sendToWindowsPrinter(printerName, escposCommands)
+  } catch (error) {
+    logger.error('❌ [PRINT-BY-NAME] ' + error.message)
+    return { success: false, error: error.message }
+  }
+})
+
+/**
+ * NEW: Test print by printer name
+ */
+ipcMain.handle('printer:test-by-name', async (event, printerName) => {
+  if (!printerName) return { success: false, error: 'No printer name provided' }
+
+  const testReceipt = {
+    receipt_number: 'TEST-001',
+    created_at: new Date().toISOString(),
+    cashier: 'Test',
+    items: [
+      { product_name: 'Test Item 1', quantity: 1, selling_price: 5.00, subtotal: 5.00 },
+      { product_name: 'Test Item 2', quantity: 2, selling_price: 10.00, subtotal: 20.00 }
+    ],
+    total: 25.00,
+    payment_method: 'Test Print',
+    cash_tendered: 30.00,
+    change_given: 5.00
+  }
+  const testShop = { name: 'Test Shop', address: 'Test Address', phone: '000-000-0000' }
+
+  return await sendToWindowsPrinter(printerName, generateReceiptCommands(testReceipt, testShop, false))
+})
+
+/**
  * Scan for available Windows printers (thermal receipt printers)
- * SIMPLIFIED: Returns common printers and system default
+ * Uses PowerShell to reliably get printer list from Windows
  */
 ipcMain.handle('printer:scan', async () => {
   try {
-    console.log(`🖨️ [SCANNER] Scanning for available printers...`)
+    logger.info('🖨️ Scanning for available printers')
 
-    const devices = [
-      {
-        name: 'Default Printer (Auto-detect)',
-        port: 'default',
-        type: 'default'
-      }
-    ]
+    const { execFile } = require('child_process')
 
-    // Try to get list from node-printer with a timeout
     return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        console.warn('⚠️ [SCANNER] Using default printer (scan timed out)')
-        resolve({
-          success: true,
-          printers: devices,
-          count: devices.length,
-          message: 'Using default printer. If this is wrong, specify printer in Settings.'
-        })
-      }, 2000)
+      // Use PowerShell to get Windows printer list via WMI
+      const psScript = `
+Get-WmiObject Win32_Printer | Select-Object Name | ForEach-Object { Write-Host $_.Name }
+`
 
-      try {
-        printer.list((err, printers) => {
-          clearTimeout(timeout)
-
-          if (err || !printers || printers.length === 0) {
-            console.log('ℹ️ [SCANNER] No additional printers detected')
-            resolve({
-              success: true,
-              printers: devices,
-              count: devices.length,
-              message: 'Using default printer'
-            })
-            return
-          }
-
-          console.log(`✅ [SCANNER] Found ${printers.length} printer(s)`)
-          
-          // Add detected printers
-          printers.forEach((name, idx) => {
-            console.log(`   ${idx + 1}. ${name}`)
-            devices.push({
-              name: name,
-              port: name,
-              type: 'windows_printer'
-            })
-          })
-
+      execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 5000 }, (error, stdout, stderr) => {
+        if (error || !stdout.trim()) {
+          logger.warn('⚠️ Failed to get printer list via PowerShell')
+          logger.info('ℹ️ Returning default printer option')
           resolve({
             success: true,
-            printers: devices,
-            count: devices.length
+            printers: [
+              {
+                name: 'Default Printer',
+                port: 'default',
+                type: 'default'
+              }
+            ],
+            count: 1,
+            message: 'Could not enumerate printers. Please configure manually in Settings.'
           })
+          return
+        }
+
+        // Parse printer list from PowerShell output
+        const printerNames = stdout
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line.length > 0)
+
+        logger.info(`✅ Found ${printerNames.length} printer(s):`, printerNames)
+
+        const devices = printerNames.map(name => ({
+          name: name,
+          port: name,
+          type: 'windows_printer'
+        }))
+
+        // Add default option at the start
+        devices.unshift({
+          name: 'Default Printer',
+          port: 'default',
+          type: 'default'
         })
-      } catch (e) {
-        clearTimeout(timeout)
-        console.warn('⚠️ [SCANNER] Error listing printers:', e.message)
+
         resolve({
           success: true,
           printers: devices,
-          count: devices.length,
-          message: 'Using default printer'
+          count: devices.length
         })
-      }
+      })
     })
   } catch (error) {
-    console.error('❌ [SCANNER] Fatal error:', error.message)
+    logger.error('❌ Printer scan fatal error', error.message)
     return {
       success: false,
       error: error.message,
@@ -157,7 +237,7 @@ ipcMain.handle('printer:scan', async () => {
  */
 ipcMain.handle('printer:scan-com', async () => {
   try {
-    console.log(`🖨️ [COM SCAN] Scanning for available COM ports...`)
+    logger.info('🖨️ [COM SCAN] Scanning for available COM ports')
     
     // Try to use SerialPort to list available ports
     let ports = []
@@ -169,25 +249,21 @@ ipcMain.handle('printer:scan-com', async () => {
         ports = await SerialPort.list()
       }
     } catch (err) {
-      console.warn('⚠️ SerialPort not available, using fallback list')
+      logger.warn('⚠️ SerialPort not available')
     }
     
-    // If no ports found, provide common COM ports
+    // If no ports found, return error instead of fake ports
     if (ports.length === 0) {
-      console.log('📍 No ports detected, offering common COM ports as options')
-      ports = [
-        { path: 'COM1', manufacturer: 'Unknown' },
-        { path: 'COM3', manufacturer: 'Unknown (Common Bluetooth)' },
-        { path: 'COM4', manufacturer: 'Unknown' },
-        { path: 'COM5', manufacturer: 'Unknown' },
-        { path: 'COM6', manufacturer: 'Unknown' }
-      ]
+      logger.warn('🚩 No COM ports detected')
+      return {
+        success: false,
+        error: 'SerialPort is not available. Cannot scan COM ports. Please configure your printer manually in Settings.',
+        ports: [],
+        count: 0
+      }
     }
     
-    console.log(`✅ Found ${ports.length} COM port(s)`)
-    ports.forEach((port, idx) => {
-      console.log(`   ${idx + 1}. ${port.path} - ${port.manufacturer || 'Unknown'}`)
-    })
+    logger.info(`✅ Found ${ports.length} COM port(s)`)
     
     return {
       success: true,
@@ -199,7 +275,7 @@ ipcMain.handle('printer:scan-com', async () => {
       count: ports.length
     }
   } catch (error) {
-    console.error('❌ COM port scan error:', error)
+    logger.error('❌ COM port scan error: ' + error.message)
     return {
       success: false,
       error: error.message,
@@ -221,7 +297,7 @@ ipcMain.handle('printer:test', async (event, printerName) => {
       }
     }
 
-    console.log(`🖨️ [TEST PRINT] Sending test receipt to ${printerName}`)
+    logger.info(`🞨 [TEST PRINT] Sending test receipt to ${printerName}`)
 
     // Generate a simple test receipt
     const testReceipt = {
@@ -246,7 +322,7 @@ ipcMain.handle('printer:test', async (event, printerName) => {
     // Use the same print mechanism as regular receipts
     return await sendToWindowsPrinter(printerName, generateReceiptCommands(testReceipt, testShopInfo, false))
   } catch (error) {
-    console.error('Test print error:', error)
+    logger.error('[TEST PRINT] Test print error: ' + error.message)
     return {
       success: false,
       error: error.message || 'Test print failed'
@@ -260,6 +336,14 @@ ipcMain.handle('printer:test', async (event, printerName) => {
  */
 ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, shopInfo, isDuplicate = false) => {
   try {
+    // Input validation
+    if (typeof printerName !== 'string' || printerName.length > 200) {
+      return { success: false, error: 'Invalid printer name.' }
+    }
+    if (!receiptData || typeof receiptData !== 'object') {
+      return { success: false, error: 'Invalid receipt data.' }
+    }
+
     if (!printerName) {
       return {
         success: false,
@@ -270,8 +354,8 @@ ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, 
     // Generate ESC/POS commands for receipt
     const escposCommands = generateReceiptCommands(receiptData, shopInfo, isDuplicate)
     
-    console.log(`🖨️ [PRINTER] Printing receipt "${receiptData.receipt_number}" to ${printerName}`)
-    console.log(`📊 [PRINTER] ESC/POS buffer size: ${escposCommands.length} bytes`)
+    logger.info(`🖨️ [PRINTER] Printing receipt "${receiptData.receipt_number}" to ${printerName}`)
+    logger.info(`📊 [PRINTER] ESC/POS buffer size: ${escposCommands.length} bytes`)
 
     // Try to print with up to 2 retries if busy
     let lastError = null
@@ -279,12 +363,12 @@ ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, 
       try {
         const result = await sendToWindowsPrinter(printerName, escposCommands)
         if (result.success) {
-          console.log(`✅ [PRINTER] Print succeeded on attempt ${attempt}`)
+          logger.info(`✅ [PRINTER] Print succeeded on attempt ${attempt}`)
           return result
         } else {
           lastError = result.error
           if (attempt < 2) {
-            console.log(`⚠️ [PRINTER] Attempt ${attempt} failed, retrying...`)
+            logger.warn(`⚠️ [PRINTER] Attempt ${attempt} failed, retrying...`)
             // Wait before retry
             await new Promise(resolve => setTimeout(resolve, 500))
           }
@@ -292,20 +376,20 @@ ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, 
       } catch (err) {
         lastError = err.message
         if (attempt < 2) {
-          console.log(`⚠️ [PRINTER] Attempt ${attempt} error, retrying...`)
+          logger.warn(`⚠️ [PRINTER] Attempt ${attempt} error, retrying...`)
           await new Promise(resolve => setTimeout(resolve, 500))
         }
       }
     }
 
-    console.error(`❌ [PRINTER] Failed after 2 attempts: ${lastError}`)
+    logger.error(`❌ [PRINTER] Failed after 2 attempts: ${lastError}`)
     return {
       success: false,
       error: lastError || 'Failed to print after multiple attempts'
     }
 
   } catch (error) {
-    console.error('❌ [PRINTER] Critical error:', error)
+    logger.error('❌ [PRINTER] Critical error: ' + (error.message || String(error)))
     return {
       success: false,
       error: error.message || 'Failed to print receipt'
@@ -315,44 +399,107 @@ ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, 
 
 /**
  * Send raw ESC/POS bytes to thermal printer via Windows Print API
- * Uses node-printer to send data to any Windows printer (including Bluetooth)
+ * Uses PowerShell to access System.Printing for raw data printing
  * @param {string} printerName - Name of the Windows printer
  * @param {Buffer} escposCommands - ESC/POS binary commands
  * @returns {Promise} Result object with success status
  */
 async function sendToWindowsPrinter(printerName, escposCommands) {
+  const { execFile } = require('child_process')
+  const fs = require('fs')
+  const os = require('os')
+  const pathModule = require('path')
+  
   return new Promise((resolve) => {
     try {
-      console.log(`🖨️ [PRINTER] Sending to Windows printer: ${printerName}`)
-      console.log(`📊 [PRINTER] Buffer size: ${escposCommands.length} bytes`)
+      logger.info(`🖨️ [PRINTER] Sending to Windows printer: ${printerName}`)
+      logger.info(`📊 [PRINTER] Buffer size: ${escposCommands.length} bytes`)
 
-      // Prepare print job configuration
-      const printOptions = {
-        printer: printerName,
-        type: 'RAW', // Send raw ESC/POS data
-        data: escposCommands
-      }
-
-      // Send to printer
-      printer.printDirect(printOptions, (err, res) => {
-        if (err) {
-          console.error(`❌ [PRINTER] Print error: ${err.message}`)
+      // Write buffer to temporary file
+      const tmpDir = os.tmpdir()
+      const tmpFile = pathModule.join(tmpDir, `receipt-${Date.now()}.prn`)
+      
+      fs.writeFile(tmpFile, escposCommands, (writeErr) => {
+        if (writeErr) {
+          logger.error(`❌ [PRINTER] Failed to write temp file: ${writeErr.message}`)
           resolve({
             success: false,
-            error: `Failed to print: ${err.message}`
+            error: `Failed to write print data: ${writeErr.message}`
           })
           return
         }
 
-        console.log(`✅ [PRINTER] Sent ${escposCommands.length} bytes to printer`)
-        resolve({
-          success: true,
-          message: 'Receipt printed successfully'
+        logger.info(`📝 [PRINTER] Wrote ESC/POS data to ${tmpFile}`)
+
+        // Use PowerShell to print raw file to Windows printer
+        // Handle "default" printer name as system default
+        let queueName = printerName
+        if (printerName === 'default' || printerName === 'Default Printer') {
+          queueName = '(Get-WmiObject Win32_Printer | Where-Object {$_.Default -eq $true}).Name'
+        } else {
+          // Escape quotes in printer name
+          queueName = `"${printerName.replace(/"/g, '\\"')}"`
+        }
+
+        const psScript = `
+try {
+  [System.Printing.PrintServer]$ps = [System.Printing.PrintServer]::GetDefaultPrintServer()
+  [System.Printing.PrintQueue]$pq = [System.Printing.PrintQueue]::OpenPrinterQueue($ps, ${queueName})
+  [System.IO.FileStream]$fs = New-Object System.IO.FileStream("${tmpFile}", [System.IO.FileMode]::Open)
+  [System.Printing.PrintTicket]$pt = New-Object System.Printing.PrintTicket
+  [System.Printing.PrintCapabilities]$pc = $pq.GetPrintCapabilities()
+  if ($pc.RawPrintTicketSupport) { $pt.RawPrintTicket = $true }
+  $pq.AddJob("Stocka Receipt", $fs, $false, $pt) | Out-Null
+  $fs.Dispose()
+  Start-Sleep -Milliseconds 500
+  Write-Host "SUCCESS"
+} catch {
+  Write-Host "ERROR: $($_.Exception.Message)"
+}
+`
+
+        execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 10000 }, (error, stdout, stderr) => {
+          // Clean up temp file
+          fs.unlink(tmpFile, (unlinkErr) => {
+            if (unlinkErr) logger.warn(`⚠️ [PRINTER] Failed to delete temp file: ${unlinkErr.message}`)
+          })
+
+          if (error) {
+            logger.error(`❌ [PRINTER] PowerShell print error: ${error.message}`)
+            if (stderr) logger.error(`❌ [PRINTER] stderr: ${stderr}`)
+            resolve({
+              success: false,
+              error: `Failed to print: ${error.message}`
+            })
+            return
+          }
+
+          const output = stdout.trim()
+          if (output.includes('SUCCESS')) {
+            logger.info(`✅ [PRINTER] Successfully sent ${escposCommands.length} bytes to "${printerName}"`)
+            resolve({
+              success: true,
+              message: 'Receipt printed successfully'
+            })
+          } else if (output.includes('ERROR:')) {
+            const errorMsg = output.split('ERROR:')[1]?.trim() || 'Unknown error'
+            logger.error(`❌ [PRINTER] PowerShell error: ${errorMsg}`)
+            resolve({
+              success: false,
+              error: `Print failed: ${errorMsg}`
+            })
+          } else {
+            logger.error(`❌ [PRINTER] PowerShell returned unexpected output: ${output}`)
+            resolve({
+              success: false,
+              error: 'Print command did not complete successfully'
+            })
+          }
         })
       })
 
     } catch (err) {
-      console.error(`❌ [PRINTER] Critical error: ${err.message}`)
+      logger.error(`❌ [PRINTER] Critical error: ${err.message}`)
       resolve({
         success: false,
         error: 'Print operation failed: ' + err.message
@@ -380,7 +527,13 @@ ipcMain.handle('printer:get-settings', async () => {
  */
 ipcMain.handle('printer:print-pos', async (event, printerName, receiptData) => {
   try {
+    // Input validation
+    if (!Array.isArray(receiptData) || receiptData.length === 0) {
+      return { success: false, error: 'Receipt data must be a non-empty array.' }
+    }
+
     if (!receiptData || !Array.isArray(receiptData)) {
+      logger.warn('Invalid receipt data - expected array')
       return {
         success: false,
         error: 'Invalid receipt data. Expected array of print objects.'
@@ -388,15 +541,17 @@ ipcMain.handle('printer:print-pos', async (event, printerName, receiptData) => {
     }
 
     if (receiptData.length === 0) {
+      logger.warn('Receipt data is empty')
       return {
         success: false,
         error: 'Receipt is empty. Nothing to print.'
       }
     }
 
-    console.log(`🖨️ [POS PRINTER] Printing receipt...`)
-    console.log(`📍 Printer: ${printerName || 'Default (auto-detect)'}`)
-    console.log(`📊 Items: ${receiptData.length} print objects`)
+    logger.info('🖨️ Printing receipt', {
+      printer: printerName || 'Default (auto-detect)',
+      items: receiptData.length
+    })
 
     // Configure printer options
     const printOptions = {
@@ -419,16 +574,14 @@ ipcMain.handle('printer:print-pos', async (event, printerName, receiptData) => {
 
     await Promise.race([printPromise, timeoutPromise])
 
-    console.log(`✅ [POS PRINTER] Receipt printed successfully`)
+    logger.info('✅ Receipt printed successfully')
     return {
       success: true,
       message: 'Receipt printed successfully'
     }
   } catch (error) {
-    console.error(`❌ [POS PRINTER] Print error:`, error)
-    
-    // Safely get error message (handle cases where error is not a standard Error object)
     const errorMessage = error?.message || String(error) || 'Unknown error'
+    logger.error('Print error', errorMessage)
     
     // Provide helpful error messages
     let userMessage = errorMessage
@@ -476,16 +629,16 @@ ipcMain.handle('printer:print-bluetooth', async (event, portPath, receiptData) =
 
     console.log(`🖨️ [BLUETOOTH] Printing to ${portPath}`)
 
-    const printer = new ReceiptPrinter(portPath, 9600)
-    await printer.printReceipt(receiptData)
-    printer.disconnect()
+    const printerDevice = new ReceiptPrinter(portPath, 9600)
+    await printerDevice.printReceipt(receiptData)
+    printerDevice.disconnect()
 
     return {
       success: true,
       message: 'Receipt printed successfully via Bluetooth'
     }
   } catch (error) {
-    console.error('❌ [BLUETOOTH] Print error:', error)
+    logger.error('[BLUETOOTH] Print error: ' + (error.message || String(error)))
     return {
       success: false,
       error: error.message || 'Failed to print via Bluetooth'
@@ -500,6 +653,7 @@ ipcMain.handle('printer:print-bluetooth', async (event, portPath, receiptData) =
 function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   const ESC = '\x1B'
   const GS = '\x1D'
+  const DIVIDER = '-'.repeat(32) + '\n'
   const commands = []
 
   // Initialize printer
@@ -525,7 +679,7 @@ function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   commands.push((shopInfo.phone || 'Phone not set') + '\n')
 
   // Divider line
-  commands.push('-' + Array(38).fill('-').join('') + '\n')
+  commands.push(DIVIDER)
 
   // Left align for details
   commands.push(ESC + 'a' + String.fromCharCode(0))
@@ -546,11 +700,11 @@ function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   }
 
   // Divider
-  commands.push('-' + Array(38).fill('-').join('') + '\n')
+  commands.push(DIVIDER)
 
   // Items table
-  commands.push('Item              Qty  Price    Total\n')
-  commands.push('-' + Array(38).fill('-').join('') + '\n')
+  commands.push('Item         Qty Price  Tot\n')
+  commands.push(DIVIDER)
 
   if (receipt.items && receipt.items.length > 0) {
     receipt.items.forEach(item => {
@@ -563,7 +717,7 @@ function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   }
 
   // Totals divider
-  commands.push('-' + Array(38).fill('-').join('') + '\n')
+  commands.push(DIVIDER)
 
   // Center, emphasized totals
   commands.push(ESC + 'a' + String.fromCharCode(1))
@@ -585,12 +739,12 @@ function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   }
 
   // Footer
-  commands.push('\n-' + Array(38).fill('-').join('') + '\n')
+  commands.push('\n' + DIVIDER)
   commands.push(`Thank you for shopping with ${shopInfo.name || 'STOCKA SHOP'}!\n`)
 
   // Powered by (small text)
   commands.push(ESC + '!' + String.fromCharCode(0x00))
-  commands.push('Powered by Stocka\n')
+  commands.push(`Powered by Stocka v${app.getVersion()}\n`)
   commands.push(ESC + '!' + String.fromCharCode(0))
 
   // Paper feed and cut

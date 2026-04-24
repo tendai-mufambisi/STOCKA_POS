@@ -188,9 +188,14 @@ function Dashboard() {
   ]
 
   // Filter nav items based on user role
+  const userRole = user.role || 'Cashier'
   const filteredNavItems = navItems.filter(item => 
-    !item.roles || item.roles.includes(user.role || 'Cashier')
+    !item.roles || item.roles.some(role => role.toLowerCase() === userRole.toLowerCase())
   )
+
+  // Debug logging
+  console.log('🔍 User role:', userRole)
+  console.log('🔍 Filtered nav items:', filteredNavItems.length, filteredNavItems)
 
   const groupLabels = {
     main:    '',

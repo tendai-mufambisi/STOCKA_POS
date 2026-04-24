@@ -5,65 +5,26 @@ contextBridge.exposeInMainWorld('stocka', {
   version: '1.0.0',
   platform: process.platform,
 
-  // ══════════════════════════════════════════════════════════
-  // PRINTER APIs
-  // ══════════════════════════════════════════════════════════
   printer: {
-    /**
-     * Print a receipt using PosPrinter (PRIMARY METHOD)
-     * @param {Array} receiptData - Array of print objects
-     * @param {string} printerName - Printer name (optional, auto-detects if not provided)
-     * @returns {Promise<{success: boolean, message?: string, error?: string}>}
-     */
-    printReceipt: (receiptData, printerName = '') =>
-      ipcRenderer.invoke('printer:print-pos', printerName || '', receiptData),
+    // PRIMARY: Print receipt by Windows printer name (robust, works with any paired BT printer)
+    printByName: (printerName, receiptData, shopInfo, isDuplicate = false) =>
+      ipcRenderer.invoke('printer:print-by-name', printerName, receiptData, shopInfo, isDuplicate),
 
-    /**
-     * Scan for available Windows printers
-     * @returns {Promise<{success: boolean, printers: Array, error?: string}>}
-     */
+    // PRIMARY: Test print by Windows printer name
+    testByName: (printerName) =>
+      ipcRenderer.invoke('printer:test-by-name', printerName),
+
+    // Scan Windows printers (use this to find "BT-58L")
     scan: () => ipcRenderer.invoke('printer:scan'),
 
-    /**
-     * Scan for available COM ports (for Bluetooth/Serial printers)
-     * @returns {Promise<{success: boolean, ports: Array, count: number}>}
-     */
-    scanComPorts: () => ipcRenderer.invoke('printer:scan-com'),
-
-    /** Alias for scanComPorts */
-    scanCom: () => ipcRenderer.invoke('printer:scan-com'),
-
-    /**
-     * Test print to verify connection
-     * @param {string} printerPort - The printer port to test
-     * @returns {Promise<{success: boolean, message?: string, error?: string}>}
-     */
-    test: (printerPort) => ipcRenderer.invoke('printer:test', printerPort),
-
-    /**
-     * Print a receipt (legacy Windows printer method)
-     * @param {string} printerPort - The printer port
-     * @param {Object} receiptData - Receipt information
-     * @param {Object} shopInfo - Shop information
-     * @param {boolean} isDuplicate - Whether this is a reprint
-     * @returns {Promise<{success: boolean, message?: string, error?: string}>}
-     */
-    printLegacy: (printerPort, receiptData, shopInfo, isDuplicate = false) =>
-      ipcRenderer.invoke('printer:print-receipt', printerPort, receiptData, shopInfo, isDuplicate),
-
-    /**
-     * Print via Bluetooth/COM port using SerialPort (legacy)
-     * @param {string} portPath - COM port path (e.g., 'COM3')
-     * @param {Object} receiptData - Receipt data with storeName, items, subtotal, tax, total, cashier, date
-     * @returns {Promise<{success: boolean, message?: string, error?: string}>}
-     */
+    // Legacy - keep for backward compat but don't use in new code
     printBluetooth: (portPath, receiptData) =>
       ipcRenderer.invoke('printer:print-bluetooth', portPath, receiptData),
-
-    /**
-     * Get saved printer settings
-     * @returns {Promise<{printer_name: string, printer_port: string, auto_print: boolean, print_duplicate: boolean}>}
-     */
+    scanComPorts: () => ipcRenderer.invoke('printer:scan-com'),
+    scanCom: () => ipcRenderer.invoke('printer:scan-com'),
+    test: (printerPort) => ipcRenderer.invoke('printer:test', printerPort),
+    printLegacy: (printerPort, receiptData, shopInfo, isDuplicate = false) =>
+      ipcRenderer.invoke('printer:print-receipt', printerPort, receiptData, shopInfo, isDuplicate),
     getSettings: () => ipcRenderer.invoke('printer:get-settings')
   }
 })

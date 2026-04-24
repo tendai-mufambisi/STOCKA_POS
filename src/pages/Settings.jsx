@@ -1,7 +1,7 @@
+//Settings.jsx - Shop details, user management, printer configuration, and password changes
 import { useState, useEffect } from 'react'
 import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser } from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
-import { mapReceiptToBluetoothPayload } from '../hooks/useReceiptPrinter'
 import './Settings.css'
 
 function Settings({ user }) {
@@ -179,34 +179,25 @@ function Settings({ user }) {
   const handleTestPrint = async () => {
     setError('')
     setPrintStatus('')
-    const port = (formData.printer_port && String(formData.printer_port).trim()) || 'COM3'
+    
+    const printerName = formData.printer_name?.trim()
+    if (!printerName) {
+      setError('No printer selected. Click "Scan for Printers" first, select your printer, then test.')
+      return
+    }
 
     setTestingPrinter(true)
     try {
-      const testReceipt = {
-        receipt_number: 'TEST-001',
-        date: new Date().toLocaleString(),
-        cashier: 'Test',
-        items: [
-          { product_name: 'Test Item 1', quantity: 1, selling_price: 10.0, subtotal: 10.0 },
-          { product_name: 'Test Item 2', quantity: 2, selling_price: 15.0, subtotal: 30.0 }
-        ],
-        subtotal: 40.0,
-        tax: 0.0,
-        total: 40.0
-      }
-      const payload = mapReceiptToBluetoothPayload(testReceipt, { name: formData.name || 'Stocka' }, {})
-
-      const result = await window.stocka.printer.printBluetooth(port, payload)
+      const result = await window.stocka.printer.testByName(printerName)
       if (result.success) {
-        setPrintStatus('Test receipt sent to the thermal printer. Check COM ' + port + '.')
+        setPrintStatus(`✅ Test print sent to "${printerName}" successfully!`)
         setTimeout(() => setPrintStatus(''), 6000)
       } else {
-        setError(result.error || 'Test print failed')
+        setError(`Test print failed: ${result.error || 'Unknown error'}`)
       }
     } catch (err) {
       console.error('Test print error:', err)
-      setError(err.message || 'Failed to send test print. Check the COM port and Bluetooth pairing.')
+      setError('Test print failed: ' + err.message)
     } finally {
       setTestingPrinter(false)
     }
@@ -367,7 +358,7 @@ function Settings({ user }) {
             👥 User Management
           </button>
         )}
-        {isAdmin && (
+        {(isAdmin || user?.role === 'Manager') && (
           <button
             className={`tab-btn ${activeTab === 'printer' ? 'active' : ''}`}
             onClick={() => setActiveTab('printer')}
@@ -608,158 +599,124 @@ function Settings({ user }) {
           </div>
         )}
 
-        {activeTab === 'printer' && isAdmin && (
+        {activeTab === 'printer' && (isAdmin || user?.role === 'Manager') && (
           <div className="settings-section">
             <h3>🖨️ Printer Settings</h3>
 
-            <div style={{ marginBottom: '30px', padding: '20px', backgroundColor: '#f0f7ff', borderRadius: '8px', border: '1px solid #cfe8ff' }}>
-              <h4 style={{ marginTop: 0 }}>Bluetooth / serial thermal (ESC/POS)</h4>
-              <p style={{ marginBottom: '15px', color: '#555', fontSize: '14px' }}>
-                Stocka prints receipts over a <strong>COM port</strong> at <strong>9600 baud</strong> (e.g. BT-58L on Bluetooth paired as COM3).
-                Enter the port or scan, then run a test print.
+            <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: '#f0f7ff', borderRadius: '8px', border: '1px solid #cfe8ff' }}>
+              <h4 style={{ marginTop: 0 }}>How it works</h4>
+              <p style={{ fontSize: '14px', color: '#555', margin: 0 }}>
+                Your Bluetooth printer must be <strong>paired</strong> in Windows Bluetooth settings and
+                <strong> installed as a Windows printer</strong> (it will show in Devices & Printers).
+                Scan below to find it, select it, then save. Stocka prints directly to it by name.
               </p>
+            </div>
 
-              <div className="form-row" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: '12px' }}>
-                <div className="form-group" style={{ minWidth: '200px', flex: '1 1 200px' }}>
-                  <label htmlFor="com_port_input">COM port</label>
+            {/* Printer Selection */}
+            <div style={{ marginBottom: '24px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
+              <h4 style={{ marginTop: 0 }}>Select Printer</h4>
+
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
+                <div className="form-group" style={{ flex: '1', minWidth: '200px' }}>
+                  <label>Printer Name</label>
                   <input
-                    id="com_port_input"
                     type="text"
-                    placeholder="COM3"
-                    value={formData.printer_port ?? 'COM3'}
-                    onChange={(e) => setFormData({ ...formData, printer_port: e.target.value })}
+                    placeholder="e.g. BT-58L or POS-58"
+                    value={formData.printer_name || ''}
+                    onChange={(e) => setFormData({ ...formData, printer_name: e.target.value })}
                   />
+                  <small style={{ color: '#888', fontSize: '12px' }}>
+                    Type manually or scan to auto-detect
+                  </small>
                 </div>
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={handleScanComPorts}
-                  disabled={scanningComPorts}
+                  onClick={handleScanPrinters}
+                  disabled={scanningPrinters}
                 >
-                  {scanningComPorts ? '🔍 Scanning COM…' : '🔌 Scan COM ports'}
+                  {scanningPrinters ? '🔍 Scanning...' : '🔍 Scan for Printers'}
                 </button>
               </div>
 
-              {availableComPorts.length > 0 && (
-                <div style={{ marginTop: '15px' }}>
-                  <label htmlFor="com_port_select" style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
-                    Detected ports
+              {availablePrinters.length > 0 && (
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
+                    Detected Printers — click to select:
                   </label>
-                  <select
-                    id="com_port_select"
-                    value={formData.printer_port || ''}
-                    onChange={(e) => setFormData({ ...formData, printer_port: e.target.value })}
-                    style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd', width: '100%', maxWidth: '400px' }}
-                  >
-                    {availableComPorts.map((p) => (
-                      <option key={p.path} value={p.path}>
-                        {p.name || p.path}
-                      </option>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {availablePrinters.map(printer => (
+                      <button
+                        key={printer.port}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, printer_name: printer.name })}
+                        style={{
+                          padding: '10px 14px',
+                          border: `2px solid ${formData.printer_name === printer.name ? '#1976d2' : '#ddd'}`,
+                          borderRadius: '6px',
+                          backgroundColor: formData.printer_name === printer.name ? '#e3f2fd' : '#fff',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontWeight: formData.printer_name === printer.name ? '600' : 'normal'
+                        }}
+                      >
+                        🖨️ {printer.name}
+                        {formData.printer_name === printer.name && ' ✓ Selected'}
+                      </button>
                     ))}
-                  </select>
+                  </div>
                 </div>
               )}
+            </div>
 
-              <div style={{ marginTop: '18px' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={handleTestPrint}
-                  disabled={testingPrinter}
-                >
-                  {testingPrinter ? '🖨️ Printing…' : '🖨️ Test Print'}
-                </button>
-                <p style={{ marginTop: '10px', fontSize: '13px', color: '#666' }}>
-                  Sends a short ESC/POS test receipt to the selected COM port. Success or errors appear below.
-                </p>
-              </div>
-
+            {/* Test Print */}
+            <div style={{ marginBottom: '24px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
+              <h4 style={{ marginTop: 0 }}>Test Your Printer</h4>
+              <p style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
+                Currently selected: <strong>{formData.printer_name || 'None'}</strong>
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleTestPrint}
+                disabled={testingPrinter || !formData.printer_name}
+              >
+                {testingPrinter ? '🖨️ Printing...' : '🖨️ Send Test Receipt'}
+              </button>
               {printStatus && (
-                <div style={{ marginTop: '12px', padding: '10px 12px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '14px' }}>
+                <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '14px' }}>
                   {printStatus}
                 </div>
               )}
             </div>
 
-            <div style={{ marginBottom: '30px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
-              <h4 style={{ marginTop: 0 }}>Optional: Windows-named printers</h4>
-              <p style={{ marginBottom: '15px', color: '#666', fontSize: '14px' }}>
-                Scan installed Windows printers if you use other tools that need a display name. Sales receipts use the COM port above.
-              </p>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleScanPrinters}
-                disabled={scanningPrinters}
-                style={{ marginRight: '10px' }}
-              >
-                {scanningPrinters ? '🔍 Scanning...' : '🔍 Scan for Printers'}
-              </button>
-
-              {availablePrinters.length > 0 && (
-                <div style={{ marginTop: '15px' }}>
-                  <label htmlFor="printer_select" style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
-                    Windows printer name (reference)
-                  </label>
-                  <select
-                    id="printer_select"
-                    value={formData.printer_name || ''}
-                    onChange={(e) => {
-                      const port = e.target.value
-                      const printer = availablePrinters.find(p => p.port === port)
-                      setFormData({
-                        ...formData,
-                        printer_name: printer?.name || port || ''
-                      })
-                    }}
-                    style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd', width: '100%', maxWidth: '400px' }}
-                  >
-                    <option value="">-- Select a printer --</option>
-                    {availablePrinters.map(printer => (
-                      <option key={printer.port} value={printer.port}>
-                        {printer.name} ({printer.port})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <form onSubmit={handleSaveShop} style={{ marginTop: '30px' }}>
+            {/* Auto-print settings form */}
+            <form onSubmit={handleSaveShop}>
               <div style={{ padding: '20px', backgroundColor: '#fff9f0', borderRadius: '8px', marginBottom: '20px' }}>
                 <h4 style={{ marginTop: 0 }}>Auto-Print Settings</h4>
-                
                 <div className="form-group" style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
                     <input
                       type="checkbox"
                       checked={formData.auto_print === 1}
-                      onChange={(e) => setFormData({...formData, auto_print: e.target.checked ? 1 : 0})}
-                      style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+                      onChange={(e) => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })}
+                      style={{ width: '20px', height: '20px' }}
                     />
-                    <span>Auto-print receipts after every sale</span>
+                    Auto-print receipts after every sale
                   </label>
-                  <p style={{ marginTop: '8px', fontSize: '13px', color: '#666', marginLeft: '30px' }}>
-                    If enabled, receipts will automatically print when a sale is completed
-                  </p>
                 </div>
-
                 <div className="form-group">
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
                     <input
                       type="checkbox"
                       checked={formData.print_duplicate === 1}
-                      onChange={(e) => setFormData({...formData, print_duplicate: e.target.checked ? 1 : 0})}
-                      style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+                      onChange={(e) => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })}
+                      style={{ width: '20px', height: '20px' }}
                     />
-                    <span>Print duplicate receipts (2 copies)</span>
+                    Print duplicate receipts (2 copies)
                   </label>
-                  <p style={{ marginTop: '8px', fontSize: '13px', color: '#666', marginLeft: '30px' }}>
-                    If enabled, each receipt will print twice
-                  </p>
                 </div>
               </div>
-
               <button type="submit" className="btn btn-primary">💾 Save Printer Settings</button>
             </form>
           </div>
