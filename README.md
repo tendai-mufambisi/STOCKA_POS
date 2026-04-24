@@ -1,19 +1,36 @@
-# React + Vite
+# Stocka
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Stocka is a hybrid desktop + web retail app:
+- Desktop mode (Electron) for local operations and printer integration.
+- Web mode (Vercel) for remote client testing and cloud-backed data entry.
 
-Currently, two official plugins are available:
+## Local Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Desktop dev: `npm run dev`
+- Web dev only: `npm run dev:web`
+- Desktop production build: `npm run build`
+- Web production build: `npm run build:web`
 
-## React Compiler
+## Cloud Setup (Supabase)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Create a Supabase project.
+2. Run the SQL in `supabase/schema.sql`.
+3. Copy `.env.example` to `.env` and set:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
 
-## Expanding the ESLint configuration
+## Vercel Deployment
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. Import this repo into Vercel.
+2. Set environment variables from `.env.example`.
+3. Vercel uses `vercel.json` and runs `npm run build:web`.
+
+## Sync Workflow
+
+- Desktop users can open Settings -> Cloud Sync.
+- Use **Upload local changes** to push local edits to cloud.
+- Use **Download cloud changes** to pull web/client edits into local DB.
+- The app creates a local backup snapshot before each sync action.
 
 
 

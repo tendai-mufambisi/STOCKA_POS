@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { loginUser } from '../database/db'
+import { getSupabaseClient, isCloudConfigured } from '../services/supabaseClient'
 
 function Login() {
   const [username, setUsername] = useState('')
@@ -29,6 +30,38 @@ function Login() {
       setLoading(false)
     } catch (err) {
       setError('Login error: ' + err.message)
+      setLoading(false)
+    }
+  }
+
+  const handleCloudLogin = async () => {
+    setError('')
+    if (!isCloudConfigured()) {
+      setError('Cloud auth is not configured yet.')
+      return
+    }
+    if (!username || !password) {
+      setError('Please enter your email and password for cloud login')
+      return
+    }
+    setLoading(true)
+    try {
+      const supabase = getSupabaseClient()
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: username,
+        password
+      })
+      if (authError) throw authError
+      localStorage.setItem('stocka_user', JSON.stringify({
+        id: data.user.id,
+        username,
+        role: 'Admin',
+        auth_mode: 'cloud'
+      }))
+      window.location.hash = '#/dashboard'
+    } catch (err) {
+      setError('Cloud login failed: ' + err.message)
+    } finally {
       setLoading(false)
     }
   }
@@ -130,6 +163,25 @@ function Login() {
             }}
           >
             {loading ? 'Signing in...' : 'Sign In'}
+          </button>
+          <button
+            onClick={handleCloudLogin}
+            disabled={loading || !isCloudConfigured()}
+            style={{
+              width: '100%',
+              padding: '10px',
+              marginTop: '10px',
+              background: '#1565c0',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '14px',
+              fontWeight: '500',
+              cursor: loading || !isCloudConfigured() ? 'not-allowed' : 'pointer',
+              opacity: loading || !isCloudConfigured() ? 0.7 : 1
+            }}
+          >
+            Sign In (Cloud)
           </button>
         </div>
 

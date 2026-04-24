@@ -2,6 +2,7 @@ import { hashPassword, comparePassword, hashPasswordSync } from '../utils/authUt
 
 let db = null
 let initPromise = null
+const SYNC_LAST_BACKUP_KEY = 'stocka_sync_last_backup'
 
 // Use window.initSqlJs that was loaded via script tag in index.html
 const loadInitSqlJs = async () => {
@@ -143,6 +144,7 @@ const createTables = () => {
   db.run(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT UNIQUE,
       name TEXT NOT NULL,
       category TEXT,
       supplier_id INTEGER,
@@ -150,6 +152,11 @@ const createTables = () => {
       reorder_level INTEGER DEFAULT 5,
       description TEXT,
       current_quantity INTEGER DEFAULT 0,
+      sync_dirty INTEGER DEFAULT 1,
+      sync_version INTEGER DEFAULT 1,
+      sync_source TEXT DEFAULT 'local',
+      sync_updated_at TEXT DEFAULT (datetime('now')),
+      last_synced_at TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )
   `)
@@ -352,6 +359,28 @@ const createTables = () => {
       FOREIGN KEY (product_id) REFERENCES products(id)
     )
   `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      local_payload TEXT,
+      cloud_payload TEXT,
+      resolution TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sync_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      details TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
 }
 
 // Run schema migrations to handle updates to existing databases
@@ -411,8 +440,14 @@ const runMigrations = () => {
     
     // Define required columns for products table
     const productsRequiredColumns = {
+      'external_id': 'TEXT',
       'image_data': 'TEXT',
-      'last_sold_date': 'TEXT'
+      'last_sold_date': 'TEXT',
+      'sync_dirty': 'INTEGER DEFAULT 1',
+      'sync_version': 'INTEGER DEFAULT 1',
+      'sync_source': "TEXT DEFAULT 'local'",
+      'sync_updated_at': 'TEXT',
+      'last_synced_at': 'TEXT'
     }
     
     // Add missing columns to products table
@@ -569,6 +604,9 @@ const runMigrations = () => {
 
     // Create default admin user if it doesn't exist
     ensureDefaultAdminUser()
+
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_external_id ON products(external_id)')
+    db.run('CREATE INDEX IF NOT EXISTS idx_products_sync_dirty ON products(sync_dirty)')
   } catch (error) {
     console.warn('Migration error (non-fatal):', error)
   }
@@ -610,6 +648,13 @@ const extractResults = (result) => {
 const getScalarValue = (result, defaultValue = 0) => {
   if (!result.length || !result[0].values.length) return defaultValue
   return result[0].values[0][0] ?? defaultValue
+}
+
+const generateExternalId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return `local-${Date.now()}-${Math.floor(Math.random() * 100000)}`
 }
 
 // ── SHOP FUNCTIONS ──
@@ -700,9 +745,10 @@ export const addProduct = async (product) => {
   try {
     const database = await getDb()
     database.run(
-      `INSERT INTO products (name, category, supplier_id, unit, reorder_level, description, current_quantity, image_data)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO products (external_id, name, category, supplier_id, unit, reorder_level, description, current_quantity, image_data, sync_dirty, sync_version, sync_source, sync_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'local', ?)`,
       [
+        product.external_id || generateExternalId(),
         product.name,
         product.category || '',
         product.supplier_id || null,
@@ -710,7 +756,8 @@ export const addProduct = async (product) => {
         product.reorder_level || 5,
         product.description || '',
         product.current_quantity || 0,
-        product.image_data || null
+        product.image_data || null,
+        new Date().toISOString()
       ]
     )
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -725,7 +772,7 @@ export const updateProduct = async (id, product) => {
   try {
     const database = await getDb()
     database.run(
-      `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, reorder_level = ?, description = ?, image_data = ? WHERE id = ?`,
+      `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, reorder_level = ?, description = ?, image_data = ?, sync_dirty = 1, sync_version = COALESCE(sync_version, 0) + 1, sync_source = 'local', sync_updated_at = ? WHERE id = ?`,
       [
         product.name,
         product.category || '',
@@ -734,6 +781,7 @@ export const updateProduct = async (id, product) => {
         product.reorder_level || 5,
         product.description || '',
         product.image_data || null,
+        new Date().toISOString(),
         id
       ]
     )
@@ -761,8 +809,14 @@ export const updateProductQuantity = async (productId, quantity) => {
   try {
     const database = await getDb()
     database.run(
-      `UPDATE products SET current_quantity = ? WHERE id = ?`,
-      [quantity, productId]
+      `UPDATE products
+       SET current_quantity = ?,
+           sync_dirty = 1,
+           sync_version = COALESCE(sync_version, 0) + 1,
+           sync_source = 'local',
+           sync_updated_at = ?
+       WHERE id = ?`,
+      [quantity, new Date().toISOString(), productId]
     )
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
@@ -2787,4 +2841,121 @@ export const releaseHold = async (holdId) => {
     console.error('Failed to release hold:', error)
     throw error
   }
+}
+
+export const createSyncBackup = async (reason = 'manual') => {
+  const saved = localStorage.getItem(DB_KEY)
+  if (!saved) return null
+  const key = `${DB_KEY}_backup_${Date.now()}`
+  localStorage.setItem(key, saved)
+  localStorage.setItem(SYNC_LAST_BACKUP_KEY, JSON.stringify({ key, reason, at: new Date().toISOString() }))
+  return key
+}
+
+export const getSyncPreview = async () => {
+  const database = await getDb()
+  const dirty = getScalarValue(database.exec('SELECT COUNT(*) FROM products WHERE COALESCE(sync_dirty, 1) = 1'), 0)
+  const total = getScalarValue(database.exec('SELECT COUNT(*) FROM products'), 0)
+  const conflicts = getScalarValue(database.exec('SELECT COUNT(*) FROM sync_conflicts WHERE resolution = "pending"'), 0)
+  return {
+    toUpload: dirty,
+    totalProducts: total,
+    pendingConflicts: conflicts
+  }
+}
+
+export const markProductsSynced = async (externalIds = [], actor = 'sync') => {
+  if (!externalIds.length) return
+  const database = await getDb()
+  const now = new Date().toISOString()
+  for (const externalId of externalIds) {
+    database.run(
+      `UPDATE products
+       SET sync_dirty = 0, last_synced_at = ?, sync_source = ?, sync_updated_at = ?
+       WHERE external_id = ?`,
+      [now, actor, now, externalId]
+    )
+  }
+  saveDb()
+}
+
+export const addOrUpdateProductFromSync = async (cloudProduct, source = 'cloud') => {
+  const database = await getDb()
+  const stmt = database.prepare('SELECT * FROM products WHERE external_id = ? LIMIT 1')
+  stmt.bind([cloudProduct.external_id])
+  let existing = null
+  while (stmt.step()) {
+    existing = stmt.getAsObject()
+  }
+  stmt.free()
+
+  if (existing && existing.sync_dirty === 1) {
+    const localUpdated = new Date(existing.sync_updated_at || 0).getTime()
+    const cloudUpdated = new Date(cloudProduct.updated_at || 0).getTime()
+    if (cloudUpdated < localUpdated) {
+      return { status: 'conflict', localPayload: existing }
+    }
+  }
+
+  if (!existing) {
+    database.run(
+      `INSERT INTO products (
+        external_id, name, category, unit, reorder_level, description, current_quantity, image_data,
+        sync_dirty, sync_version, sync_source, sync_updated_at, last_synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      [
+        cloudProduct.external_id,
+        cloudProduct.name,
+        cloudProduct.category || '',
+        cloudProduct.unit || 'each',
+        cloudProduct.reorder_level || 5,
+        cloudProduct.description || '',
+        cloudProduct.current_quantity || 0,
+        cloudProduct.image_data || null,
+        cloudProduct.version || 1,
+        source,
+        cloudProduct.updated_at || new Date().toISOString(),
+        new Date().toISOString()
+      ]
+    )
+  } else {
+    database.run(
+      `UPDATE products SET
+        name = ?, category = ?, unit = ?, reorder_level = ?, description = ?, current_quantity = ?, image_data = ?,
+        sync_dirty = 0, sync_version = ?, sync_source = ?, sync_updated_at = ?, last_synced_at = ?
+       WHERE external_id = ?`,
+      [
+        cloudProduct.name,
+        cloudProduct.category || '',
+        cloudProduct.unit || 'each',
+        cloudProduct.reorder_level || 5,
+        cloudProduct.description || '',
+        cloudProduct.current_quantity || 0,
+        cloudProduct.image_data || null,
+        cloudProduct.version || 1,
+        source,
+        cloudProduct.updated_at || new Date().toISOString(),
+        new Date().toISOString(),
+        cloudProduct.external_id
+      ]
+    )
+  }
+  saveDb()
+  return { status: 'imported' }
+}
+
+export const logSyncConflict = async (conflict) => {
+  const database = await getDb()
+  database.run(
+    `INSERT INTO sync_conflicts (entity_type, external_id, local_payload, cloud_payload, resolution)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      conflict.entity_type,
+      conflict.external_id,
+      JSON.stringify(conflict.local_payload || {}),
+      JSON.stringify(conflict.cloud_payload || {}),
+      conflict.resolution || 'pending'
+    ]
+  )
+  saveDb()
 }

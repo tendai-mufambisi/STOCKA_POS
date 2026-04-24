@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: process.env.BUILD_TARGET === 'desktop' ? './' : '/',
   server: {
     port: 5173,
     headers: {
