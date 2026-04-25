@@ -441,6 +441,7 @@ const runMigrations = () => {
     // Define required columns for products table
     const productsRequiredColumns = {
       'external_id': 'TEXT',
+      'shop_id': 'TEXT',
       'image_data': 'TEXT',
       'last_sold_date': 'TEXT',
       'sync_dirty': 'INTEGER DEFAULT 1',
@@ -456,6 +457,15 @@ const runMigrations = () => {
         console.log(`Adding ${columnName} column to products table...`)
         db.run(`ALTER TABLE products ADD COLUMN ${columnName} ${columnDef}`)
       }
+    }
+
+    // After adding shop_id column, ensure all existing products have a shop_id
+    // If they don't, set it to a default value so they can sync properly
+    const shopIdCheckResult = db.exec("SELECT COUNT(*) as cnt FROM products WHERE shop_id IS NULL OR shop_id = ''")
+    const shopIdCount = extractResults(shopIdCheckResult)[0]?.cnt
+    if (shopIdCount && shopIdCount > 0) {
+      console.log(`Updating ${shopIdCount} products with missing shop_id...`)
+      db.run("UPDATE products SET shop_id = 'default' WHERE shop_id IS NULL OR shop_id = ''")
     }
 
     // Get current columns in expenses table
@@ -2889,22 +2899,27 @@ export const addOrUpdateProductFromSync = async (cloudProduct, source = 'cloud')
   }
   stmt.free()
 
+  // Check for conflicts only if the local product has unsync'd changes
   if (existing && existing.sync_dirty === 1) {
     const localUpdated = new Date(existing.sync_updated_at || 0).getTime()
     const cloudUpdated = new Date(cloudProduct.updated_at || 0).getTime()
+    
+    // If cloud is older than local changes, flag as conflict
     if (cloudUpdated < localUpdated) {
       return { status: 'conflict', localPayload: existing }
     }
   }
 
   if (!existing) {
+    // NEW product from cloud
     database.run(
       `INSERT INTO products (
-        external_id, name, category, unit, reorder_level, description, current_quantity, image_data,
+        external_id, shop_id, name, category, unit, reorder_level, description, current_quantity, image_data,
         sync_dirty, sync_version, sync_source, sync_updated_at, last_synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       [
         cloudProduct.external_id,
+        cloudProduct.shop_id || '',
         cloudProduct.name,
         cloudProduct.category || '',
         cloudProduct.unit || 'each',
@@ -2918,30 +2933,42 @@ export const addOrUpdateProductFromSync = async (cloudProduct, source = 'cloud')
         new Date().toISOString()
       ]
     )
+    saveDb()
+    return { status: 'imported' }
   } else {
-    database.run(
-      `UPDATE products SET
-        name = ?, category = ?, unit = ?, reorder_level = ?, description = ?, current_quantity = ?, image_data = ?,
-        sync_dirty = 0, sync_version = ?, sync_source = ?, sync_updated_at = ?, last_synced_at = ?
-       WHERE external_id = ?`,
-      [
-        cloudProduct.name,
-        cloudProduct.category || '',
-        cloudProduct.unit || 'each',
-        cloudProduct.reorder_level || 5,
-        cloudProduct.description || '',
-        cloudProduct.current_quantity || 0,
-        cloudProduct.image_data || null,
-        cloudProduct.version || 1,
-        source,
-        cloudProduct.updated_at || new Date().toISOString(),
-        new Date().toISOString(),
-        cloudProduct.external_id
-      ]
-    )
+    // EXISTING product - check if cloud has updates
+    const localUpdated = new Date(existing.sync_updated_at || 0).getTime()
+    const cloudUpdated = new Date(cloudProduct.updated_at || 0).getTime()
+    
+    // Only update if cloud version is newer
+    if (cloudUpdated > localUpdated) {
+      database.run(
+        `UPDATE products SET
+          name = ?, category = ?, unit = ?, reorder_level = ?, description = ?, current_quantity = ?, image_data = ?,
+          sync_dirty = 0, sync_version = ?, sync_source = ?, sync_updated_at = ?, last_synced_at = ?
+         WHERE external_id = ?`,
+        [
+          cloudProduct.name,
+          cloudProduct.category || '',
+          cloudProduct.unit || 'each',
+          cloudProduct.reorder_level || 5,
+          cloudProduct.description || '',
+          cloudProduct.current_quantity || 0,
+          cloudProduct.image_data || null,
+          cloudProduct.version || 1,
+          source,
+          cloudProduct.updated_at || new Date().toISOString(),
+          new Date().toISOString(),
+          cloudProduct.external_id
+        ]
+      )
+      saveDb()
+      return { status: 'updated' }
+    } else {
+      // Local version is same or newer - skip update
+      return { status: 'skipped' }
+    }
   }
-  saveDb()
-  return { status: 'imported' }
 }
 
 export const logSyncConflict = async (conflict) => {

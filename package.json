@@ -15,7 +15,14 @@
     "preview": "vite preview",
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "schema:help": "node scripts/schema-sync.js help",
+    "schema:list": "node scripts/schema-sync.js list",
+    "schema:new": "npx supabase migration new",
+    "db:start": "npx supabase start",
+    "db:stop": "npx supabase stop",
+    "db:push": "npx supabase db push",
+    "db:pull": "npx supabase db pull"
   },
   "dependencies": {
     "@plick/electron-pos-printer": "^1.3.0",
@@ -49,6 +56,7 @@
     "concurrently": "^8.2.2",
     "cross-env": "^10.1.0",
     "electron": "^29.1.0",
+    "supabase": "^2.95.2",
     "vite": "^5.1.4",
     "wait-on": "^7.2.0"
   },
