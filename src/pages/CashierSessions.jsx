@@ -206,12 +206,7 @@ function CashierSessions() {
             ) : (
               <div className="shifts-grid">
                 {activeShifts.map(shift => {
-                  const totalExpected_usd = (shift.opening_usd_cash || 0) + (shift.sales_usd_cash || 0)
-                  const totalExpected_zwg = (shift.opening_zwg_cash || 0) + (shift.sales_zwg_cash || 0)
-                  const totalExpected_swipe_usd = (shift.opening_swipe_usd || 0) + (shift.sales_swipe_usd || 0)
-                  const totalExpected_swipe_zwg = (shift.opening_swipe_zwg || 0) + (shift.sales_swipe_zwg || 0)
-                  const totalExpected_ecocash_usd = (shift.opening_ecocash_usd || 0) + (shift.sales_ecocash_usd || 0)
-                  const totalExpected_ecocash_zwg = (shift.opening_ecocash_zwg || 0) + (shift.sales_ecocash_zwg || 0)
+                  const totalExpected_usd = (shift.opening_cash || 0) + (shift.total_sales_value || 0)
                   
                   return (
                     <div key={shift.id} className="shift-card active-card">
@@ -239,14 +234,9 @@ function CashierSessions() {
                         </div>
 
                         <div className="payment-breakdown">
-                          <h4 style={{ fontSize: '12px', fontWeight: '600', color: '#666', marginTop: '12px', marginBottom: '8px' }}>Payment Method Breakdown:</h4>
+                          <h4 style={{ fontSize: '12px', fontWeight: '600', color: '#666', marginTop: '12px', marginBottom: '8px' }}>USD Cash Expected:</h4>
                           <div style={{ fontSize: '12px', color: '#666', lineHeight: '1.6' }}>
-                            <div>USD Cash: ${totalExpected_usd.toFixed(2)}</div>
-                            <div>ZWG Cash: ZWG{totalExpected_zwg.toFixed(0)}</div>
-                            <div>Swipe USD: ${totalExpected_swipe_usd.toFixed(2)}</div>
-                            <div>Swipe ZWG: ZWG{totalExpected_swipe_zwg.toFixed(0)}</div>
-                            <div>EcoCash USD: ${totalExpected_ecocash_usd.toFixed(2)}</div>
-                            <div>EcoCash ZWG: ZWG{totalExpected_ecocash_zwg.toFixed(0)}</div>
+                            <div>${totalExpected_usd.toFixed(2)}</div>
                           </div>
                         </div>
                       </div>
@@ -572,45 +562,10 @@ function ShiftDetailModal({ shift, onClose }) {
             <tbody>
               <VarianceRow
                 label="USD Cash"
-                expected={(shiftData.opening_usd_cash || 0) + (shiftData.sales_usd_cash || 0)}
-                actual={shiftData.closing_usd_cash || 0}
-                variance={shiftData.variance_usd_cash || 0}
+                expected={(shiftData.opening_cash || 0) + (shiftData.total_sales_value || 0)}
+                actual={shiftData.closing_cash || 0}
+                variance={shiftData.variance || 0}
                 isUSD={true}
-              />
-              <VarianceRow
-                label="ZWG Cash"
-                expected={(shiftData.opening_zwg_cash || 0) + (shiftData.sales_zwg_cash || 0)}
-                actual={shiftData.closing_zwg_cash || 0}
-                variance={shiftData.variance_zwg_cash || 0}
-                isUSD={false}
-              />
-              <VarianceRow
-                label="Swipe USD"
-                expected={(shiftData.opening_swipe_usd || 0) + (shiftData.sales_swipe_usd || 0)}
-                actual={shiftData.closing_swipe_usd || 0}
-                variance={shiftData.variance_swipe_usd || 0}
-                isUSD={true}
-              />
-              <VarianceRow
-                label="Swipe ZWG"
-                expected={(shiftData.opening_swipe_zwg || 0) + (shiftData.sales_swipe_zwg || 0)}
-                actual={shiftData.closing_swipe_zwg || 0}
-                variance={shiftData.variance_swipe_zwg || 0}
-                isUSD={false}
-              />
-              <VarianceRow
-                label="EcoCash USD"
-                expected={(shiftData.opening_ecocash_usd || 0) + (shiftData.sales_ecocash_usd || 0)}
-                actual={shiftData.closing_ecocash_usd || 0}
-                variance={shiftData.variance_ecocash_usd || 0}
-                isUSD={true}
-              />
-              <VarianceRow
-                label="EcoCash ZWG"
-                expected={(shiftData.opening_ecocash_zwg || 0) + (shiftData.sales_ecocash_zwg || 0)}
-                actual={shiftData.closing_ecocash_zwg || 0}
-                variance={shiftData.variance_ecocash_zwg || 0}
-                isUSD={false}
               />
             </tbody>
           </table>
