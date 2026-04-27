@@ -129,17 +129,32 @@ function StockControl() {
       }
 
       try {
+        // Recalculate to ensure we have valid values even if state didn't update
+        const cartons = parseFloat(formData.cartons) || 0
+        const unitsPerCarton = parseFloat(formData.units_per_carton) || 0
+        const costPerCarton = parseFloat(formData.cost_per_carton) || 0
+        
+        const totalUnits = cartons * unitsPerCarton
+        const costPerUnit = unitsPerCarton > 0 ? costPerCarton / unitsPerCarton : 0
+        const totalValue = totalUnits * costPerUnit
+
         const receiving = {
           supplier_id: parseInt(formData.supplier_id),
           product_id: parseInt(formData.product_id),
           date_received: formData.date_received,
           cartons: parseInt(formData.cartons),
           units_per_carton: parseInt(formData.units_per_carton),
-          total_units: calculations.total_units,
-          cost_per_carton: parseFloat(formData.cost_per_carton),
-          cost_per_unit: calculations.cost_per_unit,
-          total_value: calculations.total_value,
-          recorded_by: user.username
+          total_units: totalUnits,
+          cost_per_carton: costPerCarton,
+          cost_per_unit: costPerUnit,
+          total_value: totalValue,
+          recorded_by: user?.username || 'System'
+        }
+
+        // Validate calculations
+        if (!receiving.total_units || receiving.total_units <= 0) {
+          setError('Invalid calculation: Total units must be greater than 0')
+          return
         }
 
         await addStockReceiving(receiving)
@@ -148,8 +163,8 @@ function StockControl() {
         await loadData()
         resetForm()
       } catch (err) {
-        setError('Failed to record stock receiving')
-        console.error(err)
+        setError(`Failed to record stock receiving: ${err.message || err}`)
+        console.error('Stock receiving error:', err)
       }
     } else {
       // Direct purchase validation and submission

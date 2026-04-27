@@ -1045,6 +1045,9 @@ export const addStockReceiving = async (receiving) => {
       
       // Update product quantity
       const product = await getProductById(receiving.product_id)
+      if (!product) {
+        throw new Error(`Product with ID ${receiving.product_id} not found`)
+      }
       const newQuantity = (product.current_quantity || 0) + receiving.total_units
       await updateProductQuantity(receiving.product_id, newQuantity)
       
@@ -1052,20 +1055,21 @@ export const addStockReceiving = async (receiving) => {
       const productName = product.name
       database.run(
         `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
-         VALUES (?, ?, 'RECEIVED', ?, ?)`,
-        [receiving.product_id, productName, receiving.total_units, receiving.recorded_by]
+         VALUES (?, ?, ?, ?, ?)`,
+        [receiving.product_id, productName, 'RECEIVED', receiving.total_units, receiving.recorded_by]
       )
       
       database.run('COMMIT')
     } catch (transactionError) {
       database.run('ROLLBACK')
+      console.error('Stock receiving transaction error:', transactionError)
       throw transactionError
     }
     
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
-    console.error('Failed to add stock receiving:', error)
+    console.error('Failed to add stock receiving:', error.message || error)
     throw error
   }
 }
