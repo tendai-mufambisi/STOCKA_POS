@@ -1508,6 +1508,16 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
       console.warn('Failed to audit void sale (non-critical):', err)
     }
     
+    return true
+  } catch (error) {
+    console.error('Failed to void sale:', error)
+    throw error
+  }
+}
+
+/**
+ * Get voided sales (for audit trail)
+ * @returns {Promise<Array>} - Array of voided sales
  */
 export const getVoidedSales = async () => {
   try {
