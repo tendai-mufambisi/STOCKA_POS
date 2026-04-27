@@ -1,20 +1,21 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import './Dashboard.css'
+import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import Products from './Products'
 import StockControl from './StockControl'
+import CurrentInventory from './CurrentInventory'
+import InventoryReconciliation from './InventoryReconciliation'
 import Suppliers from './Suppliers'
 import Sales from './Sales'
 import Expenses from './Expenses'
 import EndOfDay from './EndOfDay'
 import Reports from './Reports'
-import Branches from './Branches'
 import Settings from './Settings'
 import ShiftDashboard from './ShiftDashboard'
 import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
-import DirectPurchases from './DirectPurchases'
 import ExpiryTracking from './ExpiryTracking'
 import Notifications from '../components/Notifications'
 import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift } from '../database/db'
@@ -60,14 +61,9 @@ function Dashboard() {
       // If user is a cashier with an active shift, close it first
       if (user?.role === 'Cashier' && user?.current_shift_id) {
         try {
-          // Close the shift with zeros for all payment methods (will be auto-calculated as short/balanced)
+          // Close the shift with zero cash (will be auto-calculated as short)
           const closingFloat = {
-            closing_usd_cash: 0,
-            closing_zwg_cash: 0,
-            closing_swipe_usd: 0,
-            closing_swipe_zwg: 0,
-            closing_ecocash_usd: 0,
-            closing_ecocash_zwg: 0
+            closing_cash: 0
           }
           await closeShift(user.current_shift_id, closingFloat, 'Shift auto-closed on logout')
         } catch (err) {
@@ -111,6 +107,21 @@ function Dashboard() {
       loadDashboardData()
     }
   }, [user.id])
+
+  // Setup real-time sync for dashboard data
+  const syncState = useRealtimeSync({
+    pollInterval: 30000, // Refresh every 30 seconds
+    enabled: user.id ? true : false,
+    dependencies: [user.id],
+    onSyncComplete: () => {
+      // Reload dashboard data when sync completes
+      if (user.id) {
+        loadDashboardData().catch(err => 
+          console.warn('[Dashboard Sync] Error reloading data:', err)
+        )
+      }
+    }
+  })
 
   const loadDashboardData = async () => {
     try {
@@ -171,7 +182,9 @@ function Dashboard() {
   const navItems = [
     { id: 'dashboard',  icon: 'home',       label: 'Dashboard',       group: 'main',    roles: ['Admin', 'Manager', 'Cashier'] },
     { id: 'products',   icon: 'package',    label: 'Products',         group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'stock',      icon: 'trending-down', label: 'Stock Control',    group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'inventory',  icon: 'package',    label: 'Current Inventory', group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'reconciliation', icon: 'check-square', label: 'Reconciliation',   group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'stock',      icon: 'trending-down', label: 'Receive Stock',    group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock',   roles: ['Admin', 'Manager'] },
@@ -181,9 +194,7 @@ function Dashboard() {
     { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'purchases',  icon: 'package',    label: 'Direct Purchases',  group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'expiry',     icon: 'calendar',   label: 'Expiry Tracking',   group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'branches',   icon: 'map-pin',    label: 'Branches',         group: 'ops',     roles: ['Admin'] },
     { id: 'settings',   icon: 'settings',   label: 'Settings',        group: 'ops',     roles: ['Admin', 'Manager', 'Cashier'] },
   ]
 
@@ -252,25 +263,11 @@ function Dashboard() {
       type: 'gold'
     },
     {
-      icon: 'package',
-      label: 'Total Products',
-      value: dashboardStats.totalProducts.toString(),
-      sub: 'Products in inventory',
-      type: ''
-    },
-    {
       icon: 'alert-triangle',
       label: 'Low Stock Items',
       value: dashboardStats.lowStockCount.toString(),
       sub: 'Below reorder level',
       type: 'danger'
-    },
-    {
-      icon: 'bar-chart-2',
-      label: 'Stock Value',
-      value: `$${dashboardStats.stockValue.toFixed(2)}`,
-      sub: 'Total inventory value',
-      type: 'blue'
     },
     {
       icon: 'trending-down',
@@ -288,25 +285,11 @@ function Dashboard() {
       type: 'gold'
     },
     {
-      icon: 'package',
-      label: 'Total Products',
-      value: '0',
-      sub: 'No products added yet',
-      type: ''
-    },
-    {
       icon: 'alert-triangle',
       label: 'Low Stock Items',
       value: '0',
       sub: 'All stock levels good',
       type: 'danger'
-    },
-    {
-      icon: 'bar-chart-2',
-      label: 'Stock Value',
-      value: '$0.00',
-      sub: 'Total inventory value',
-      type: 'blue'
     },
     {
       icon: 'trending-down',
@@ -348,6 +331,10 @@ function Dashboard() {
                 />
       case 'products':
         return <Products />
+      case 'inventory':
+        return <CurrentInventory onNavigateToAddStock={setActivePage} />
+      case 'reconciliation':
+        return <InventoryReconciliation user={user} />
       case 'stock':
         return <StockControl />
       case 'suppliers':
@@ -368,12 +355,8 @@ function Dashboard() {
         return <RestockNeeded user={user} />
       case 'deadstock':
         return <DeadStock user={user} />
-      case 'purchases':
-        return <DirectPurchases user={user} />
       case 'expiry':
         return <ExpiryTracking user={user} />
-      case 'branches':
-        return <Branches />
       case 'settings':
         return <Settings user={user} />
       default:
