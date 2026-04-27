@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
+import { hasPermission } from '../utils/permissions'
 import * as XLSX from 'xlsx'
 import './Reports.css'
 
@@ -479,6 +480,26 @@ function Reports({ user }) {
   }
 
   const COLORS = ['#2e7d32', '#1a5c2a', '#4caf50', '#66bb6a', '#81c784', '#a5d6a7']
+
+  // Check permissions
+  const canAccessReports = hasPermission(user?.role || 'Cashier', 'canAccessReports')
+  
+  if (!canAccessReports) {
+    return (
+      <div className="reports-page">
+        <div className="page-header">
+          <h1>📊 Reports</h1>
+          <p>Analyze your business performance</p>
+        </div>
+        <div className="access-denied">
+          <div className="denied-icon">🔒</div>
+          <h2>Access Denied</h2>
+          <p>Your role (Cashier) does not have permission to access Reports.</p>
+          <p className="denied-details">Reports are available to Managers and Administrators only.</p>
+        </div>
+      </div>
+    )
+  }
 
   if (loading) return <div className="reports-page"><div className="loading">Loading...</div></div>
 

@@ -220,3 +220,44 @@
   background: #f8d7da;
   color: #721c24;
 }
+
+.access-denied {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e0e0e0;
+  margin-top: 2rem;
+  min-height: 400px;
+  text-align: center;
+}
+
+.denied-icon {
+  font-size: 4rem;
+  margin-bottom: 1.5rem;
+  opacity: 0.8;
+}
+
+.access-denied h2 {
+  font-size: 1.75rem;
+  color: #333;
+  margin: 0 0 1rem 0;
+  font-weight: 600;
+}
+
+.access-denied p {
+  color: #666;
+  font-size: 1rem;
+  margin: 0.5rem 0;
+  max-width: 500px;
+}
+
+.denied-details {
+  color: #999;
+  font-size: 0.95rem;
+  font-style: italic;
+  margin-top: 1.5rem !important;
+}
