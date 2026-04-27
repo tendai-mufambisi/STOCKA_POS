@@ -1142,7 +1142,7 @@ export const getAllPurchaseHistory = async () => {
      FROM stock_receivings sr
      LEFT JOIN products p ON sr.product_id = p.id
      LEFT JOIN suppliers s ON sr.supplier_id = s.id
-     ORDER BY sr.date_received DESC`
+     ORDER BY sr.created_at DESC, sr.date_received DESC`
   )
   
   return extractResults(result) || []
