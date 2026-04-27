@@ -82,21 +82,6 @@ function EndOfDay({ user }) {
   const difference = parseFloat(actualCash || 0) - expectedCash
   const status = difference > 0 ? 'Overage' : difference < 0 ? 'Shortage' : 'Balanced'
 
-  // Calculate payment method breakdown
-  const paymentBreakdown = {
-    'USD Cash': 0,
-    'ZWG Cash': 0,
-    'Swipe': 0,
-    'EcoCash': 0
-  }
-  
-  todaysSales.forEach(sale => {
-    const method = sale.payment_method || 'USD Cash'
-    if (paymentBreakdown.hasOwnProperty(method)) {
-      paymentBreakdown[method] += sale.total || 0
-    }
-  })
-
   const handleCloseDay = async () => {
     if (!actualCash) {
       setError('Enter actual cash counted')
@@ -251,29 +236,6 @@ function EndOfDay({ user }) {
             <div className="metric highlight">
               <div className="metric-label">Expected Cash</div>
               <div className="metric-value">${expectedCash.toFixed(2)}</div>
-            </div>
-          </div>
-
-          {/* Payment Method Breakdown */}
-          <div className="payment-breakdown">
-            <h4>💳 Payment Method Breakdown</h4>
-            <div className="breakdown-grid">
-              <div className="breakdown-card">
-                <div className="payment-method">USD Cash</div>
-                <div className="payment-amount">${paymentBreakdown['USD Cash'].toFixed(2)}</div>
-              </div>
-              <div className="breakdown-card">
-                <div className="payment-method">ZWG Cash</div>
-                <div className="payment-amount">${paymentBreakdown['ZWG Cash'].toFixed(2)}</div>
-              </div>
-              <div className="breakdown-card">
-                <div className="payment-method">Swipe</div>
-                <div className="payment-amount">${paymentBreakdown['Swipe'].toFixed(2)}</div>
-              </div>
-              <div className="breakdown-card">
-                <div className="payment-method">EcoCash</div>
-                <div className="payment-amount">${paymentBreakdown['EcoCash'].toFixed(2)}</div>
-              </div>
             </div>
           </div>
 
