@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getSuppliers, addSupplier, updateSupplier, deleteSupplier, getStockReceivings } from '../database/db'
+import { validateRequired, validateEmail, validatePhone } from '../utils/validation'
 import './Suppliers.css'
 
 function Suppliers() {
@@ -49,9 +50,29 @@ function Suppliers() {
     e.preventDefault()
     setError('')
 
-    if (!formData.name.trim()) {
-      setError('Supplier name is required')
+    // Validate supplier name
+    const nameValidation = validateRequired(formData.name, 'Supplier name')
+    if (!nameValidation.valid) {
+      setError(nameValidation.error)
       return
+    }
+
+    // Validate email if provided
+    if (formData.email) {
+      const emailValidation = validateEmail(formData.email)
+      if (!emailValidation.valid) {
+        setError(emailValidation.error)
+        return
+      }
+    }
+
+    // Validate phone if provided
+    if (formData.phone) {
+      const phoneValidation = validatePhone(formData.phone)
+      if (!phoneValidation.valid) {
+        setError(phoneValidation.error)
+        return
+      }
     }
 
     try {

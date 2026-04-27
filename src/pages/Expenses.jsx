@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { addExpense, getExpenses, updateExpense, deleteExpense, getCurrentShift } from '../database/db'
+import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
 import './Expenses.css'
 
 function Expenses({ user }) {
@@ -58,8 +59,23 @@ function Expenses({ user }) {
     e.preventDefault()
     setError('')
 
-    if (!formData.description.trim() || !formData.amount) {
-      setError('Description and amount required')
+    // Validate required fields
+    const descriptionValidation = validateRequired(formData.description, 'Description')
+    if (!descriptionValidation.valid) {
+      setError(descriptionValidation.error)
+      return
+    }
+
+    const amountValidation = validateCurrency(formData.amount, 'Amount')
+    if (!amountValidation.valid) {
+      setError(amountValidation.error)
+      return
+    }
+
+    // Validate date
+    const dateValidation = validateDate(formData.date)
+    if (!dateValidation.valid) {
+      setError(dateValidation.error)
       return
     }
 

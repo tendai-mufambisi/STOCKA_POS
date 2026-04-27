@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems } from '../database/db'
+import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
+import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import { utils, writeFile } from 'xlsx'
 import './Products.css'
 
@@ -13,24 +15,38 @@ function Products() {
   const [sortBy, setSortBy] = useState('name-asc')
   const [filterSupplier, setFilterSupplier] = useState('')
   const [filterCategory, setFilterCategory] = useState('')
+  const [viewMode, setViewMode] = useState('list')
   const [formData, setFormData] = useState({
     name: '',
     category: '',
     supplier_id: '',
     unit: 'each',
+    selling_price: '',
     reorder_level: 5,
     description: '',
     image_data: null
   })
   const [prices, setPrices] = useState({})
   const [error, setError] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage, setItemsPerPage] = useState(25)
 
-  const units = ['each', 'kg', 'litre', 'box', 'carton', 'pack', 'dozen', 'pair', 'roll']
-  const categories = ['Electronics', 'Clothing', 'Food & Beverage', 'Home & Garden', 'Sports', 'Books', 'Toys', 'Other']
+  const units = ['each', 'pack']
+  const categories = ['Food', 'Non-Food', 'Drinks']
 
   useEffect(() => {
     loadData()
   }, [])
+
+  // Setup real-time sync for product data
+  const syncState = useRealtimeSync({
+    pollInterval: 45000, // Refresh every 45 seconds
+    onSyncComplete: () => {
+      loadData().catch(err => 
+        console.warn('[Products Sync] Error reloading data:', err)
+      )
+    }
+  })
 
   const loadData = async () => {
     try {
@@ -63,7 +79,7 @@ function Products() {
     const { name, value } = e.target
     setFormData(prev => ({
       ...prev,
-      [name]: name === 'reorder_level' ? parseInt(value) || 0 : value
+      [name]: (name === 'reorder_level') ? parseFloat(value) || 0 : value
     }))
   }
 
@@ -71,16 +87,40 @@ function Products() {
     e.preventDefault()
     setError('')
 
-    if (!formData.name.trim()) {
-      setError('Product name is required')
+    // Validate required fields
+    const nameValidation = validateRequired(formData.name, 'Product name')
+    if (!nameValidation.valid) {
+      setError(nameValidation.error)
+      return
+    }
+
+    // Validate price if provided
+    if (formData.selling_price) {
+      const priceValidation = validateCurrency(formData.selling_price, 'Selling price')
+      if (!priceValidation.valid) {
+        setError(priceValidation.error)
+        return
+      }
+    }
+
+    // Validate reorder level
+    const reorderValidation = validateNonNegativeNumber(formData.reorder_level, 'Reorder level')
+    if (!reorderValidation.valid) {
+      setError(reorderValidation.error)
       return
     }
 
     try {
       if (editingId) {
-        await updateProduct(editingId, formData)
+        await updateProduct(editingId, {
+          ...formData,
+          selling_price: parseFloat(formData.selling_price) || 0
+        })
       } else {
-        await addProduct(formData)
+        await addProduct({
+          ...formData,
+          selling_price: parseFloat(formData.selling_price) || 0
+        })
       }
       await loadData()
       setFormData({
@@ -88,6 +128,7 @@ function Products() {
         category: '',
         supplier_id: '',
         unit: 'each',
+        selling_price: '',
         reorder_level: 5,
         description: '',
         image_data: null
@@ -106,6 +147,7 @@ function Products() {
       category: product.category || '',
       supplier_id: product.supplier_id || '',
       unit: product.unit,
+      selling_price: product.selling_price || '',
       reorder_level: product.reorder_level,
       description: product.description || '',
       image_data: product.image_data || null
@@ -165,6 +207,28 @@ function Products() {
     }
   })
 
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredProducts.length / itemsPerPage)
+  // Reset to page 1 if current page exceeds total pages
+  const pageToUse = currentPage > totalPages ? 1 : currentPage
+  if (pageToUse !== currentPage) {
+    setCurrentPage(1)
+  }
+  const startIndex = (pageToUse - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedProducts = filteredProducts.slice(startIndex, endIndex)
+
+  const handlePageChange = (newPage) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage)
+    }
+  }
+
+  const handleItemsPerPageChange = (e) => {
+    setItemsPerPage(parseInt(e.target.value))
+    setCurrentPage(1)
+  }
+
   const handleExport = () => {
     const exportData = filteredProducts.map(p => ({
       'Product Name': p.name,
@@ -174,9 +238,9 @@ function Products() {
       'Current Quantity': p.current_quantity || 0,
       'Reorder Level': p.reorder_level,
       'Status': getStockStatus(p.current_quantity, p.reorder_level),
-      'Selling Price': prices[p.id]?.selling_price_per_unit ? `$${prices[p.id].selling_price_per_unit.toFixed(2)}` : 'N/A',
-      'Cost Per Unit': prices[p.id]?.cost_per_unit ? `$${prices[p.id].cost_per_unit.toFixed(2)}` : 'N/A',
-      'Profit Margin %': prices[p.id] ? ((((prices[p.id].selling_price_per_unit - prices[p.id].cost_per_unit) / prices[p.id].selling_price_per_unit) * 100).toFixed(2)) : 'N/A'
+      'Selling Price': prices[p.id]?.selling_price_per_unit ? `$${(prices[p.id].selling_price_per_unit || 0).toFixed(2)}` : 'N/A',
+      'Cost Per Unit': prices[p.id]?.cost_per_unit ? `$${(prices[p.id].cost_per_unit || 0).toFixed(2)}` : 'N/A',
+      'Profit Margin %': prices[p.id] ? ((((prices[p.id].selling_price_per_unit || 0) - (prices[p.id].cost_per_unit || 0)) / (prices[p.id].selling_price_per_unit || 1)) * 100).toFixed(2) : 'N/A'
     }))
 
     const ws = utils.json_to_sheet(exportData)
@@ -194,6 +258,18 @@ function Products() {
       <div className="page-header">
         <h1>Products</h1>
         <p>Manage your product catalog</p>
+      </div>
+
+      {/* Metrics Cards */}
+      <div className="metrics-section">
+        <div className="metric-card">
+          <div className="metric-icon">📦</div>
+          <div className="metric-details">
+            <div className="metric-label">Total Products</div>
+            <div className="metric-value">{products.length}</div>
+            <div className="metric-sub">In inventory</div>
+          </div>
+        </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -244,6 +320,22 @@ function Products() {
             <option value="qty-asc">Quantity ↑</option>
             <option value="qty-desc">Quantity ↓</option>
           </select>
+          <div className="view-toggle">
+            <button
+              className={`view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
+              onClick={() => setViewMode('list')}
+              title="List View"
+            >
+              ≡ List
+            </button>
+            <button
+              className={`view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
+              onClick={() => setViewMode('grid')}
+              title="Grid View"
+            >
+              ⊞ Grid
+            </button>
+          </div>
         </div>
       </div>
 
@@ -288,6 +380,19 @@ function Products() {
             </div>
 
             <div className="form-row">
+              <div className="form-group">
+                <label>Selling Price (USD) *</label>
+                <input
+                  type="number"
+                  name="selling_price"
+                  value={formData.selling_price}
+                  onChange={handleChange}
+                  placeholder="0.00"
+                  step="0.01"
+                  min="0"
+                  required
+                />
+              </div>
               <div className="form-group">
                 <label>Reorder Level</label>
                 <input
@@ -355,11 +460,52 @@ function Products() {
             <small>Add your first product to get started</small>
           </div>
         ) : (
-          <div className="products-grid">
-            {filteredProducts.map(product => {
+          <div className={viewMode === 'grid' ? 'products-grid' : 'products-list-view'}>
+            {paginatedProducts.map(product => {
               const price = prices[product.id]
               const status = getStockStatus(product.current_quantity, product.reorder_level)
-              const profitMargin = price ? (((price.selling_price_per_unit - price.cost_per_unit) / price.selling_price_per_unit * 100).toFixed(2)) : 'N/A'
+              const profitMargin = price ? (((price.selling_price_per_unit || 0) - (price.cost_per_unit || 0)) / (price.selling_price_per_unit || 1) * 100).toFixed(2) : 'N/A'
+              
+              if (viewMode === 'list') {
+                return (
+                  <div key={product.id} className="product-list-item">
+                    <div className="list-item-top">
+                      {product.image_data && (
+                        <div className="list-item-image">
+                          <img src={product.image_data} alt={product.name} />
+                        </div>
+                      )}
+                      <div className="list-item-header">
+                        <h4>{product.name}</h4>
+                        <div className="list-item-quick-info">
+                          <span className={`status-badge ${getStatusColor(status)}`}>{status}</span>
+                          {product.category && <span className="category-tag">{product.category}</span>}
+                          <span className="qty-info">{product.current_quantity || 0} {product.unit}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="list-item-details">
+                      {getSupplierName(product.supplier_id) !== 'N/A' && (
+                        <span className="detail-item">{getSupplierName(product.supplier_id)}</span>
+                      )}
+                      {price && (
+                        <>
+                          <span className="detail-item price">${(price.selling_price_per_unit || 0).toFixed(2)}</span>
+                          <span className="detail-item">{profitMargin}% margin</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="list-item-actions">
+                      <button className="btn-icon" onClick={() => handleEdit(product)} title="Edit">
+                        ✎
+                      </button>
+                      <button className="btn-icon delete" onClick={() => handleDelete(product.id)} title="Delete">
+                        ✘
+                      </button>
+                    </div>
+                  </div>
+                )
+              }
               
               return (
                 <div key={product.id} className="product-card">
@@ -398,11 +544,11 @@ function Products() {
                       <>
                         <div className="detail-row price-row">
                           <span className="label">Selling Price:</span>
-                          <span className="value price">${price.selling_price_per_unit.toFixed(2)}</span>
+                          <span className="value price">${(price.selling_price_per_unit || 0).toFixed(2)}</span>
                         </div>
                         <div className="detail-row price-row">
                           <span className="label">Cost Per Unit:</span>
-                          <span className="value price">${price.cost_per_unit.toFixed(2)}</span>
+                          <span className="value price">${(price.cost_per_unit || 0).toFixed(2)}</span>
                         </div>
                         <div className="detail-row">
                           <span className="label">Profit Margin:</span>
@@ -423,6 +569,77 @@ function Products() {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* Pagination Controls */}
+        {filteredProducts.length > 0 && (
+          <div className="pagination-section">
+            <div className="pagination-info">
+              <span>Showing {startIndex + 1} to {Math.min(endIndex, filteredProducts.length)} of {filteredProducts.length} products</span>
+              <select value={itemsPerPage} onChange={handleItemsPerPageChange} className="items-per-page-select">
+                <option value="10">10 per page</option>
+                <option value="25">25 per page</option>
+                <option value="50">50 per page</option>
+                <option value="100">100 per page</option>
+              </select>
+            </div>
+            <div className="pagination-controls">
+              <button
+                className="pagination-btn"
+                onClick={() => handlePageChange(1)}
+                disabled={pageToUse === 1}
+                title="First page"
+              >
+                ⟨⟨
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => handlePageChange(pageToUse - 1)}
+                disabled={pageToUse === 1}
+                title="Previous page"
+              >
+                ⟨
+              </button>
+
+              <div className="page-numbers">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum
+                  if (totalPages <= 5) {
+                    pageNum = i + 1
+                  } else {
+                    const start = Math.max(1, pageToUse - 2)
+                    pageNum = start + i
+                  }
+                  return pageNum <= totalPages ? (
+                    <button
+                      key={pageNum}
+                      className={`page-number ${pageNum === pageToUse ? 'active' : ''}`}
+                      onClick={() => handlePageChange(pageNum)}
+                    >
+                      {pageNum}
+                    </button>
+                  ) : null
+                })}
+              </div>
+
+              <button
+                className="pagination-btn"
+                onClick={() => handlePageChange(pageToUse + 1)}
+                disabled={pageToUse === totalPages}
+                title="Next page"
+              >
+                ⟩
+              </button>
+              <button
+                className="pagination-btn"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={pageToUse === totalPages}
+                title="Last page"
+              >
+                ⟩⟩
+              </button>
+            </div>
           </div>
         )}
       </div>

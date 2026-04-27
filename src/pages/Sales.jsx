@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
-import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift, updateShiftSalesForPaymentMethod } from '../database/db'
+import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift } from '../database/db'
 import { hasPermission } from '../utils/permissions'
+import { validateCurrency } from '../utils/validation'
+import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import ClosingFloatModal from '../components/ClosingFloatModal'
@@ -116,6 +118,20 @@ function Sales({ user }) {
       return () => clearTimeout(timer)
     }
   }, [showConfirmation])
+
+  // Setup real-time sync for sales data (products, held sales)
+  const syncState = useRealtimeSync({
+    pollInterval: 60000, // Refresh every 60 seconds (less frequent for sales)
+    onSyncComplete: () => {
+      // Reload products and held sales when sync completes
+      Promise.all([
+        loadProducts(),
+        loadHeldSales()
+      ]).catch(err => 
+        console.warn('[Sales Sync] Error reloading data:', err)
+      )
+    }
+  })
 
   const loadProducts = async () => {
     try {
@@ -243,7 +259,9 @@ function Sales({ user }) {
       setTimeout(() => setError(''), 4000)
       return
     }
-    setCheckoutStep('paymentMethod')
+    // Skip payment method, go straight to cash tendered (USD only)
+    setCheckoutStep('cashTendered')
+    setCheckoutCashTendered('')
     setError('')
   }
 
@@ -264,8 +282,6 @@ function Sales({ user }) {
         total: cartTotal,
         cash_tendered: 0,
         change_given: 0,
-        payment_method: 'HELD',
-        currency: 'USD',
         shift_id: currentShift?.id || null
       }
 
@@ -307,8 +323,6 @@ function Sales({ user }) {
           total: cartTotal,
           cash_tendered: 0,
           change_given: 0,
-          payment_method: 'HELD',
-          currency: 'USD',
           shift_id: currentShift?.id || null
         }
 
@@ -369,6 +383,12 @@ function Sales({ user }) {
       setError('Please enter a reason for voiding')
       return
     }
+    
+    // Validate void reason length
+    if (voidReason.length < 3) {
+      setError('Void reason must be at least 3 characters')
+      return
+    }
 
     setIsProcessing(true)
     try {
@@ -389,14 +409,9 @@ function Sales({ user }) {
 
   const handlePaymentMethodSelect = (method) => {
     setSelectedPaymentForCheckout(method)
-    // If payment method is Cash (USD or ZWG), go to cash tendered step
-    // EcoCash and Card payments don't require amount tendered
-    if (method === 'USD Cash' || method === 'ZWG Cash') {
-      setCheckoutStep('cashTendered')
-    } else {
-      // For non-cash (Card, EcoCash), skip to completion
-      handleCompleteCheckout(method, 0)
-    }
+    // No longer needed - go straight to cash tendered (USD only)
+    setCheckoutStep('cashTendered')
+    setCheckoutCashTendered('')
   }
 
   const handleCashTenderedChange = (e) => {
@@ -409,30 +424,31 @@ function Sales({ user }) {
   }
 
   const handleBackNavigation = () => {
-    if (checkoutStep === 'paymentMethod') {
-      setCheckoutStep(null)
-      setSelectedPaymentForCheckout(null)
-    } else if (checkoutStep === 'cashTendered') {
-      setCheckoutStep('paymentMethod')
-    }
+    // Simply go back to cart (no payment method step anymore)
+    setCheckoutStep(null)
+    setCheckoutCashTendered('')
   }
 
-  const handleCompleteCheckout = async (method, cashAmount) => {
+  const handleCompleteCheckout = async (cashAmount) => {
     const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
     
-    // Validate cash only for Cash payment methods (not EcoCash or Card)
-    const isCashPayment = method === 'USD Cash' || method === 'ZWG Cash'
-    if (isCashPayment) {
-      const cash = parseFloat(cashAmount)
-      if (!cashAmount || cash < cartTotal) {
-        setError('Insufficient cash tendered')
-        return
-      }
+    // Validate cash currency format
+    const currencyValidation = validateCurrency(cashAmount, 'Cash amount')
+    if (!currencyValidation.valid) {
+      setError(currencyValidation.error)
+      return
+    }
+    
+    // Validate cash - all sales are USD cash only
+    const cash = parseFloat(cashAmount)
+    if (cash < cartTotal) {
+      setError('Insufficient cash tendered')
+      return
     }
 
     setIsProcessing(true)
     try {
-      const cashAmount_ = isCashPayment ? parseFloat(cashAmount) : 0
+      const cashAmount_ = parseFloat(cashAmount)
       const change = Math.max(0, cashAmount_ - cartTotal)
 
       const sale = {
@@ -440,18 +456,11 @@ function Sales({ user }) {
         total: cartTotal,
         cash_tendered: cashAmount_,
         change_given: change,
-        payment_method: method,
-        currency: 'USD',
         shift_id: currentShift?.id || null
       }
 
       // Add sale and get the ID
       const saleId = await addSale(sale, cart)
-
-      // Update shift sales totals if shift is active
-      if (currentShift?.id) {
-        await updateShiftSalesForPaymentMethod(currentShift.id, method, cartTotal)
-      }
 
       // Generate and store receipt number
       try {
@@ -515,15 +524,12 @@ function Sales({ user }) {
         id: saleId,
         total: cartTotal,
         change: change,
-        payment_method: method,
-        currency: 'USD',
         timestamp: new Date()
       })
       setShowConfirmation(true)
       
       // Reset checkout flow
       setCheckoutStep(null)
-      setSelectedPaymentForCheckout(null)
       setCheckoutCashTendered('')
       setCart([])
       setSearch('')
@@ -852,74 +858,14 @@ function Sales({ user }) {
         </div>
       </div>
 
-      {/* Payment Method Modal */}
-      {checkoutStep === 'paymentMethod' && (
-        <div className="checkout-modal-overlay">
-          <div className="checkout-modal">
-            <div className="modal-header">
-              <h2>Select Payment Method</h2>
-              <p className="modal-total">Total: ${cartTotal.toFixed(2)}</p>
-            </div>
-            
-            <div className="payment-methods-grid">
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('USD Cash')}
-              >
-                <FiDollarSign size={32} />
-                <span>USD Cash</span>
-              </button>
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('ZWG Cash')}
-              >
-                <FiDollarSign size={32} />
-                <span>ZWG Cash</span>
-              </button>
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('USD Swipe')}
-              >
-                <FiCreditCard size={32} />
-                <span>Card (USD)</span>
-              </button>
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('ZWG Swipe')}
-              >
-                <FiCreditCard size={32} />
-                <span>Card (ZWG)</span>
-              </button>
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('USD EcoCash')}
-              >
-                <FiSmartphone size={32} />
-                <span>EcoCash (USD)</span>
-              </button>
-              <button
-                className="payment-method-card"
-                onClick={() => handlePaymentMethodSelect('ZWG EcoCash')}
-              >
-                <FiSmartphone size={32} />
-                <span>EcoCash (ZWG)</span>
-              </button>
-            </div>
-
-            <button className="modal-back-btn" onClick={handleBackNavigation}>
-              ← Back to Cart
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Payment Method Modal - REMOVED (USD only) */}
 
       {/* Cash Tendered Modal */}
-      {checkoutStep === 'cashTendered' && selectedPaymentForCheckout && (
+      {checkoutStep === 'cashTendered' && (
         <div className="checkout-modal-overlay">
           <div className="checkout-modal cash-modal">
             <div className="modal-header">
-              <h2>Enter Amount Tendered</h2>
-              <p className="modal-payment-method">{selectedPaymentForCheckout}</p>
+              <h2>Enter USD Amount Tendered</h2>
             </div>
 
             <div className="cash-section">
@@ -962,7 +908,7 @@ function Sales({ user }) {
               </button>
               <button
                 className="modal-complete-btn"
-                onClick={() => handleCompleteCheckout(selectedPaymentForCheckout, checkoutCashTendered)}
+                onClick={() => handleCompleteCheckout(checkoutCashTendered)}
                 disabled={!checkoutCashTendered || parseFloat(checkoutCashTendered) < cartTotal || isProcessing}
               >
                 {isProcessing ? 'Processing...' : 'Complete Sale'}
@@ -980,74 +926,7 @@ function Sales({ user }) {
             <h3>Sale Completed!</h3>
             <div className="confirmation-details">
               <p>Total: <strong>${lastSale.total.toFixed(2)}</strong></p>
-              <p>Payment: <strong>{lastSale.payment_method}</strong></p>
               <p>Change: <strong>${lastSale.change.toFixed(2)}</strong></p>
-            </div>
-
-            {/* Printer Status */}
-            {printError && (
-              <div style={{ color: '#d32f2f', marginTop: '10px', fontSize: '12px', padding: '8px', backgroundColor: '#ffebee', borderRadius: '4px' }}>
-                ❌ Print Error: {printError}
-              </div>
-            )}
-            {printSuccess && (
-              <div style={{ color: '#388e3c', marginTop: '10px', fontSize: '12px', padding: '8px', backgroundColor: '#e8f5e9', borderRadius: '4px' }}>
-                ✅ Receipt printed successfully!
-              </div>
-            )}
-
-            {/* Print Buttons */}
-            <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'center' }}>
-              <button
-                onClick={async () => {
-                  if (lastSale) {
-                    try {
-                      // Fetch sale items to complete receipt data
-                      const items = await getSaleItems(lastSale.id)
-                      const receiptData = {
-                        ...lastSale,
-                        items: items || [],
-                        date: new Date().toLocaleString()
-                      }
-                      const shop = await getShop()
-                      await printReceipt(receiptData, shop, {
-                        isDuplicate: false,
-                        printerName: printerSettings?.printer_name || ''
-                      })
-                    } catch (err) {
-                      setError('Failed to fetch sale details for printing')
-                      setTimeout(() => setError(''), 3000)
-                    }
-                  }
-                }}
-                disabled={isPrinting}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: isPrinting ? '#ccc' : '#2196F3',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: isPrinting ? 'not-allowed' : 'pointer',
-                  fontSize: '12px'
-                }}
-              >
-                {isPrinting ? '🖨️ Printing...' : '🖨️ Print Receipt'}
-              </button>
-              <button
-                onClick={() => printTestReceipt(printerSettings?.printer_name || '')}
-                disabled={isPrinting}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: isPrinting ? '#ccc' : '#FF9800',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: isPrinting ? 'not-allowed' : 'pointer',
-                  fontSize: '12px'
-                }}
-              >
-                {isPrinting ? '⏳ Testing...' : '🧪 Test Print'}
-              </button>
             </div>
 
             <small>Auto-closing in 3 seconds...</small>
