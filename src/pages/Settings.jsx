@@ -1,6 +1,6 @@
 //Settings.jsx - Shop details, user management, printer configuration, and password changes
 import { useState, useEffect } from 'react'
-import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser } from '../database/db'
+import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser, getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile } from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
 import { canSyncToCloud, previewSync, pushLocalChangesToCloud, pullCloudChangesToLocal } from '../services/syncService'
@@ -51,12 +51,20 @@ function Settings({ user }) {
   const [printStatus, setPrintStatus] = useState('')
   const [syncState, setSyncState] = useState({ toUpload: 0, totalProducts: 0, pendingConflicts: 0, cloudConfigured: false })
   const [syncing, setSyncing] = useState(false)
+  
+  // Backup state
+  const [backups, setBackups] = useState([])
+  const [creatingBackup, setCreatingBackup] = useState(false)
+  const [restoringBackup, setRestoringBackup] = useState(false)
 
   const isAdmin = user?.role === 'Admin'
 
   useEffect(() => {
     loadSettings()
-    if (isAdmin) loadUsers()
+    if (isAdmin) {
+      loadUsers()
+      loadBackups()
+    }
     loadSyncPreview()
   }, [isAdmin])
 
@@ -113,8 +121,16 @@ function Settings({ user }) {
       const shop = await getShop()
       if (shop) {
         setFormData({
-          ...shop,
-          printer_port: (shop.printer_port && String(shop.printer_port).trim()) || 'COM3'
+          id: shop.id || '',
+          name: shop.name || '',
+          address: shop.address || '',
+          phone: shop.phone || '',
+          email: shop.email || '',
+          currency: shop.currency || 'USD',
+          printer_name: shop.printer_name || '',
+          printer_port: (shop.printer_port && String(shop.printer_port).trim()) || 'COM3',
+          auto_print: shop.auto_print !== undefined ? shop.auto_print : 1,
+          print_duplicate: shop.print_duplicate !== undefined ? shop.print_duplicate : 0
         })
       }
       setLoading(false)
@@ -131,6 +147,78 @@ function Settings({ user }) {
       setUsers(allUsers)
     } catch (err) {
       console.error('Failed to load users:', err)
+    }
+  }
+
+  const loadBackups = async () => {
+    try {
+      const backupHistory = await getBackupHistory()
+      setBackups(backupHistory)
+    } catch (err) {
+      console.error('Failed to load backups:', err)
+    }
+  }
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true)
+    setError('')
+    setSuccess('')
+    try {
+      const backupKey = await createDatabaseBackup()
+      if (backupKey) {
+        setSuccess(`✅ Backup created successfully: ${backupKey}`)
+        await loadBackups()
+        setTimeout(() => setSuccess(''), 5000)
+      } else {
+        setError('Failed to create backup')
+      }
+    } catch (err) {
+      console.error('Failed to create backup:', err)
+      setError('Failed to create backup: ' + err.message)
+    } finally {
+      setCreatingBackup(false)
+    }
+  }
+
+  const handleRestoreBackup = async (backupKey) => {
+    if (!window.confirm('⚠️ WARNING: This will overwrite your current database. Continue?')) {
+      return
+    }
+    
+    setRestoringBackup(true)
+    setError('')
+    setSuccess('')
+    try {
+      const success = await restoreFromBackup(backupKey)
+      if (success) {
+        setSuccess('✅ Database restored successfully! Reloading app...')
+        setTimeout(() => window.location.reload(), 2000)
+      } else {
+        setError('Failed to restore backup')
+      }
+    } catch (err) {
+      console.error('Failed to restore backup:', err)
+      setError('Failed to restore backup: ' + err.message)
+    } finally {
+      setRestoringBackup(false)
+    }
+  }
+
+  const handleExportBackup = async (backupKey) => {
+    try {
+      const jsonData = await exportBackupAsFile(backupKey)
+      const element = document.createElement('a')
+      element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(jsonData))
+      element.setAttribute('download', `stocka-backup-${backupKey}.json`)
+      element.style.display = 'none'
+      document.body.appendChild(element)
+      element.click()
+      document.body.removeChild(element)
+      setSuccess('✅ Backup exported successfully')
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (err) {
+      console.error('Failed to export backup:', err)
+      setError('Failed to export backup: ' + err.message)
     }
   }
 
@@ -450,6 +538,14 @@ function Settings({ user }) {
             onClick={() => setActiveTab('sync')}
           >
             ☁️ Cloud Sync
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            className={`tab-btn ${activeTab === 'backup' ? 'active' : ''}`}
+            onClick={() => setActiveTab('backup')}
+          >
+            💾 Backups
           </button>
         )}
       </div>
@@ -883,6 +979,74 @@ function Settings({ user }) {
             <p style={{ marginTop: '12px', color: '#666' }}>
               A backup snapshot is created before every upload/download sync.
             </p>
+          </div>
+        )}
+
+        {activeTab === 'backup' && isAdmin && (
+          <div className="settings-section">
+            <h3>💾 Database Backups</h3>
+            <p style={{ marginBottom: '16px', color: '#666' }}>
+              Regular backups protect your data. Automatic backups are created daily. You can also create manual backups or restore from previous versions.
+            </p>
+            
+            <div className="button-group" style={{ marginBottom: '24px' }}>
+              <button 
+                type="button" 
+                className="btn btn-primary" 
+                disabled={creatingBackup}
+                onClick={handleCreateBackup}
+              >
+                {creatingBackup ? '⏳ Creating backup...' : '➕ Create Manual Backup'}
+              </button>
+            </div>
+
+            {backups.length > 0 ? (
+              <div className="backup-list">
+                <h4>Available Backups ({backups.length})</h4>
+                <table className="backup-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Time</th>
+                      <th>Size</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backups.map((backup) => (
+                      <tr key={backup.key}>
+                        <td>{backup.date}</td>
+                        <td>{backup.time}</td>
+                        <td>{(backup.size / 1024).toFixed(1)} KB</td>
+                        <td className="backup-actions">
+                          <button 
+                            type="button" 
+                            className="btn-small"
+                            onClick={() => handleExportBackup(backup.key)}
+                            title="Download backup file"
+                          >
+                            💾 Export
+                          </button>
+                          <button 
+                            type="button" 
+                            className="btn-small btn-danger"
+                            disabled={restoringBackup}
+                            onClick={() => handleRestoreBackup(backup.key)}
+                            title="Restore database from this backup"
+                          >
+                            ↻ Restore
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="info-box">
+                <p>No backups available yet. Create one now to protect your data.</p>
+              </div>
+            )}
           </div>
         )}
       </div>
