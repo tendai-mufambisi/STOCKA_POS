@@ -390,7 +390,7 @@ function ShiftDashboard({ user }) {
                     <label>Closing Cash Amount</label>
                     <input
                       type="number"
-                      step="0.01"
+                      step="any"
                       value={endCash}
                       onChange={(e) => setEndCash(e.target.value)}
                       placeholder="Enter actual cash in drawer"

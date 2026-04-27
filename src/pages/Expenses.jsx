@@ -214,7 +214,7 @@ function Expenses({ user }) {
               </div>
               <div className="form-group">
                 <label>Amount (USD) *</label>
-                <input type="number" name="amount" step="0.01" value={formData.amount} 
+                <input type="number" name="amount" step="any" value={formData.amount} 
                   onChange={handleChange} required />
               </div>
             </div>

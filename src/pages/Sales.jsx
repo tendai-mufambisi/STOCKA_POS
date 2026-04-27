@@ -881,7 +881,7 @@ function Sales({ user }) {
                 onChange={handleCashTenderedChange}
                 onClick={handleCashInputClick}
                 className="cash-input-large"
-                step="0.01"
+                step="any"
                 autoFocus
               />
 

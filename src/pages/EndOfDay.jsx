@@ -250,7 +250,7 @@ function EndOfDay({ user }) {
                 <label>Actual Cash Counted (USD) *</label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="any"
                   value={actualCash}
                   onChange={(e) => setActualCash(e.target.value)}
                   placeholder="0.00"

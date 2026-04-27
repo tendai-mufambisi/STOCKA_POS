@@ -361,7 +361,7 @@ function StockControl() {
                       value={formData.cost_per_carton}
                       onChange={handleChange}
                       placeholder="e.g. 60.00"
-                      step="0.01"
+                      step="any"
                       min="0"
                       required
                     />
@@ -458,7 +458,7 @@ function StockControl() {
                       value={formData.cost_per_unit}
                       onChange={handleChange}
                       placeholder="0.00"
-                      step="0.01"
+                      step="any"
                       min="0"
                     />
                   </div>
