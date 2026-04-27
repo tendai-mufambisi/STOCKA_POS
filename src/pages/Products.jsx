@@ -26,7 +26,6 @@ function Products() {
     description: '',
     image_data: null
   })
-  const [prices, setPrices] = useState({})
   const [error, setError] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(25)
@@ -57,16 +56,6 @@ function Products() {
       ])
       setProducts(productsData)
       setSuppliers(suppliersData)
-
-      // Load prices for each product
-      const pricesMap = {}
-      for (const product of productsData) {
-        const price = await getLatestProductPrice(product.id)
-        if (price) {
-          pricesMap[product.id] = price
-        }
-      }
-      setPrices(pricesMap)
     } catch (err) {
       setError('Failed to load products')
       console.error(err)
@@ -233,14 +222,10 @@ function Products() {
     const exportData = filteredProducts.map(p => ({
       'Product Name': p.name,
       'Category': p.category || '',
-      'Supplier': getSupplierName(p.supplier_id),
       'Unit': p.unit,
       'Current Quantity': p.current_quantity || 0,
       'Reorder Level': p.reorder_level,
-      'Status': getStockStatus(p.current_quantity, p.reorder_level),
-      'Selling Price': prices[p.id]?.selling_price_per_unit ? `$${(prices[p.id].selling_price_per_unit || 0).toFixed(2)}` : 'N/A',
-      'Cost Per Unit': prices[p.id]?.cost_per_unit ? `$${(prices[p.id].cost_per_unit || 0).toFixed(2)}` : 'N/A',
-      'Profit Margin %': prices[p.id] ? ((((prices[p.id].selling_price_per_unit || 0) - (prices[p.id].cost_per_unit || 0)) / (prices[p.id].selling_price_per_unit || 1)) * 100).toFixed(2) : 'N/A'
+      'Status': getStockStatus(p.current_quantity, p.reorder_level)
     }))
 
     const ws = utils.json_to_sheet(exportData)
@@ -365,13 +350,6 @@ function Products() {
 
             <div className="form-row">
               <div className="form-group">
-                <label>Supplier</label>
-                <select name="supplier_id" value={formData.supplier_id} onChange={handleChange}>
-                  <option value="">Select supplier</option>
-                  {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
                 <label>Unit of Measure</label>
                 <select name="unit" value={formData.unit} onChange={handleChange}>
                   {units.map(u => <option key={u} value={u}>{u}</option>)}
@@ -462,9 +440,7 @@ function Products() {
         ) : (
           <div className={viewMode === 'grid' ? 'products-grid' : 'products-list-view'}>
             {paginatedProducts.map(product => {
-              const price = prices[product.id]
               const status = getStockStatus(product.current_quantity, product.reorder_level)
-              const profitMargin = price ? (((price.selling_price_per_unit || 0) - (price.cost_per_unit || 0)) / (price.selling_price_per_unit || 1) * 100).toFixed(2) : 'N/A'
               
               if (viewMode === 'list') {
                 return (
@@ -484,17 +460,7 @@ function Products() {
                         </div>
                       </div>
                     </div>
-                    <div className="list-item-details">
-                      {getSupplierName(product.supplier_id) !== 'N/A' && (
-                        <span className="detail-item">{getSupplierName(product.supplier_id)}</span>
-                      )}
-                      {price && (
-                        <>
-                          <span className="detail-item price">${(price.selling_price_per_unit || 0).toFixed(2)}</span>
-                          <span className="detail-item">{profitMargin}% margin</span>
-                        </>
-                      )}
-                    </div>
+
                     <div className="list-item-actions">
                       <button className="btn-icon" onClick={() => handleEdit(product)} title="Edit">
                         ✎
@@ -533,28 +499,6 @@ function Products() {
                         <span className="label">Category:</span>
                         <span className="value">{product.category}</span>
                       </div>
-                    )}
-                    {getSupplierName(product.supplier_id) !== 'N/A' && (
-                      <div className="detail-row">
-                        <span className="label">Supplier:</span>
-                        <span className="value">{getSupplierName(product.supplier_id)}</span>
-                      </div>
-                    )}
-                    {price && (
-                      <>
-                        <div className="detail-row price-row">
-                          <span className="label">Selling Price:</span>
-                          <span className="value price">${(price.selling_price_per_unit || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="detail-row price-row">
-                          <span className="label">Cost Per Unit:</span>
-                          <span className="value price">${(price.cost_per_unit || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="detail-row">
-                          <span className="label">Profit Margin:</span>
-                          <span className="value profit">{profitMargin}%</span>
-                        </div>
-                      </>
                     )}
                   </div>
 

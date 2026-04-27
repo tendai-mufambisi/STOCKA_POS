@@ -373,6 +373,7 @@
   color: var(--green-dark);
   min-height: 140px;
   text-align: center;
+  width: 100%;
 }
 
 .action-btn:hover {
