@@ -22,6 +22,8 @@ const loadInitSqlJs = async () => {
 
 const DB_KEY = 'stocka_db'
 const DB_INIT_KEY = 'stocka_db_init'
+const DB_VERSION_KEY = 'stocka_db_version'
+const CURRENT_DB_VERSION = 3  // Increment when schema changes
 
 // Save database to localStorage
 export const saveDb = () => {
@@ -75,9 +77,17 @@ export const getDb = async () => {
       
       console.log(`SQL.js loaded in ${performance.now() - start}ms`)
 
+      // Check database version for schema compatibility
+      const savedVersion = parseInt(localStorage.getItem(DB_VERSION_KEY) || '0')
       const saved = localStorage.getItem(DB_KEY)
       
-      if (saved) {
+      // If version mismatch or no saved DB, create fresh database
+      if (saved && savedVersion < CURRENT_DB_VERSION) {
+        console.log(`Database version mismatch (${savedVersion} vs ${CURRENT_DB_VERSION}). Clearing and rebuilding...`)
+        localStorage.removeItem(DB_KEY)
+        db = new SQL.Database()
+        localStorage.setItem(DB_VERSION_KEY, CURRENT_DB_VERSION.toString())
+      } else if (saved) {
         console.log('Loading existing database from storage...')
         const binary = atob(saved)
         const bytes = new Uint8Array(binary.length)
@@ -90,6 +100,7 @@ export const getDb = async () => {
         db = new SQL.Database()
         // Mark as initialized
         localStorage.setItem(DB_INIT_KEY, '1')
+        localStorage.setItem(DB_VERSION_KEY, CURRENT_DB_VERSION.toString())
       }
       
       // Always ensure all tables exist (CREATE TABLE IF NOT EXISTS is safe to run multiple times)
@@ -99,6 +110,22 @@ export const getDb = async () => {
       saveDb()
       
       console.log(`Database ready in ${performance.now() - start}ms`)
+      
+      // Trigger automatic backup if needed (non-blocking)
+      if (typeof window !== 'undefined') {
+        // Run backup check in background, don't wait for it
+        setTimeout(async () => {
+          try {
+            const shouldBackup = await shouldCreateBackup()
+            if (shouldBackup) {
+              await createDatabaseBackup()
+            }
+          } catch (err) {
+            console.warn('Auto-backup check failed (non-critical):', err)
+          }
+        }, 5000) // Delay 5s to let app stabilize
+      }
+      
       return db
     } catch (err) {
       console.error('Database initialization failed:', err)
@@ -146,9 +173,10 @@ const createTables = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       external_id TEXT UNIQUE,
       name TEXT NOT NULL,
-      category TEXT,
+      category TEXT CHECK (category IN ('Food', 'Non-Food', 'Drinks')),
       supplier_id INTEGER,
-      unit TEXT DEFAULT 'each',
+      unit TEXT DEFAULT 'each' CHECK (unit IN ('each', 'pack')),
+      selling_price REAL DEFAULT 0,
       reorder_level INTEGER DEFAULT 5,
       description TEXT,
       current_quantity INTEGER DEFAULT 0,
@@ -187,7 +215,7 @@ const createTables = () => {
       total_units INTEGER NOT NULL,
       cost_per_carton REAL NOT NULL,
       cost_per_unit REAL NOT NULL,
-      selling_price_per_unit REAL NOT NULL,
+      selling_price_per_unit REAL,
       total_value REAL NOT NULL,
       recorded_by TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
@@ -217,8 +245,7 @@ const createTables = () => {
       total REAL NOT NULL,
       cash_tendered REAL NOT NULL,
       change_given REAL NOT NULL,
-      payment_method TEXT DEFAULT 'USD Cash',
-      currency TEXT DEFAULT 'USD',
+      shift_id INTEGER,
       note TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )
@@ -301,40 +328,18 @@ const createTables = () => {
       branch_id INTEGER,
       status TEXT DEFAULT 'open',
       
-      -- Opening float (what cashier declared at start)
-      opening_usd_cash REAL DEFAULT 0,
-      opening_zwg_cash REAL DEFAULT 0,
-      opening_swipe_usd REAL DEFAULT 0,
-      opening_swipe_zwg REAL DEFAULT 0,
-      opening_ecocash_usd REAL DEFAULT 0,
-      opening_ecocash_zwg REAL DEFAULT 0,
+      -- Opening float (USD only)
+      opening_cash REAL DEFAULT 0,
       
       -- Sales totals (auto-calculated from sales table)
-      sales_usd_cash REAL DEFAULT 0,
-      sales_zwg_cash REAL DEFAULT 0,
-      sales_swipe_usd REAL DEFAULT 0,
-      sales_swipe_zwg REAL DEFAULT 0,
-      sales_ecocash_usd REAL DEFAULT 0,
-      sales_ecocash_zwg REAL DEFAULT 0,
       total_sales_count INTEGER DEFAULT 0,
       total_sales_value REAL DEFAULT 0,
       
-      -- Closing float (what cashier physically counted)
-      closing_usd_cash REAL,
-      closing_zwg_cash REAL,
-      closing_swipe_usd REAL,
-      closing_swipe_zwg REAL,
-      closing_ecocash_usd REAL,
-      closing_ecocash_zwg REAL,
+      -- Closing float (USD only)
+      closing_cash REAL,
       
       -- Variance (auto-calculated: expected vs actual)
-      variance_usd_cash REAL,
-      variance_zwg_cash REAL,
-      variance_swipe_usd REAL,
-      variance_swipe_zwg REAL,
-      variance_ecocash_usd REAL,
-      variance_ecocash_zwg REAL,
-      overall_variance REAL,
+      variance REAL,
       
       -- Reconciliation status
       reconciliation_status TEXT DEFAULT 'pending',
@@ -378,6 +383,23 @@ const createTables = () => {
       action TEXT NOT NULL,
       actor TEXT NOT NULL,
       details TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
+  // Transaction audit log - tracks all critical actions
+  db.run(`
+    CREATE TABLE IF NOT EXISTS transaction_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      username TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      old_value TEXT,
+      new_value TEXT,
+      description TEXT,
+      status TEXT DEFAULT 'completed',
       created_at TEXT DEFAULT (datetime('now'))
     )
   `)
@@ -510,12 +532,12 @@ const runMigrations = () => {
     const hasOldShiftsSchema = shiftsColumns.length > 0 && !shiftsColumns.includes('cashier_username')
     
     if (hasOldShiftsSchema) {
-      console.log('Detected old shifts table schema. Restructuring...')
-      // Drop old shifts table and recreate with new schema
+      console.log('Detected old shifts table schema. Restructuring to USD-only...')
+      // Drop old shifts table and recreate with new USD-only schema
       try {
         db.run('DROP TABLE IF EXISTS shifts')
         
-        // Recreate with new comprehensive schema
+        // Recreate with new USD-only schema
         db.run(`
           CREATE TABLE IF NOT EXISTS shifts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -524,40 +546,18 @@ const runMigrations = () => {
             branch_id INTEGER,
             status TEXT DEFAULT 'open',
             
-            -- Opening float (what cashier declared at start)
-            opening_usd_cash REAL DEFAULT 0,
-            opening_zwg_cash REAL DEFAULT 0,
-            opening_swipe_usd REAL DEFAULT 0,
-            opening_swipe_zwg REAL DEFAULT 0,
-            opening_ecocash_usd REAL DEFAULT 0,
-            opening_ecocash_zwg REAL DEFAULT 0,
+            -- Opening float (USD only)
+            opening_cash REAL DEFAULT 0,
             
             -- Sales totals (auto-calculated from sales table)
-            sales_usd_cash REAL DEFAULT 0,
-            sales_zwg_cash REAL DEFAULT 0,
-            sales_swipe_usd REAL DEFAULT 0,
-            sales_swipe_zwg REAL DEFAULT 0,
-            sales_ecocash_usd REAL DEFAULT 0,
-            sales_ecocash_zwg REAL DEFAULT 0,
             total_sales_count INTEGER DEFAULT 0,
             total_sales_value REAL DEFAULT 0,
             
-            -- Closing float (what cashier physically counted)
-            closing_usd_cash REAL,
-            closing_zwg_cash REAL,
-            closing_swipe_usd REAL,
-            closing_swipe_zwg REAL,
-            closing_ecocash_usd REAL,
-            closing_ecocash_zwg REAL,
+            -- Closing float (USD only)
+            closing_cash REAL,
             
             -- Variance (auto-calculated: expected vs actual)
-            variance_usd_cash REAL,
-            variance_zwg_cash REAL,
-            variance_swipe_usd REAL,
-            variance_swipe_zwg REAL,
-            variance_ecocash_usd REAL,
-            variance_ecocash_zwg REAL,
-            overall_variance REAL,
+            variance REAL,
             
             -- Reconciliation status
             reconciliation_status TEXT DEFAULT 'pending',
@@ -569,18 +569,17 @@ const runMigrations = () => {
             created_at TEXT DEFAULT (datetime('now'))
           )
         `)
-        console.log('Shifts table restructured successfully')
+        console.log('Shifts table restructured to USD-only schema successfully')
       } catch (err) {
         console.error('Failed to restructure shifts table:', err)
       }
     } else if (shiftsColumns.length > 0) {
-      // Define required columns for shifts table (for adding missing columns only)
+      // Define required columns for shifts table (USD-only, for adding missing columns only)
       const shiftsRequiredColumns = {
-        'opening_confirmed_at': 'TEXT',
-        'closing_timestamp': 'TEXT',
-        'float_variance': 'REAL',
-        'opening_notes': 'TEXT',
-        'closing_notes': 'TEXT'
+        'opening_cash': 'REAL DEFAULT 0',
+        'closing_cash': 'REAL',
+        'variance': 'REAL',
+        'total_sales_value': 'REAL DEFAULT 0'
       }
       
       // Add missing columns to shifts table
@@ -685,16 +684,16 @@ export const initializeShop = async (shopData) => {
     [shopData.name, shopData.address, shopData.phone, shopData.email, shopData.currency]
   )
   
-  // Create admin user with shop name as username
-  if (shopData.adminPassword) {
+  // Create admin user with provided username
+  if (shopData.adminPassword && shopData.adminUsername) {
     try {
       const passwordHash = hashPasswordSync(shopData.adminPassword)
       database.run(
         `INSERT INTO users (username, password, password_hash, role, is_active, created_by)
          VALUES (?, ?, ?, 'Admin', 1, 'system')`,
-        [shopData.name, '', passwordHash]
+        [shopData.adminUsername, '', passwordHash]
       )
-      console.log(`✅ Admin user created with username: ${shopData.name}`)
+      console.log(`✅ Admin user created with username: ${shopData.adminUsername}`)
     } catch (error) {
       console.error('Failed to create admin user:', error)
       throw error
@@ -718,10 +717,10 @@ export const updateShop = async (id, shopData) => {
       print_duplicate = ?
       WHERE id = ?`,
     [
-      shopData.name, 
-      shopData.address, 
-      shopData.phone, 
-      shopData.email,
+      shopData.name || '', 
+      shopData.address || '', 
+      shopData.phone || '', 
+      shopData.email || '',
       shopData.printer_name || null,
       shopData.printer_port || null,
       shopData.auto_print !== undefined ? shopData.auto_print : 1,
@@ -755,14 +754,15 @@ export const addProduct = async (product) => {
   try {
     const database = await getDb()
     database.run(
-      `INSERT INTO products (external_id, name, category, supplier_id, unit, reorder_level, description, current_quantity, image_data, sync_dirty, sync_version, sync_source, sync_updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'local', ?)`,
+      `INSERT INTO products (external_id, name, category, supplier_id, unit, selling_price, reorder_level, description, current_quantity, image_data, sync_dirty, sync_version, sync_source, sync_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'local', ?)`,
       [
         product.external_id || generateExternalId(),
         product.name,
         product.category || '',
         product.supplier_id || null,
         product.unit || 'each',
+        product.selling_price || 0,
         product.reorder_level || 5,
         product.description || '',
         product.current_quantity || 0,
@@ -781,13 +781,18 @@ export const addProduct = async (product) => {
 export const updateProduct = async (id, product) => {
   try {
     const database = await getDb()
+    
+    // Get old product details for audit trail (before update)
+    const oldProduct = await getProductById(id)
+    
     database.run(
-      `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, reorder_level = ?, description = ?, image_data = ?, sync_dirty = 1, sync_version = COALESCE(sync_version, 0) + 1, sync_source = 'local', sync_updated_at = ? WHERE id = ?`,
+      `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, selling_price = ?, reorder_level = ?, description = ?, image_data = ?, sync_dirty = 1, sync_version = COALESCE(sync_version, 0) + 1, sync_source = 'local', sync_updated_at = ? WHERE id = ?`,
       [
         product.name,
         product.category || '',
         product.supplier_id || null,
         product.unit || 'each',
+        product.selling_price || 0,
         product.reorder_level || 5,
         product.description || '',
         product.image_data || null,
@@ -797,6 +802,23 @@ export const updateProduct = async (id, product) => {
     )
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
+    
+    // Audit logging (non-critical - won't break if fails)
+    try {
+      if (oldProduct && oldProduct.name !== product.name) {
+        await logAuditAction(
+          'system',
+          'UPDATE_PRODUCT',
+          'PRODUCT',
+          String(id),
+          `Product ${id} updated: ${oldProduct.name} → ${product.name} | New price: $${product.selling_price}`,
+          oldProduct.name,
+          product.name
+        )
+      }
+    } catch (err) {
+      console.warn('Failed to audit product update (non-critical):', err)
+    }
   } catch (error) {
     console.error('Failed to update product:', error)
     throw error
@@ -806,9 +828,28 @@ export const updateProduct = async (id, product) => {
 export const deleteProduct = async (id) => {
   try {
     const database = await getDb()
+    
+    // Get product details before deleting (for audit trail)
+    const product = await getProductById(id)
+    
     database.run('DELETE FROM products WHERE id = ?', [id])
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
+    
+    // Audit logging (non-critical - won't break if fails)
+    try {
+      if (product) {
+        await logAuditAction(
+          'system', // No specific user context for deletes initiated from API
+          'DELETE_PRODUCT',
+          'PRODUCT',
+          String(id),
+          `Product deleted: ${product.name} (ID: ${id})`
+        )
+      }
+    } catch (err) {
+      console.warn('Failed to audit product deletion (non-critical):', err)
+    }
   } catch (error) {
     console.error('Failed to delete product:', error)
     throw error
@@ -839,12 +880,24 @@ export const updateProductQuantity = async (productId, quantity) => {
 export const getLatestProductPrice = async (productId) => {
   const database = await getDb()
   const result = database.exec(
-    `SELECT selling_price_per_unit, cost_per_unit FROM stock_receivings 
+    `SELECT selling_price, id FROM products WHERE id = ?`,
+    [productId]
+  )
+  const products = extractResults(result)
+  if (!products[0]) return null
+  
+  // Also get latest cost_per_unit from stock_receivings
+  const costResult = database.exec(
+    `SELECT cost_per_unit FROM stock_receivings 
      WHERE product_id = ? ORDER BY date_received DESC LIMIT 1`,
     [productId]
   )
-  const prices = extractResults(result)
-  return prices[0] || null
+  const costData = extractResults(costResult)
+  
+  return {
+    selling_price_per_unit: products[0].selling_price || 0,
+    cost_per_unit: costData[0]?.cost_per_unit || 0
+  }
 }
 
 export const getMostSoldProducts = async (limit = 10) => {
@@ -967,38 +1020,47 @@ export const deleteSupplier = async (id) => {
 export const addStockReceiving = async (receiving) => {
   try {
     const database = await getDb()
-    database.run(
-      `INSERT INTO stock_receivings 
-       (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, 
-        cost_per_carton, cost_per_unit, selling_price_per_unit, total_value, recorded_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        receiving.supplier_id,
-        receiving.product_id,
-        receiving.date_received,
-        receiving.cartons,
-        receiving.units_per_carton,
-        receiving.total_units,
-        receiving.cost_per_carton,
-        receiving.cost_per_unit,
-        receiving.selling_price_per_unit,
-        receiving.total_value,
-        receiving.recorded_by
-      ]
-    )
     
-    // Update product quantity
-    const product = await getProductById(receiving.product_id)
-    const newQuantity = (product.current_quantity || 0) + receiving.total_units
-    await updateProductQuantity(receiving.product_id, newQuantity)
-    
-    // Record stock movement
-    const productName = product.name
-    database.run(
-      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
-       VALUES (?, ?, 'RECEIVED', ?, ?)`,
-      [receiving.product_id, productName, receiving.total_units, receiving.recorded_by]
-    )
+    // Wrap multi-step operation in transaction for atomicity
+    database.run('BEGIN TRANSACTION')
+    try {
+      database.run(
+        `INSERT INTO stock_receivings 
+         (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, 
+          cost_per_carton, cost_per_unit, total_value, recorded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          receiving.supplier_id,
+          receiving.product_id,
+          receiving.date_received,
+          receiving.cartons,
+          receiving.units_per_carton,
+          receiving.total_units,
+          receiving.cost_per_carton,
+          receiving.cost_per_unit,
+          receiving.total_value,
+          receiving.recorded_by
+        ]
+      )
+      
+      // Update product quantity
+      const product = await getProductById(receiving.product_id)
+      const newQuantity = (product.current_quantity || 0) + receiving.total_units
+      await updateProductQuantity(receiving.product_id, newQuantity)
+      
+      // Record stock movement
+      const productName = product.name
+      database.run(
+        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
+         VALUES (?, ?, 'RECEIVED', ?, ?)`,
+        [receiving.product_id, productName, receiving.total_units, receiving.recorded_by]
+      )
+      
+      database.run('COMMIT')
+    } catch (transactionError) {
+      database.run('ROLLBACK')
+      throw transactionError
+    }
     
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
@@ -1032,52 +1094,132 @@ export const getStockReceivingById = async (id) => {
   return receivings[0] || null
 }
 
+export const getAllPurchaseHistory = async () => {
+  const database = await getDb()
+  
+  // Get supplier purchases
+  const supplierResult = database.exec(
+    `SELECT 
+      sr.id,
+      sr.date_received,
+      p.name as product_name,
+      s.name as supplier_name,
+      sr.cartons,
+      sr.units_per_carton,
+      sr.total_units,
+      sr.cost_per_unit,
+      sr.cost_per_carton,
+      sr.total_value,
+      'supplier' as purchase_type
+     FROM stock_receivings sr
+     LEFT JOIN products p ON sr.product_id = p.id
+     LEFT JOIN suppliers s ON sr.supplier_id = s.id
+     ORDER BY sr.date_received DESC`
+  )
+  
+  // Get direct purchases from stock_movements
+  const directResult = database.exec(
+    `SELECT 
+      'direct_' || sm.id as id,
+      sm.created_at as date_received,
+      sm.product_name,
+      'Direct Purchase' as supplier_name,
+      1 as cartons,
+      sm.quantity as units_per_carton,
+      sm.quantity as total_units,
+      0 as cost_per_unit,
+      0 as cost_per_carton,
+      0 as total_value,
+      'direct' as purchase_type
+     FROM stock_movements sm
+     WHERE sm.movement_type = 'DIRECT_PURCHASE'
+     ORDER BY sm.created_at DESC`
+  )
+  
+  const suppliers = extractResults(supplierResult) || []
+  const directs = extractResults(directResult) || []
+  
+  // Combine and sort by date
+  const combined = [...suppliers, ...directs].sort((a, b) => {
+    const dateA = new Date(a.date_received)
+    const dateB = new Date(b.date_received)
+    return dateB - dateA
+  })
+  
+  return combined
+}
+
 // ── SALES FUNCTIONS ──
 export const addSale = async (sale, saleItems) => {
   try {
     const database = await getDb()
+    let saleId = null
     
-    // Add sale with status 'completed'
-    database.run(
-      `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, currency, note, status, shift_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`,
-      [sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given, sale.payment_method || 'USD Cash', sale.currency || 'USD', sale.note || '', sale.shift_id || null]
-    )
-    
-    // Get the inserted sale id
-    const saleResult = database.exec('SELECT last_insert_rowid() as id')
-    const saleId = extractResults(saleResult)[0].id
-    
-    // Add sale items and update product quantities
-    const now = new Date().toISOString()
-    for (const item of saleItems) {
+    // Wrap multi-step operation in transaction for atomicity
+    database.run('BEGIN TRANSACTION')
+    try {
+      // Add sale with status 'completed'
       database.run(
-        `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, cost_price, selling_price, subtotal)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [saleId, item.product_id, item.product_name, item.quantity, item.cost_price, item.selling_price, item.subtotal]
+        `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, currency, note, status, shift_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`,
+        [sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given, sale.payment_method || 'USD Cash', sale.currency || 'USD', sale.note || '', sale.shift_id || null]
       )
       
-      // Update product quantity and last_sold_date
-      const product = await getProductById(item.product_id)
-      const newQuantity = (product.current_quantity || 0) - item.quantity
-      await updateProductQuantity(item.product_id, newQuantity)
+      // Get the inserted sale id
+      const saleResult = database.exec('SELECT last_insert_rowid() as id')
+      saleId = extractResults(saleResult)[0].id
       
-      // Update last_sold_date on product
-      database.run(
-        `UPDATE products SET last_sold_date = ? WHERE id = ?`,
-        [now, item.product_id]
-      )
+      // Add sale items and update product quantities
+      const now = new Date().toISOString()
+      for (const item of saleItems) {
+        database.run(
+          `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, cost_price, selling_price, subtotal)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [saleId, item.product_id, item.product_name, item.quantity, item.cost_price, item.selling_price, item.subtotal]
+        )
+        
+        // Update product quantity and last_sold_date
+        const product = await getProductById(item.product_id)
+        const newQuantity = (product.current_quantity || 0) - item.quantity
+        await updateProductQuantity(item.product_id, newQuantity)
+        
+        // Update last_sold_date on product
+        database.run(
+          `UPDATE products SET last_sold_date = ? WHERE id = ?`,
+          [now, item.product_id]
+        )
+        
+        // Record stock movement
+        database.run(
+          `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
+           VALUES (?, ?, 'SOLD', ?, ?)`,
+          [item.product_id, item.product_name, item.quantity, sale.cashier]
+        )
+      }
       
-      // Record stock movement
-      database.run(
-        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
-         VALUES (?, ?, 'SOLD', ?, ?)`,
-        [item.product_id, item.product_name, item.quantity, sale.cashier]
-      )
+      database.run('COMMIT')
+    } catch (transactionError) {
+      database.run('ROLLBACK')
+      throw transactionError
     }
     
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
+    
+    // Audit logging (non-critical - won't break if fails)
+    try {
+      const itemSummary = saleItems.map(i => `${i.product_name} x${i.quantity}`).join(', ')
+      await logAuditAction(
+        sale.cashier,
+        'CREATE_SALE',
+        'SALE',
+        String(saleId),
+        `Sale ${saleId} completed: ${itemSummary} | Total: $${sale.total}`
+      )
+    } catch (err) {
+      console.warn('Failed to audit sale (non-critical):', err)
+    }
+    
     return saleId
   } catch (error) {
     console.error('Failed to add sale:', error)
@@ -1224,13 +1366,13 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
   try {
     const database = await getDb()
     
-    // Get the sale to check age
+    // Get the sale to check age (validation BEFORE transaction)
     const sale = await getSaleById(saleId)
     if (!sale) {
       throw new Error('Sale not found')
     }
     
-    // Check if sale is older than 24 hours
+    // Check if sale is older than 24 hours (validation BEFORE transaction)
     const saleDate = new Date(sale.created_at)
     const now = new Date()
     const hoursDiff = (now - saleDate) / (1000 * 60 * 60)
@@ -1239,31 +1381,54 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
       throw new Error('Cannot void sales older than 24 hours')
     }
     
-    // Get items to restore stock
+    // Get items to restore stock (validation BEFORE transaction)
     const items = await getSaleItems(saleId)
     
-    // Restore stock for all items
-    for (const item of items) {
-      const product = await getProductById(item.product_id)
-      const newQuantity = (product.current_quantity || 0) + item.quantity
-      await updateProductQuantity(item.product_id, newQuantity)
+    // Wrap multi-step operation in transaction for atomicity
+    database.run('BEGIN TRANSACTION')
+    try {
+      // Restore stock for all items
+      for (const item of items) {
+        const product = await getProductById(item.product_id)
+        const newQuantity = (product.current_quantity || 0) + item.quantity
+        await updateProductQuantity(item.product_id, newQuantity)
+        
+        // Record reversal in stock movements
+        database.run(
+          `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by)
+           VALUES (?, ?, 'VOIDED', ?, ?, ?)`,
+          [item.product_id, item.product_name, item.quantity, `Void sale #${saleId}: ${voidReason}`, voidedBy]
+        )
+      }
       
-      // Record reversal in stock movements
+      // Mark sale as voided
       database.run(
-        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by)
-         VALUES (?, ?, 'VOIDED', ?, ?, ?)`,
-        [item.product_id, item.product_name, item.quantity, `Void sale #${saleId}: ${voidReason}`, voidedBy]
+        `UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`,
+        [voidReason, voidedBy, new Date().toISOString(), saleId]
       )
+      
+      database.run('COMMIT')
+    } catch (transactionError) {
+      database.run('ROLLBACK')
+      throw transactionError
     }
-    
-    // Mark sale as voided
-    database.run(
-      `UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`,
-      [voidReason, voidedBy, new Date().toISOString(), saleId]
-    )
     
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
+    
+    // Audit logging (non-critical - won't break if fails)
+    try {
+      await logAuditAction(
+        voidedBy,
+        'VOID_SALE',
+        'SALE',
+        String(saleId),
+        `Sale ${saleId} voided: ${voidReason} (Amount: $${sale.total})`
+      )
+    } catch (err) {
+      console.warn('Failed to audit void sale (non-critical):', err)
+    }
+    
     return true
   } catch (error) {
     console.error('Failed to void sale:', error)
@@ -1295,8 +1460,26 @@ export const addExpense = async (expense) => {
        VALUES (?, ?, ?, ?, ?, ?)`,
       [expense.description, expense.amount, expense.category, expense.date, expense.recorded_by, expense.shift_id || null]
     )
+    
+    // Get the inserted expense id
+    const expenseResult = database.exec('SELECT last_insert_rowid() as id')
+    const expenseId = extractResults(expenseResult)[0].id
+    
     await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
+    
+    // Audit logging (non-critical - won't break if fails)
+    try {
+      await logAuditAction(
+        expense.recorded_by,
+        'CREATE_EXPENSE',
+        'EXPENSE',
+        String(expenseId),
+        `${expense.category} expense: ${expense.description} | Amount: $${expense.amount}`
+      )
+    } catch (err) {
+      console.warn('Failed to audit expense (non-critical):', err)
+    }
   } catch (error) {
     console.error('Failed to add expense:', error)
     throw error
@@ -1479,12 +1662,23 @@ export const loginUser = async (username, password) => {
     const user = await getUserByUsername(username)
     if (!user) {
       console.log('User not found:', username)
+      // Audit failed login attempt
+      try {
+        await logAuditAction('system', 'LOGIN_FAILED', 'USER', username, 'User not found')
+      } catch (err) {
+        console.warn('Failed to audit login attempt (non-critical):', err)
+      }
       return null
     }
     
     // Check if user is active
     if (!user.is_active) {
       console.log('User is inactive:', username)
+      try {
+        await logAuditAction('system', 'LOGIN_FAILED', 'USER', username, 'User inactive')
+      } catch (err) {
+        console.warn('Failed to audit login attempt (non-critical):', err)
+      }
       return null
     }
     
@@ -1492,6 +1686,11 @@ export const loginUser = async (username, password) => {
     const passwordMatch = await comparePassword(password, user.password_hash)
     if (!passwordMatch) {
       console.log('Password mismatch for user:', username)
+      try {
+        await logAuditAction('system', 'LOGIN_FAILED', 'USER', username, 'Invalid password')
+      } catch (err) {
+        console.warn('Failed to audit login attempt (non-critical):', err)
+      }
       return null
     }
     
@@ -1505,6 +1704,13 @@ export const loginUser = async (username, password) => {
     saveDb()
     
     console.log('✅ User logged in:', username)
+    
+    // Audit successful login
+    try {
+      await logAuditAction(username, 'LOGIN', 'USER', String(user.id), `${user.role} user ${username} logged in`)
+    } catch (err) {
+      console.warn('Failed to audit login (non-critical):', err)
+    }
     
     // Return user data without sensitive info
     return {
@@ -1845,6 +2051,410 @@ export const getLowStockItems = async () => {
   return extractResults(result)
 }
 
+export const getStockValue = async () => {
+  try {
+    const database = await getDb()
+    const result = database.exec(`
+      SELECT COALESCE(SUM(p.current_quantity * COALESCE(
+        (SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1),
+        0
+      )), 0) as value FROM products p
+    `)
+    const value = getScalarValue(result, 0)
+    return value || 0
+  } catch (error) {
+    console.error('Failed to calculate stock value:', error)
+    return 0
+  }
+}
+
+// ── AUDIT LOGGING FUNCTIONS ──
+/**
+ * Log a transaction/action for audit trail
+ * Minimal implementation - just logs, doesn't affect existing operations
+ * @param {string} username - Username performing action
+ * @param {string} actionType - Type of action (SALE, VOID_SALE, ADJUST_STOCK, DELETE_PRODUCT, etc.)
+ * @param {string} entityType - Entity affected (SALE, PRODUCT, INVENTORY, etc.)
+ * @param {string} entityId - ID of entity affected
+ * @param {string} description - Human-readable description
+ * @param {string} oldValue - Previous value (optional)
+ * @param {string} newValue - New value (optional)
+ */
+export const logAuditAction = async (username, actionType, entityType, entityId, description, oldValue = null, newValue = null) => {
+  try {
+    const database = await getDb()
+    database.run(
+      `INSERT INTO transaction_audit_log (username, action_type, entity_type, entity_id, description, old_value, new_value, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')`,
+      [username, actionType, entityType, entityId, description, oldValue, newValue]
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    saveDb()
+  } catch (error) {
+    // Non-critical: don't break existing operations if audit fails
+    console.warn('Failed to log audit action (non-critical):', error)
+  }
+}
+
+/**
+ * Get audit log entries for a date range
+ * @param {string} startDate - Start date (YYYY-MM-DD)
+ * @param {string} endDate - End date (YYYY-MM-DD)
+ * @returns {Promise<Array>} - Array of audit log entries
+ */
+export const getAuditLog = async (startDate, endDate) => {
+  try {
+    const database = await getDb()
+    const result = database.exec(
+      `SELECT * FROM transaction_audit_log 
+       WHERE DATE(created_at) BETWEEN ? AND ?
+       ORDER BY created_at DESC
+       LIMIT 1000`,
+      [startDate, endDate]
+    )
+    return extractResults(result)
+  } catch (error) {
+    console.error('Failed to get audit log:', error)
+    return []
+  }
+}
+
+/**
+ * Get audit log for a specific entity
+ * @param {string} entityType - Entity type to filter (SALE, PRODUCT, etc.)
+ * @param {string} entityId - Entity ID to filter
+ * @returns {Promise<Array>} - Array of audit log entries
+ */
+export const getEntityAuditTrail = async (entityType, entityId) => {
+  try {
+    const database = await getDb()
+    const result = database.exec(
+      `SELECT * FROM transaction_audit_log 
+       WHERE entity_type = ? AND entity_id = ?
+       ORDER BY created_at DESC`,
+      [entityType, entityId]
+    )
+    return extractResults(result)
+  } catch (error) {
+    console.error('Failed to get entity audit trail:', error)
+    return []
+  }
+}
+
+/**
+ * Get recent audit actions (last 100)
+ * @returns {Promise<Array>} - Array of recent audit log entries
+ */
+export const getRecentAuditActions = async () => {
+  try {
+    const database = await getDb()
+    const result = database.exec(
+      `SELECT * FROM transaction_audit_log 
+       ORDER BY created_at DESC
+       LIMIT 100`
+    )
+    return extractResults(result)
+  } catch (error) {
+    console.error('Failed to get recent audit actions:', error)
+    return []
+  }
+}
+
+/**
+ * Clear old audit log entries (older than 90 days)
+ * Run periodically to keep database size manageable
+ */
+export const cleanupOldAuditLogs = async () => {
+  try {
+    const database = await getDb()
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+    database.run(
+      `DELETE FROM transaction_audit_log WHERE created_at < ?`,
+      [ninetyDaysAgo]
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    saveDb()
+    console.log('✅ Cleaned up old audit logs')
+  } catch (error) {
+    console.warn('Failed to cleanup audit logs (non-critical):', error)
+  }
+}
+
+// ── DATABASE BACKUP & RESTORE FUNCTIONS ──
+
+const BACKUP_KEY_PREFIX = 'stocka_backup_'
+const BACKUP_METADATA_KEY = 'stocka_backup_metadata'
+const MAX_BACKUPS = 5
+
+/**
+ * Create a backup of the database by exporting all tables to JSON
+ * Stores in localStorage with timestamp key
+ * Non-blocking - doesn't interfere with main app
+ */
+export const createDatabaseBackup = async () => {
+  try {
+    const database = await getDb()
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupKey = `${BACKUP_KEY_PREFIX}${timestamp}`
+    
+    // Export all tables to JSON
+    const tables = [
+      'shops', 'users', 'products', 'suppliers', 'stock_receivings', 
+      'stock_movements', 'sales', 'sale_items', 'expenses', 'notifications',
+      'end_of_day', 'branches', 'shifts', 'sale_holds', 'transaction_audit_log'
+    ]
+    
+    const backup = {
+      created_at: new Date().toISOString(),
+      db_version: CURRENT_DB_VERSION,
+      tables: {}
+    }
+    
+    // Export each table
+    for (const tableName of tables) {
+      try {
+        const result = database.exec(`SELECT * FROM ${tableName}`)
+        backup.tables[tableName] = extractResults(result)
+      } catch (err) {
+        // Table might not exist, skip it
+        console.warn(`Table ${tableName} not found during backup:`, err.message)
+      }
+    }
+    
+    // Store backup as JSON string in localStorage
+    const backupJson = JSON.stringify(backup)
+    localStorage.setItem(backupKey, backupJson)
+    
+    // Update metadata
+    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
+    metadata[backupKey] = {
+      created_at: backup.created_at,
+      size: backupJson.length
+    }
+    localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
+    
+    // Cleanup old backups if we have too many
+    await manageBackupStorage()
+    
+    console.log(`✅ Database backup created: ${backupKey} (${(backupJson.length / 1024).toFixed(2)}KB)`)
+    return backupKey
+  } catch (error) {
+    console.warn('Failed to create database backup (non-critical):', error)
+    return null
+  }
+}
+
+/**
+ * Get list of available backups with metadata
+ * @returns {Promise<Array>} - Array of {key, created_at, size} objects
+ */
+export const getBackupHistory = async () => {
+  try {
+    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
+    return Object.entries(metadata).map(([key, data]) => ({
+      key,
+      created_at: data.created_at,
+      size: data.size,
+      date: new Date(data.created_at).toLocaleDateString(),
+      time: new Date(data.created_at).toLocaleTimeString()
+    })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  } catch (error) {
+    console.warn('Failed to get backup history:', error)
+    return []
+  }
+}
+
+/**
+ * Restore database from a backup
+ * Warning: This will overwrite current database!
+ * @param {string} backupKey - Backup key to restore
+ * @returns {Promise<boolean>} - True if restore successful
+ */
+export const restoreFromBackup = async (backupKey) => {
+  try {
+    const backupJson = localStorage.getItem(backupKey)
+    if (!backupJson) {
+      throw new Error(`Backup not found: ${backupKey}`)
+    }
+    
+    const backup = JSON.parse(backupJson)
+    const database = await getDb()
+    
+    console.log(`Restoring database from backup: ${backupKey}`)
+    
+    // Clear existing tables (keep schema intact)
+    const tables = Object.keys(backup.tables)
+    for (const tableName of tables) {
+      try {
+        database.run(`DELETE FROM ${tableName}`)
+      } catch (err) {
+        console.warn(`Could not clear table ${tableName}:`, err.message)
+      }
+    }
+    
+    // Restore data from backup
+    for (const [tableName, rows] of Object.entries(backup.tables)) {
+      if (!Array.isArray(rows) || rows.length === 0) continue
+      
+      try {
+        const firstRow = rows[0]
+        const columns = Object.keys(firstRow)
+        const placeholders = columns.map(() => '?').join(', ')
+        const columnList = columns.join(', ')
+        
+        for (const row of rows) {
+          const values = columns.map(col => row[col])
+          database.run(
+            `INSERT INTO ${tableName} (${columnList}) VALUES (${placeholders})`,
+            values
+          )
+        }
+      } catch (err) {
+        console.warn(`Failed to restore table ${tableName}:`, err.message)
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100))
+    saveDb()
+    
+    // Log audit entry for restore
+    try {
+      await logAuditAction('system', 'RESTORE_DATABASE', 'BACKUP', backupKey, `Database restored from backup: ${backupKey}`)
+    } catch (err) {
+      console.warn('Failed to audit restore (non-critical):', err)
+    }
+    
+    console.log(`✅ Database restored successfully from: ${backupKey}`)
+    return true
+  } catch (error) {
+    console.error('Failed to restore from backup:', error)
+    return false
+  }
+}
+
+/**
+ * Manage backup storage - keep only recent backups
+ * Removes backups older than 30 days or keeps only last 5
+ * Called automatically after creating backup
+ */
+export const manageBackupStorage = async () => {
+  try {
+    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
+    const backups = Object.entries(metadata)
+      .map(([key, data]) => ({ key, created_at: new Date(data.created_at) }))
+      .sort((a, b) => b.created_at - a.created_at)
+    
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    
+    // Remove old backups
+    let removed = 0
+    for (const [key, data] of Object.entries(metadata)) {
+      const backupDate = new Date(data.created_at)
+      
+      // Remove if older than 30 days OR if we have more than MAX_BACKUPS
+      if (backupDate < thirtyDaysAgo || backups.indexOf(backups.find(b => b.key === key)) >= MAX_BACKUPS) {
+        localStorage.removeItem(key)
+        delete metadata[key]
+        removed++
+      }
+    }
+    
+    if (removed > 0) {
+      localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
+      console.log(`🧹 Cleaned up ${removed} old backups`)
+    }
+  } catch (error) {
+    console.warn('Failed to manage backup storage (non-critical):', error)
+  }
+}
+
+/**
+ * Check if a backup should be created (>24 hours since last backup)
+ * @returns {Promise<boolean>} - True if backup should be created
+ */
+export const shouldCreateBackup = async () => {
+  try {
+    const backups = await getBackupHistory()
+    if (backups.length === 0) return true
+    
+    const lastBackup = new Date(backups[0].created_at)
+    const now = new Date()
+    const hoursSinceLastBackup = (now - lastBackup) / (1000 * 60 * 60)
+    
+    return hoursSinceLastBackup >= 24
+  } catch (error) {
+    return true // Create backup if check fails
+  }
+}
+
+/**
+ * Export backup as downloadable file (JSON format)
+ * @param {string} backupKey - Backup key to export
+ * @returns {Promise<string>} - JSON string suitable for download
+ */
+export const exportBackupAsFile = async (backupKey) => {
+  try {
+    const backupJson = localStorage.getItem(backupKey)
+    if (!backupJson) {
+      throw new Error(`Backup not found: ${backupKey}`)
+    }
+    
+    const backup = JSON.parse(backupJson)
+    
+    // Pretty print for easier reading
+    const exportJson = {
+      ...backup,
+      export_date: new Date().toISOString(),
+      app_version: '1.0.0'
+    }
+    
+    return JSON.stringify(exportJson, null, 2)
+  } catch (error) {
+    console.error('Failed to export backup:', error)
+    throw error
+  }
+}
+
+/**
+ * Import backup from file (called from file upload)
+ * @param {string} jsonString - JSON string from backup file
+ * @returns {Promise<boolean>} - True if import successful
+ */
+export const importBackupFromFile = async (jsonString) => {
+  try {
+    const backup = JSON.parse(jsonString)
+    
+    // Validate backup structure
+    if (!backup.tables || !backup.created_at) {
+      throw new Error('Invalid backup file format')
+    }
+    
+    // Store as new backup
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupKey = `${BACKUP_KEY_PREFIX}${timestamp}_imported`
+    
+    localStorage.setItem(backupKey, JSON.stringify({
+      created_at: backup.created_at,
+      db_version: backup.db_version || CURRENT_DB_VERSION,
+      tables: backup.tables
+    }))
+    
+    // Update metadata
+    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
+    metadata[backupKey] = {
+      created_at: new Date().toISOString(),
+      size: jsonString.length
+    }
+    localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
+    
+    console.log(`✅ Backup imported: ${backupKey}`)
+    return backupKey
+  } catch (error) {
+    console.error('Failed to import backup:', error)
+    throw error
+  }
+}
+
 // ── SHIFT FUNCTIONS (Cashier Session Management) ──
 
 /**
@@ -1956,9 +2566,9 @@ export const updateShiftSalesForPaymentMethod = async (shiftId, paymentMethod, a
 }
 
 /**
- * Close a shift with closing float and reconciliation
+ * Close a shift with closing float and reconciliation (USD-only)
  * @param {number} shiftId - Shift ID
- * @param {Object} closingFloat - { closing_usd_cash, closing_zwg_cash, ... }
+ * @param {Object} closingFloat - { closing_cash }
  * @param {string} notes - Optional notes
  * @returns {Promise<Object>} - Shift with reconciliation data
  */
@@ -1972,57 +2582,29 @@ export const closeShift = async (shiftId, closingFloat, notes = '') => {
       throw new Error('Shift not found')
     }
     
-    // Calculate variances for each payment method
-    const variance_usd_cash = (closingFloat.closing_usd_cash || 0) - ((shift.opening_usd_cash || 0) + (shift.sales_usd_cash || 0))
-    const variance_zwg_cash = (closingFloat.closing_zwg_cash || 0) - ((shift.opening_zwg_cash || 0) + (shift.sales_zwg_cash || 0))
-    const variance_swipe_usd = (closingFloat.closing_swipe_usd || 0) - ((shift.opening_swipe_usd || 0) + (shift.sales_swipe_usd || 0))
-    const variance_swipe_zwg = (closingFloat.closing_swipe_zwg || 0) - ((shift.opening_swipe_zwg || 0) + (shift.sales_swipe_zwg || 0))
-    const variance_ecocash_usd = (closingFloat.closing_ecocash_usd || 0) - ((shift.opening_ecocash_usd || 0) + (shift.sales_ecocash_usd || 0))
-    const variance_ecocash_zwg = (closingFloat.closing_ecocash_zwg || 0) - ((shift.opening_ecocash_zwg || 0) + (shift.sales_ecocash_zwg || 0))
-    
-    const overall_variance = variance_usd_cash + variance_zwg_cash + variance_swipe_usd + variance_swipe_zwg + variance_ecocash_usd + variance_ecocash_zwg
+    // Calculate variance (USD only)
+    const expected_cash = (shift.opening_cash || 0) + (shift.total_sales_value || 0)
+    const variance = (closingFloat.closing_cash || 0) - expected_cash
     
     // Determine reconciliation status
     let reconciliation_status = 'balanced'
-    if (Math.abs(overall_variance) > 0.01) {
-      reconciliation_status = overall_variance > 0 ? 'over' : 'short'
+    if (Math.abs(variance) > 0.01) {
+      reconciliation_status = variance > 0 ? 'over' : 'short'
     }
     
-    // Update shift with closing data
+    // Update shift with closing data (USD-only fields)
     database.run(
       `UPDATE shifts SET 
-        closing_usd_cash = ?,
-        closing_zwg_cash = ?,
-        closing_swipe_usd = ?,
-        closing_swipe_zwg = ?,
-        closing_ecocash_usd = ?,
-        closing_ecocash_zwg = ?,
-        variance_usd_cash = ?,
-        variance_zwg_cash = ?,
-        variance_swipe_usd = ?,
-        variance_swipe_zwg = ?,
-        variance_ecocash_usd = ?,
-        variance_ecocash_zwg = ?,
-        overall_variance = ?,
+        closing_cash = ?,
+        variance = ?,
         reconciliation_status = ?,
         notes = ?,
         closed_at = ?,
         status = 'closed'
       WHERE id = ?`,
       [
-        closingFloat.closing_usd_cash || 0,
-        closingFloat.closing_zwg_cash || 0,
-        closingFloat.closing_swipe_usd || 0,
-        closingFloat.closing_swipe_zwg || 0,
-        closingFloat.closing_ecocash_usd || 0,
-        closingFloat.closing_ecocash_zwg || 0,
-        variance_usd_cash,
-        variance_zwg_cash,
-        variance_swipe_usd,
-        variance_swipe_zwg,
-        variance_ecocash_usd,
-        variance_ecocash_zwg,
-        overall_variance,
+        closingFloat.closing_cash || 0,
+        variance,
         reconciliation_status,
         notes,
         closedAt,
@@ -2287,27 +2869,10 @@ export const getShiftSummary = async (shiftId) => {
     }
     expensesStmt.free()
     
-    // Compute derived fields for compatibility with ShiftDashboard
-    const openingFloatSum = (shift.opening_usd_cash || 0) + 
-                           (shift.opening_zwg_cash || 0) + 
-                           (shift.opening_swipe_usd || 0) + 
-                           (shift.opening_swipe_zwg || 0) + 
-                           (shift.opening_ecocash_usd || 0) + 
-                           (shift.opening_ecocash_zwg || 0)
-    
-    const closingFloatSum = (shift.closing_usd_cash || 0) + 
-                           (shift.closing_zwg_cash || 0) + 
-                           (shift.closing_swipe_usd || 0) + 
-                           (shift.closing_swipe_zwg || 0) + 
-                           (shift.closing_ecocash_usd || 0) + 
-                           (shift.closing_ecocash_zwg || 0)
-    
-    const totalSales = (shift.sales_usd_cash || 0) + 
-                      (shift.sales_zwg_cash || 0) + 
-                      (shift.sales_swipe_usd || 0) + 
-                      (shift.sales_swipe_zwg || 0) + 
-                      (shift.sales_ecocash_usd || 0) + 
-                      (shift.sales_ecocash_zwg || 0)
+    // Compute derived fields for compatibility with ShiftDashboard (USD-only)
+    const openingFloatSum = shift.opening_cash || 0
+    const closingFloatSum = shift.closing_cash || 0
+    const totalSales = shift.total_sales_value || 0
     
     const expectedCash = openingFloatSum + totalSales
     const actualCash = closingFloatSum
