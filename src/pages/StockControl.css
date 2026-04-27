@@ -160,12 +160,26 @@
   box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
 }
 
+.field-hint {
+  margin: 6px 0 0 0;
+  font-size: 11px;
+  color: #999;
+  font-style: italic;
+  line-height: 1.3;
+}
+
 .calculations-panel {
   background: #f9f9f9;
   border: 1px solid #eee;
   border-radius: 6px;
   padding: 15px;
   margin: 15px 0;
+}
+
+.calc-explanation {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #ddd;
 }
 
 .calc-row {

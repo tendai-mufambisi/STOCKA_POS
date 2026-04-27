@@ -306,32 +306,37 @@ function StockControl() {
                       required
                     />
                   </div>
+                </div>
+
+                <div className="form-row">
                   <div className="form-group">
-                    <label>Number of Cartons *</label>
+                    <label>Number of Cartons (Boxes) *</label>
                     <input
                       type="number"
                       name="cartons"
                       value={formData.cartons}
                       onChange={handleChange}
-                      placeholder="0"
+                      placeholder="e.g. 5"
                       min="0"
                       required
                     />
+                    <p className="field-hint">How many cartons/boxes received in total</p>
                   </div>
                 </div>
 
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Units per Carton *</label>
+                    <label>Units per Carton (Items in Each Box) *</label>
                     <input
                       type="number"
                       name="units_per_carton"
                       value={formData.units_per_carton}
                       onChange={handleChange}
-                      placeholder="0"
+                      placeholder="e.g. 12"
                       min="0"
                       required
                     />
+                    <p className="field-hint">How many individual units/items are inside each carton</p>
                   </div>
                   <div className="form-group">
                     <label>Cost per Carton (USD) *</label>
@@ -340,23 +345,35 @@ function StockControl() {
                       name="cost_per_carton"
                       value={formData.cost_per_carton}
                       onChange={handleChange}
-                      placeholder="0.00"
+                      placeholder="e.g. 60.00"
                       step="0.01"
                       min="0"
                       required
                     />
+                    <p className="field-hint">Total cost for one complete carton (all units inside)</p>
                   </div>
                 </div>
 
-                {/* Calculations Display */}
+                {/* Calculations Display - With Formula Explanation */}
                 <div className="calculations-panel">
+                  <div className="calc-explanation">
+                    <p style={{ margin: 0, fontSize: '13px', color: '#555', marginBottom: '12px' }}>
+                      <strong>📊 Calculation Breakdown:</strong>
+                    </p>
+                    {formData.cartons && formData.units_per_carton && formData.cost_per_carton && (
+                      <p style={{ margin: 0, fontSize: '12px', color: '#666', marginBottom: '12px', fontFamily: 'monospace', backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
+                        {formData.cartons} cartons × {formData.units_per_carton} units/carton = {(formData.cartons || 0) * (formData.units_per_carton || 0)} total units<br/>
+                        ${formData.cost_per_carton} ÷ {formData.units_per_carton} units = ${(formData.cost_per_carton / formData.units_per_carton || 0).toFixed(2)}/unit
+                      </p>
+                    )}
+                  </div>
                   <div className="calc-row">
                     <div className="calc-item">
-                      <span className="calc-label">Total Units:</span>
-                      <span className="calc-value">{(calculations.total_units || 0).toFixed(0)}</span>
+                      <span className="calc-label">Total Units to Add:</span>
+                      <span className="calc-value">{(calculations.total_units || 0).toFixed(0)} units</span>
                     </div>
                     <div className="calc-item">
-                      <span className="calc-label">Cost per Unit:</span>
+                      <span className="calc-label">Cost Per Unit:</span>
                       <span className="calc-value">${(calculations.cost_per_unit || 0).toFixed(2)}</span>
                     </div>
                     <div className="calc-item">
@@ -364,8 +381,8 @@ function StockControl() {
                       <span className="calc-value">${(calculations.total_value || 0).toFixed(2)}</span>
                     </div>
                   </div>
-                  <p style={{ fontSize: '12px', color: '#666', marginTop: '12px' }}>
-                    💡 Selling price is managed in the Products tab
+                  <p style={{ fontSize: '12px', color: '#666', marginTop: '12px', marginBottom: 0 }}>
+                    💡 The selling price for each product is set separately in the Products tab
                   </p>
                 </div>
               </>
