@@ -1125,56 +1125,27 @@ export const getStockReceivingById = async (id) => {
 export const getAllPurchaseHistory = async () => {
   const database = await getDb()
   
-  // Get supplier purchases
-  const supplierResult = database.exec(
+  // Get all purchases (both supplier and direct) from stock_receivings
+  const result = database.exec(
     `SELECT 
       sr.id,
       sr.date_received,
       p.name as product_name,
-      s.name as supplier_name,
+      COALESCE(s.name, 'Direct Purchase') as supplier_name,
       sr.cartons,
       sr.units_per_carton,
       sr.total_units,
       sr.cost_per_unit,
       sr.cost_per_carton,
       sr.total_value,
-      'supplier' as purchase_type
+      CASE WHEN sr.supplier_id IS NULL THEN 'direct' ELSE 'supplier' END as purchase_type
      FROM stock_receivings sr
      LEFT JOIN products p ON sr.product_id = p.id
      LEFT JOIN suppliers s ON sr.supplier_id = s.id
      ORDER BY sr.date_received DESC`
   )
   
-  // Get direct purchases from stock_movements
-  const directResult = database.exec(
-    `SELECT 
-      'direct_' || sm.id as id,
-      sm.created_at as date_received,
-      sm.product_name,
-      'Direct Purchase' as supplier_name,
-      1 as cartons,
-      sm.quantity as units_per_carton,
-      sm.quantity as total_units,
-      0 as cost_per_unit,
-      0 as cost_per_carton,
-      0 as total_value,
-      'direct' as purchase_type
-     FROM stock_movements sm
-     WHERE sm.movement_type = 'DIRECT_PURCHASE'
-     ORDER BY sm.created_at DESC`
-  )
-  
-  const suppliers = extractResults(supplierResult) || []
-  const directs = extractResults(directResult) || []
-  
-  // Combine and sort by date
-  const combined = [...suppliers, ...directs].sort((a, b) => {
-    const dateA = new Date(a.date_received)
-    const dateB = new Date(b.date_received)
-    return dateB - dateA
-  })
-  
-  return combined
+  return extractResults(result) || []
 }
 
 // ── SALES FUNCTIONS ──
@@ -3203,30 +3174,77 @@ export const getManagerAnalytics = async () => {
  * @param {Object} purchase - { product_id, quantity, cost_per_unit, notes, recorded_by }
  */
 export const recordDirectPurchase = async (purchase) => {
+  const database = await getDb()
+  let transactionStarted = false
+  
   try {
-    const database = await getDb()
-    const date = new Date().toISOString()
+    // Validate product exists before starting transaction
+    const product = await getProductById(purchase.product_id)
+    if (!product) {
+      throw new Error(`Product with ID ${purchase.product_id} not found`)
+    }
     
-    // Get current quantity
-    const productResult = database.exec(
-      'SELECT current_quantity FROM products WHERE id = ?',
-      [purchase.product_id]
-    )
-    const product = extractResults(productResult)[0]
-    const newQuantity = (product?.current_quantity || 0) + purchase.quantity
+    // Start transaction
+    database.run('BEGIN TRANSACTION')
+    transactionStarted = true
     
-    // Update product quantity
-    database.run(
-      'UPDATE products SET current_quantity = ? WHERE id = ?',
-      [newQuantity, purchase.product_id]
-    )
+    try {
+      // Insert into stock_receivings with supplier_id = NULL for direct purchases
+      database.run(
+        `INSERT INTO stock_receivings 
+         (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, 
+          cost_per_carton, cost_per_unit, total_value, recorded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          null,  // No supplier for direct purchases
+          purchase.product_id,
+          new Date().toISOString(),
+          1,  // Direct purchases treated as 1 "carton"
+          purchase.quantity,  // Quantity is the units
+          purchase.quantity,
+          purchase.cost_per_unit * purchase.quantity,  // Total cost
+          purchase.cost_per_unit,
+          purchase.cost_per_unit * purchase.quantity,
+          purchase.recorded_by || 'System'
+        ]
+      )
+      
+      // Update product quantity directly in transaction
+      const newQuantity = (product.current_quantity || 0) + purchase.quantity
+      database.run(
+        `UPDATE products
+         SET current_quantity = ?,
+             sync_dirty = 1,
+             sync_version = COALESCE(sync_version, 0) + 1,
+             sync_source = 'local',
+             sync_updated_at = ?
+         WHERE id = ?`,
+        [newQuantity, new Date().toISOString(), purchase.product_id]
+      )
+      
+      // Record in stock movements for detailed audit trail (if notes provided)
+      if (purchase.notes) {
+        database.run(
+          `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by)
+           VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`,
+          [purchase.product_id, product.name, purchase.quantity, purchase.notes, purchase.recorded_by || 'System']
+        )
+      }
+      
+      database.run('COMMIT')
+      transactionStarted = false
+    } catch (transactionError) {
+      if (transactionStarted) {
+        try {
+          database.run('ROLLBACK')
+        } catch (rollbackError) {
+          console.error('Rollback error:', rollbackError)
+        }
+      }
+      throw transactionError
+    }
     
-    // Record in stock movements for audit trail
-    database.run(`
-      INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at)
-      VALUES (?, (SELECT name FROM products WHERE id = ?), 'DIRECT_PURCHASE', ?, ?, ?, ?)
-    `, [purchase.product_id, purchase.product_id, purchase.quantity, purchase.notes || '', purchase.recorded_by, date])
-    
+    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to record direct purchase:', error)
