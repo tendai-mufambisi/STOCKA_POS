@@ -1018,12 +1018,22 @@ export const deleteSupplier = async (id) => {
 
 // ── STOCK RECEIVING FUNCTIONS ──
 export const addStockReceiving = async (receiving) => {
+  const database = await getDb()
+  let transactionStarted = false
+  
   try {
-    const database = await getDb()
+    // Validate product exists before starting transaction
+    const product = await getProductById(receiving.product_id)
+    if (!product) {
+      throw new Error(`Product with ID ${receiving.product_id} not found`)
+    }
     
-    // Wrap multi-step operation in transaction for atomicity
+    // Start transaction
     database.run('BEGIN TRANSACTION')
+    transactionStarted = true
+    
     try {
+      // Insert stock receiving record
       database.run(
         `INSERT INTO stock_receivings 
          (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, 
@@ -1043,31 +1053,45 @@ export const addStockReceiving = async (receiving) => {
         ]
       )
       
-      // Update product quantity
-      const product = await getProductById(receiving.product_id)
-      if (!product) {
-        throw new Error(`Product with ID ${receiving.product_id} not found`)
-      }
+      // Update product quantity (directly in transaction, without nested saveDb)
       const newQuantity = (product.current_quantity || 0) + receiving.total_units
-      await updateProductQuantity(receiving.product_id, newQuantity)
+      database.run(
+        `UPDATE products
+         SET current_quantity = ?,
+             sync_dirty = 1,
+             sync_version = COALESCE(sync_version, 0) + 1,
+             sync_source = 'local',
+             sync_updated_at = ?
+         WHERE id = ?`,
+        [newQuantity, new Date().toISOString(), receiving.product_id]
+      )
       
       // Record stock movement
-      const productName = product.name
       database.run(
         `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by)
          VALUES (?, ?, ?, ?, ?)`,
-        [receiving.product_id, productName, 'RECEIVED', receiving.total_units, receiving.recorded_by]
+        [receiving.product_id, product.name, 'RECEIVED', receiving.total_units, receiving.recorded_by]
       )
       
+      // Commit transaction
       database.run('COMMIT')
+      transactionStarted = false
+      
+      // Save to localStorage after successful commit
+      await new Promise(resolve => setTimeout(resolve, 100))
+      saveDb()
     } catch (transactionError) {
-      database.run('ROLLBACK')
+      // Only rollback if transaction is active
+      if (transactionStarted) {
+        try {
+          database.run('ROLLBACK')
+        } catch (rollbackError) {
+          console.error('Rollback error:', rollbackError)
+        }
+      }
       console.error('Stock receiving transaction error:', transactionError)
       throw transactionError
     }
-    
-    await new Promise(resolve => setTimeout(resolve, 100))
-    saveDb()
   } catch (error) {
     console.error('Failed to add stock receiving:', error.message || error)
     throw error
@@ -1155,12 +1179,23 @@ export const getAllPurchaseHistory = async () => {
 
 // ── SALES FUNCTIONS ──
 export const addSale = async (sale, saleItems) => {
+  const database = await getDb()
+  let saleId = null
+  let transactionStarted = false
+  
   try {
-    const database = await getDb()
-    let saleId = null
+    // Validate products exist before starting transaction
+    for (const item of saleItems) {
+      const product = await getProductById(item.product_id)
+      if (!product) {
+        throw new Error(`Product with ID ${item.product_id} not found`)
+      }
+    }
     
-    // Wrap multi-step operation in transaction for atomicity
+    // Start transaction
     database.run('BEGIN TRANSACTION')
+    transactionStarted = true
+    
     try {
       // Add sale with status 'completed'
       database.run(
@@ -1182,15 +1217,19 @@ export const addSale = async (sale, saleItems) => {
           [saleId, item.product_id, item.product_name, item.quantity, item.cost_price, item.selling_price, item.subtotal]
         )
         
-        // Update product quantity and last_sold_date
+        // Update product quantity directly in transaction (without nested saveDb)
         const product = await getProductById(item.product_id)
         const newQuantity = (product.current_quantity || 0) - item.quantity
-        await updateProductQuantity(item.product_id, newQuantity)
-        
-        // Update last_sold_date on product
         database.run(
-          `UPDATE products SET last_sold_date = ? WHERE id = ?`,
-          [now, item.product_id]
+          `UPDATE products
+           SET current_quantity = ?,
+               sync_dirty = 1,
+               sync_version = COALESCE(sync_version, 0) + 1,
+               sync_source = 'local',
+               sync_updated_at = ?,
+               last_sold_date = ?
+           WHERE id = ?`,
+          [newQuantity, now, now, item.product_id]
         )
         
         // Record stock movement
@@ -1202,8 +1241,15 @@ export const addSale = async (sale, saleItems) => {
       }
       
       database.run('COMMIT')
+      transactionStarted = false
     } catch (transactionError) {
-      database.run('ROLLBACK')
+      if (transactionStarted) {
+        try {
+          database.run('ROLLBACK')
+        } catch (rollbackError) {
+          console.error('Rollback error:', rollbackError)
+        }
+      }
       throw transactionError
     }
     
@@ -1367,9 +1413,10 @@ export const discardHeldSale = async (saleId) => {
  * @returns {Promise<boolean>} - True if void successful
  */
 export const voidSale = async (saleId, voidReason, voidedBy) => {
+  const database = await getDb()
+  let transactionStarted = false
+  
   try {
-    const database = await getDb()
-    
     // Get the sale to check age (validation BEFORE transaction)
     const sale = await getSaleById(saleId)
     if (!sale) {
@@ -1388,14 +1435,35 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
     // Get items to restore stock (validation BEFORE transaction)
     const items = await getSaleItems(saleId)
     
-    // Wrap multi-step operation in transaction for atomicity
+    // Validate all products exist before transaction
+    for (const item of items) {
+      const product = await getProductById(item.product_id)
+      if (!product) {
+        throw new Error(`Product with ID ${item.product_id} not found`)
+      }
+    }
+    
+    // Start transaction
     database.run('BEGIN TRANSACTION')
+    transactionStarted = true
+    
     try {
       // Restore stock for all items
       for (const item of items) {
         const product = await getProductById(item.product_id)
         const newQuantity = (product.current_quantity || 0) + item.quantity
-        await updateProductQuantity(item.product_id, newQuantity)
+        
+        // Update product quantity directly in transaction (without nested saveDb)
+        database.run(
+          `UPDATE products
+           SET current_quantity = ?,
+               sync_dirty = 1,
+               sync_version = COALESCE(sync_version, 0) + 1,
+               sync_source = 'local',
+               sync_updated_at = ?
+           WHERE id = ?`,
+          [newQuantity, new Date().toISOString(), item.product_id]
+        )
         
         // Record reversal in stock movements
         database.run(
@@ -1412,8 +1480,15 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
       )
       
       database.run('COMMIT')
+      transactionStarted = false
     } catch (transactionError) {
-      database.run('ROLLBACK')
+      if (transactionStarted) {
+        try {
+          database.run('ROLLBACK')
+        } catch (rollbackError) {
+          console.error('Rollback error:', rollbackError)
+        }
+      }
       throw transactionError
     }
     
@@ -1433,16 +1508,6 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
       console.warn('Failed to audit void sale (non-critical):', err)
     }
     
-    return true
-  } catch (error) {
-    console.error('Failed to void sale:', error)
-    throw error
-  }
-}
-
-/**
- * Get voided sales (for audit trail)
- * @returns {Promise<Array>} - Array of voided sales
  */
 export const getVoidedSales = async () => {
   try {
