@@ -51,12 +51,18 @@ function EndOfDay({ user }) {
         return expenseDate >= todayStart && expenseDate < todayEnd
       })
       
-      // Filter today's shifts (those that started today)
-      const todaysShiftsData = shiftsData.filter(shift => {
-        const shiftDate = new Date(shift.start_time).toISOString().split('T')[0]
-        return shiftDate === today
-      })
-      
+      // Filter today's shifts and map raw DB column names to display field names
+      const todaysShiftsData = shiftsData
+        .filter(shift => new Date(shift.started_at).toISOString().split('T')[0] === today)
+        .map(shift => ({
+          ...shift,
+          cashier_name: shift.cashier_display_name || shift.cashier_username,
+          start_time: shift.started_at,
+          end_time: shift.closed_at,
+          start_float: shift.opening_cash || 0,
+          end_float: shift.closing_cash || 0
+        }))
+
       setTodaysSales(todaysSalesData)
       setTodaysExpenses(todaysExpensesData)
       setTodaysShifts(todaysShiftsData)
@@ -78,7 +84,8 @@ function EndOfDay({ user }) {
 
   const totalSales = todaysSales.reduce((sum, s) => sum + (s.total || 0), 0)
   const totalExpenses = todaysExpenses.reduce((sum, e) => sum + (e.amount || 0), 0)
-  const expectedCash = totalSales - totalExpenses
+  const totalOpeningFloat = todaysShifts.reduce((sum, s) => sum + (s.start_float || 0), 0)
+  const expectedCash = totalOpeningFloat + totalSales - totalExpenses
   const difference = parseFloat(actualCash || 0) - expectedCash
   const status = difference > 0 ? 'Overage' : difference < 0 ? 'Shortage' : 'Balanced'
 
@@ -317,7 +324,7 @@ function EndOfDay({ user }) {
                   <tbody>
                     {todaysSales.map(s => (
                       <tr key={s.id}>
-                        <td>{new Date(s.date_created).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}</td>
+                        <td>{new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}</td>
                         <td className="amount">${s.total?.toFixed(2)}</td>
                         <td>{s.cashier || 'System'}</td>
                       </tr>

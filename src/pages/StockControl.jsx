@@ -1,9 +1,134 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory } from '../database/db'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX } from 'react-icons/fi'
 import './StockControl.css'
+
+// Inline searchable dropdown component used for product and supplier selection
+function SearchableSelect({ options, value, onChange, placeholder, disabled }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  const selected = options.find(o => String(o.value) === String(value))
+
+  const filtered = options.filter(o =>
+    o.label.toLowerCase().includes(query.toLowerCase())
+  )
+
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const handleSelect = (opt) => {
+    onChange(opt.value)
+    setQuery('')
+    setOpen(false)
+  }
+
+  const handleClear = (e) => {
+    e.stopPropagation()
+    onChange('')
+    setQuery('')
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <div
+        onClick={() => { if (!disabled) setOpen(o => !o) }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          border: '1px solid #ddd',
+          borderRadius: '4px',
+          padding: '8px 10px',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          background: disabled ? '#f5f5f5' : '#fff',
+          minHeight: '38px',
+          gap: '6px',
+          userSelect: 'none'
+        }}
+      >
+        <FiSearch size={14} style={{ color: '#999', flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: '14px', color: selected ? '#333' : '#999' }}>
+          {selected ? selected.label : placeholder}
+        </span>
+        {selected && !disabled && (
+          <FiX size={14} style={{ color: '#999', flexShrink: 0 }} onClick={handleClear} />
+        )}
+      </div>
+
+      {open && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          right: 0,
+          background: '#fff',
+          border: '1px solid #ddd',
+          borderRadius: '4px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+          zIndex: 1000,
+          maxHeight: '260px',
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
+          <div style={{ padding: '8px', borderBottom: '1px solid #eee' }}>
+            <input
+              autoFocus
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Type to search..."
+              style={{
+                width: '100%',
+                padding: '6px 8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                fontSize: '13px',
+                boxSizing: 'border-box'
+              }}
+              onClick={e => e.stopPropagation()}
+            />
+          </div>
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: '12px', color: '#999', fontSize: '13px', textAlign: 'center' }}>
+                No results found
+              </div>
+            ) : (
+              filtered.map(opt => (
+                <div
+                  key={opt.value}
+                  onClick={() => handleSelect(opt)}
+                  style={{
+                    padding: '9px 12px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    color: String(opt.value) === String(value) ? '#2e7d32' : '#333',
+                    fontWeight: String(opt.value) === String(value) ? '600' : '400',
+                    backgroundColor: String(opt.value) === String(value) ? '#f0f7f0' : 'transparent'
+                  }}
+                  onMouseEnter={e => { if (String(opt.value) !== String(value)) e.currentTarget.style.background = '#f5f5f5' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = String(opt.value) === String(value) ? '#f0f7f0' : 'transparent' }}
+                >
+                  {opt.label}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function StockControl() {
   const [receivings, setReceivings] = useState([])
+  const [filteredReceivings, setFilteredReceivings] = useState([])
   const [products, setProducts] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -12,43 +137,38 @@ function StockControl() {
   const [successMessage, setSuccessMessage] = useState('')
   const user = JSON.parse(localStorage.getItem('stocka_user') || '{}')
 
-  // Separate tracking for purchase type
-  const [purchaseType, setPurchaseType] = useState('supplier') // 'supplier' or 'direct'
+  const [purchaseType, setPurchaseType] = useState('supplier')
 
-  const [formData, setFormData] = useState({
-    supplier_id: '',
+  const emptyForm = {
     product_id: '',
+    supplier_id: '',
     date_received: new Date().toISOString().split('T')[0],
     cartons: '',
     units_per_carton: '',
     cost_per_carton: '',
-    // For direct purchases
     quantity: '',
     cost_per_unit: '',
     notes: ''
-  })
+  }
+  const [formData, setFormData] = useState(emptyForm)
 
-  const [calculations, setCalculations] = useState({
-    total_units: 0,
-    cost_per_unit: 0,
-    total_value: 0
-  })
+  // History search/filter state (matches CurrentInventory pattern)
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyTypeFilter, setHistoryTypeFilter] = useState('all')
+  const [historySupplierFilter, setHistorySupplierFilter] = useState('all')
+  const [sortConfig, setSortConfig] = useState({ column: 'date', direction: 'desc' })
 
-  useEffect(() => {
-    loadData()
-  }, [])
+  useEffect(() => { loadData() }, [])
+
+  useEffect(() => { applyHistoryFilters() }, [receivings, historySearch, historyTypeFilter, historySupplierFilter, sortConfig])
 
   const loadData = async () => {
     try {
       setLoading(true)
-      const [productsData, suppliersData, purchaseHistoryData] = await Promise.all([
-        getProducts(),
-        getSuppliers(),
-        getAllPurchaseHistory()
-      ])
-      setProducts(productsData)
-      setSuppliers(suppliersData)
-      setReceivings(purchaseHistoryData)
+      const [p, s, h] = await Promise.all([getProducts(), getSuppliers(), getAllPurchaseHistory()])
+      setProducts(p)
+      setSuppliers(s)
+      setReceivings(h)
     } catch (err) {
       setError('Failed to load data')
       console.error(err)
@@ -57,47 +177,70 @@ function StockControl() {
     }
   }
 
-  const handleChange = (e) => {
-    const { name, value } = e.target
-    
-    // Special handling for purchase_type dropdown
-    if (name === 'purchase_type') {
-      setPurchaseType(value)
-      // Reset supplier_id when switching to direct purchase
-      if (value === 'direct') {
-        setFormData(prev => ({...prev, supplier_id: '', quantity: '', cost_per_unit: '', notes: ''}))
-      } else {
-        setFormData(prev => ({...prev, supplier_id: '', quantity: '', cost_per_unit: '', notes: ''}))
-      }
-      return
+  const applyHistoryFilters = () => {
+    let data = [...receivings]
+
+    if (historySearch.trim()) {
+      const q = historySearch.toLowerCase()
+      data = data.filter(r =>
+        (r.product_name || '').toLowerCase().includes(q) ||
+        (r.supplier_name || '').toLowerCase().includes(q)
+      )
     }
 
-    const newFormData = {
-      ...formData,
-      [name]: value
+    if (historyTypeFilter !== 'all') {
+      data = data.filter(r => r.purchase_type === historyTypeFilter)
     }
-    setFormData(newFormData)
-    
-    // Only calculate for supplier purchases
-    if (purchaseType === 'supplier') {
-      calculateValues(newFormData)
+
+    if (historySupplierFilter !== 'all') {
+      data = data.filter(r => String(r.supplier_name) === historySupplierFilter)
     }
+
+    data.sort((a, b) => {
+      let av, bv
+      switch (sortConfig.column) {
+        case 'date':     av = a.date_received; bv = b.date_received; break
+        case 'product':  av = (a.product_name || '').toLowerCase(); bv = (b.product_name || '').toLowerCase(); break
+        case 'source':   av = (a.supplier_name || '').toLowerCase(); bv = (b.supplier_name || '').toLowerCase(); break
+        case 'units':    av = a.total_units || 0; bv = b.total_units || 0; break
+        case 'value':    av = a.total_value || 0; bv = b.total_value || 0; break
+        default:         av = a.date_received; bv = b.date_received
+      }
+      if (av < bv) return sortConfig.direction === 'asc' ? -1 : 1
+      if (av > bv) return sortConfig.direction === 'asc' ? 1 : -1
+      return 0
+    })
+
+    setFilteredReceivings(data)
   }
 
-  const calculateValues = (data) => {
-    const cartons = parseFloat(data.cartons) || 0
-    const unitsPerCarton = parseFloat(data.units_per_carton) || 0
-    const costPerCarton = parseFloat(data.cost_per_carton) || 0
+  const handleSort = (column) => {
+    setSortConfig(prev => ({
+      column,
+      direction: prev.column === column && prev.direction === 'asc' ? 'desc' : 'asc'
+    }))
+  }
 
-    const totalUnits = cartons * unitsPerCarton
-    const costPerUnit = unitsPerCarton > 0 ? costPerCarton / unitsPerCarton : 0
-    const totalValue = totalUnits * costPerUnit
+  const SortIcon = ({ column }) => {
+    if (sortConfig.column !== column) return null
+    return sortConfig.direction === 'asc'
+      ? <FiArrowUp size={13} style={{ marginLeft: 4, display: 'inline' }} />
+      : <FiArrowDown size={13} style={{ marginLeft: 4, display: 'inline' }} />
+  }
 
-    setCalculations({
-      total_units: totalUnits,
-      cost_per_unit: costPerUnit,
-      total_value: totalValue
-    })
+  // Computed values for both form types
+  const directQty = parseInt(formData.quantity) || 0
+  const directCpu = parseFloat(formData.cost_per_unit) || 0
+  const directTotalValue = directQty * directCpu
+
+  const handleFieldChange = (name, value) => {
+    setFormData(prev => ({ ...prev, [name]: value }))
+  }
+
+  const handleTypeChange = (type) => {
+    setPurchaseType(type)
+    setFormData(emptyForm)
+    setError('')
   }
 
   const handleSubmit = async (e) => {
@@ -105,443 +248,377 @@ function StockControl() {
     setError('')
     setSuccessMessage('')
 
-    if (purchaseType === 'supplier') {
-      // Supplier purchase validation and submission
-      if (!formData.supplier_id) {
-        setError('Please select a supplier')
-        return
-      }
-      if (!formData.product_id) {
-        setError('Please select a product')
-        return
-      }
-      if (!formData.cartons || parseFloat(formData.cartons) <= 0) {
-        setError('Please enter a valid number of cartons')
-        return
-      }
-      if (!formData.units_per_carton || parseFloat(formData.units_per_carton) <= 0) {
-        setError('Please enter units per carton')
-        return
-      }
-      if (!formData.cost_per_carton || parseFloat(formData.cost_per_carton) < 0) {
-        setError('Please enter cost per carton')
-        return
-      }
+    if (!formData.product_id) { setError('Please select a product'); return }
 
-      try {
-        // Recalculate to ensure we have valid values even if state didn't update
-        const cartons = parseFloat(formData.cartons) || 0
-        const unitsPerCarton = parseFloat(formData.units_per_carton) || 0
-        const costPerCarton = parseFloat(formData.cost_per_carton) || 0
-        
-        const totalUnits = cartons * unitsPerCarton
-        const costPerUnit = unitsPerCarton > 0 ? costPerCarton / unitsPerCarton : 0
-        const totalValue = totalUnits * costPerUnit
+    try {
+      if (purchaseType === 'supplier') {
+        if (!formData.supplier_id) { setError('Please select a supplier'); return }
+        if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
 
-        const receiving = {
+        await addStockReceiving({
           supplier_id: parseInt(formData.supplier_id),
           product_id: parseInt(formData.product_id),
           date_received: formData.date_received,
-          cartons: parseInt(formData.cartons),
-          units_per_carton: parseInt(formData.units_per_carton),
-          total_units: totalUnits,
-          cost_per_carton: costPerCarton,
-          cost_per_unit: costPerUnit,
-          total_value: totalValue,
+          cartons: 0,
+          units_per_carton: 0,
+          total_units: directQty,
+          cost_per_carton: 0,
+          cost_per_unit: directCpu,
+          total_value: directTotalValue,
           recorded_by: user?.username || 'System'
-        }
+        })
 
-        // Validate calculations
-        if (!receiving.total_units || receiving.total_units <= 0) {
-          setError('Invalid calculation: Total units must be greater than 0')
-          return
-        }
+        setSuccessMessage('Stock received and inventory updated!')
+      } else {
+        if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
 
-        await addStockReceiving(receiving)
-        setSuccessMessage('Stock receiving recorded successfully!')
-        setTimeout(() => setSuccessMessage(''), 3000)
-        await loadData()
-        resetForm()
-      } catch (err) {
-        setError(`Failed to record stock receiving: ${err.message || err}`)
-        console.error('Stock receiving error:', err)
-      }
-    } else {
-      // Direct purchase validation and submission
-      if (!formData.product_id) {
-        setError('Please select a product')
-        return
-      }
-      if (!formData.quantity || parseFloat(formData.quantity) <= 0) {
-        setError('Please enter a valid quantity')
-        return
-      }
-
-      try {
-        const selectedProduct = products.find(p => p.id === parseInt(formData.product_id))
-        
         await recordDirectPurchase({
           product_id: parseInt(formData.product_id),
-          quantity: parseInt(formData.quantity),
-          cost_per_unit: parseFloat(formData.cost_per_unit) || 0,
+          quantity: directQty,
+          cost_per_unit: directCpu,
+          date_received: formData.date_received,
           notes: formData.notes,
           recorded_by: user?.username || 'System'
         })
 
-        setSuccessMessage(`Added ${formData.quantity} units of ${selectedProduct?.name}!`)
-        setTimeout(() => setSuccessMessage(''), 3000)
-        await loadData()
-        resetForm()
-      } catch (err) {
-        setError('Failed to record direct purchase: ' + err.message)
-        console.error(err)
+        const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || ''
+        setSuccessMessage(`${directQty} units of "${productName}" added to stock!`)
       }
+
+      setTimeout(() => setSuccessMessage(''), 4000)
+      setFormData(emptyForm)
+      setPurchaseType('supplier')
+      setShowForm(false)
+      await loadData()
+    } catch (err) {
+      setError(`Failed to record: ${err.message || err}`)
+      console.error(err)
     }
   }
 
-  const resetForm = () => {
-    setFormData({
-      supplier_id: '',
-      product_id: '',
-      date_received: new Date().toISOString().split('T')[0],
-      cartons: '',
-      units_per_carton: '',
-      cost_per_carton: '',
-      quantity: '',
-      cost_per_unit: '',
-      notes: ''
-    })
-    setCalculations({
-      total_units: 0,
-      cost_per_unit: 0,
-      total_value: 0
-    })
-    setPurchaseType('supplier')
-    setShowForm(false)
-    setError('')
-  }
+  const productOptions = products.map(p => ({ value: p.id, label: `${p.name}${p.current_quantity != null ? ` (${p.current_quantity} in stock)` : ''}` }))
+  const supplierOptions = suppliers.map(s => ({ value: s.id, label: s.name }))
+  const uniqueSuppliers = [...new Set(receivings.map(r => r.supplier_name).filter(Boolean))]
 
-  const getSupplierName = (id) => suppliers.find(s => s.id === id)?.name || ''
-  const getProductName = (id) => products.find(p => p.id === id)?.name || ''
-
-  if (loading) {
-    return <div className="stock-control-page"><div className="loading">Loading...</div></div>
-  }
+  if (loading) return <div className="stock-control-page"><div className="loading">Loading...</div></div>
 
   return (
     <div className="stock-control-page">
       <div className="page-header">
         <h1>Stock Receiving</h1>
-        <p>Record incoming stock from suppliers</p>
-      </div>
-
-      {/* Metrics Cards */}
-      <div className="metrics-section" style={{ display: 'none' }}>
-        <div className="metric-card">
-          <div className="metric-icon">💰</div>
-          <div className="metric-details">
-            <div className="metric-label">Total Stock Value</div>
-            <div className="metric-value">$0.00</div>
-            <div className="metric-sub">Inventory valuation</div>
-          </div>
-        </div>
+        <p>Record stock received from suppliers or direct purchases</p>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
       {successMessage && <div className="success-banner">{successMessage}</div>}
 
       <div className="toolbar">
-        <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
-          {showForm ? '✕ Cancel' : '✚ Record Stock'}
+        <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm) }}>
+          {showForm ? <><FiX size={16} style={{ marginRight: 6 }} />Cancel</> : <><FiPlus size={16} style={{ marginRight: 6 }} />Record Stock</>}
         </button>
       </div>
 
       {showForm && (
         <div className="form-card">
-          <h3>Record Stock Purchase</h3>
+          <h3>Record Stock</h3>
           <form onSubmit={handleSubmit}>
-            {/* Purchase Type Selection */}
+
+            {/* ── Step 1: Purchase Type ── */}
             <div className="form-row">
               <div className="form-group">
                 <label>Purchase Type *</label>
-                <select
-                  name="purchase_type"
-                  value={purchaseType}
-                  onChange={handleChange}
-                  required
-                >
-                  <option value="supplier">Supplier Purchase</option>
-                  <option value="direct">Direct Purchase</option>
-                </select>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  {['supplier', 'direct'].map(type => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => handleTypeChange(type)}
+                      style={{
+                        flex: 1,
+                        padding: '10px',
+                        border: `2px solid ${purchaseType === type ? '#2e7d32' : '#ddd'}`,
+                        borderRadius: '6px',
+                        background: purchaseType === type ? '#f0f7f0' : '#fff',
+                        color: purchaseType === type ? '#2e7d32' : '#555',
+                        fontWeight: purchaseType === type ? '600' : '400',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        transition: 'all 0.15s'
+                      }}
+                    >
+                      {type === 'supplier' ? '🏭 From Supplier' : '🛒 Direct Purchase'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* SUPPLIER PURCHASE FORM */}
+            {/* ── Step 2: Product (both types) ── */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>Product *</label>
+                <SearchableSelect
+                  options={productOptions}
+                  value={formData.product_id}
+                  onChange={val => handleFieldChange('product_id', val)}
+                  placeholder="Search and select a product..."
+                />
+              </div>
+            </div>
+
+            {/* ── Step 3: Supplier (supplier type only) ── */}
+            {purchaseType === 'supplier' && (
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Supplier *</label>
+                  <SearchableSelect
+                    options={supplierOptions}
+                    value={formData.supplier_id}
+                    onChange={val => handleFieldChange('supplier_id', val)}
+                    placeholder="Search and select a supplier..."
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Step 4: Date Received (both types) ── */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>Date Received *</label>
+                <input
+                  type="date"
+                  value={formData.date_received}
+                  onChange={e => handleFieldChange('date_received', e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            {/* ── Supplier Purchase: quantity fields ── */}
             {purchaseType === 'supplier' && (
               <>
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Supplier *</label>
-                    <select
-                      name="supplier_id"
-                      value={formData.supplier_id}
-                      onChange={handleChange}
-                      required
-                    >
-                      <option value="">Select supplier</option>
-                      {suppliers.map(s => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Product *</label>
-                    <select
-                      name="product_id"
-                      value={formData.product_id}
-                      onChange={handleChange}
-                      required
-                    >
-                      <option value="">Select product</option>
-                      {products.map(p => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Date Received *</label>
-                    <input
-                      type="date"
-                      name="date_received"
-                      value={formData.date_received}
-                      onChange={handleChange}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Number of Cartons (Boxes) *</label>
-                    <input
-                      type="number"
-                      name="cartons"
-                      value={formData.cartons}
-                      onChange={handleChange}
-                      placeholder="e.g. 5"
-                      min="0"
-                      required
-                    />
-                    <p className="field-hint">How many cartons/boxes received in total</p>
-                  </div>
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Units per Carton (Items in Each Box) *</label>
-                    <input
-                      type="number"
-                      name="units_per_carton"
-                      value={formData.units_per_carton}
-                      onChange={handleChange}
-                      placeholder="e.g. 12"
-                      min="0"
-                      required
-                    />
-                    <p className="field-hint">How many individual units/items are inside each carton</p>
-                  </div>
-                  <div className="form-group">
-                    <label>Cost per Carton (USD) *</label>
-                    <input
-                      type="number"
-                      name="cost_per_carton"
-                      value={formData.cost_per_carton}
-                      onChange={handleChange}
-                      placeholder="e.g. 60.00"
-                      step="any"
-                      min="0"
-                      required
-                    />
-                    <p className="field-hint">Total cost for one complete carton (all units inside)</p>
-                  </div>
-                </div>
-
-                {/* Calculations Display - With Formula Explanation */}
-                <div className="calculations-panel">
-                  <div className="calc-explanation">
-                    <p style={{ margin: 0, fontSize: '13px', color: '#555', marginBottom: '12px' }}>
-                      <strong>📊 Calculation Breakdown:</strong>
-                    </p>
-                    {formData.cartons && formData.units_per_carton && formData.cost_per_carton && (
-                      <p style={{ margin: 0, fontSize: '12px', color: '#666', marginBottom: '12px', fontFamily: 'monospace', backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
-                        {formData.cartons} cartons × {formData.units_per_carton} units/carton = {(formData.cartons || 0) * (formData.units_per_carton || 0)} total units<br/>
-                        ${formData.cost_per_carton} ÷ {formData.units_per_carton} units = ${(formData.cost_per_carton / formData.units_per_carton || 0).toFixed(2)}/unit
-                      </p>
-                    )}
-                  </div>
-                  <div className="calc-row">
-                    <div className="calc-item">
-                      <span className="calc-label">Total Units to Add:</span>
-                      <span className="calc-value">{(calculations.total_units || 0).toFixed(0)} units</span>
-                    </div>
-                    <div className="calc-item">
-                      <span className="calc-label">Cost Per Unit:</span>
-                      <span className="calc-value">${(calculations.cost_per_unit || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="calc-item">
-                      <span className="calc-label">Total Stock Value:</span>
-                      <span className="calc-value">${(calculations.total_value || 0).toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <p style={{ fontSize: '12px', color: '#666', marginTop: '12px', marginBottom: 0 }}>
-                    💡 The selling price for each product is set separately in the Products tab
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* DIRECT PURCHASE FORM */}
-            {purchaseType === 'direct' && (
-              <>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Product *</label>
-                    <select
-                      name="product_id"
-                      value={formData.product_id}
-                      onChange={handleChange}
-                      required
-                    >
-                      <option value="">Select product</option>
-                      {products.map(p => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Date Received *</label>
-                    <input
-                      type="date"
-                      name="date_received"
-                      value={formData.date_received}
-                      onChange={handleChange}
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
                     <label>Quantity to Add *</label>
                     <input
                       type="number"
-                      name="quantity"
                       value={formData.quantity}
-                      onChange={handleChange}
-                      placeholder="0"
+                      onChange={e => handleFieldChange('quantity', e.target.value)}
+                      placeholder="e.g. 24"
                       min="1"
                       step="1"
-                      required
                     />
+                    <p className="field-hint">Total individual units being added to stock</p>
                   </div>
-                </div>
-
-                <div className="form-row">
                   <div className="form-group">
-                    <label>Cost Per Unit (USD)</label>
+                    <label>Cost per Unit (USD)</label>
                     <input
                       type="number"
-                      name="cost_per_unit"
                       value={formData.cost_per_unit}
-                      onChange={handleChange}
+                      onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
                       placeholder="0.00"
                       step="any"
                       min="0"
                     />
-                  </div>
-                  <div className="form-group">
-                    <label>Notes</label>
-                    <textarea
-                      name="notes"
-                      value={formData.notes}
-                      onChange={handleChange}
-                      placeholder="e.g., Personal purchase, Donation, Transfer..."
-                      rows="2"
-                      style={{ fontFamily: 'inherit', resize: 'vertical' }}
-                    />
+                    <p className="field-hint">What you paid per individual unit</p>
                   </div>
                 </div>
 
-                {/* Direct Purchase Summary */}
-                {formData.quantity && (
+                {directQty > 0 && (
                   <div className="calculations-panel">
                     <div className="calc-row">
                       <div className="calc-item">
+                        <span className="calc-label">Total Units to Add:</span>
+                        <span className="calc-value">{directQty}</span>
+                      </div>
+                      <div className="calc-item">
                         <span className="calc-label">Total Cost:</span>
-                        <span className="calc-value">
-                          ${(parseInt(formData.quantity || 0) * parseFloat(formData.cost_per_unit || 0)).toFixed(2)}
-                        </span>
+                        <span className="calc-value">${directTotalValue.toFixed(2)}</span>
                       </div>
                     </div>
+                    <p style={{ fontSize: '12px', color: '#888', marginTop: '10px', marginBottom: 0 }}>
+                      💡 Selling price is managed separately in the Products section
+                    </p>
                   </div>
                 )}
               </>
             )}
 
-            <button type="submit" className="btn btn-primary">
-              {purchaseType === 'supplier' ? 'Record Stock Receiving' : 'Confirm Direct Purchase'}
-            </button>
+            {/* ── Direct Purchase: quantity fields ── */}
+            {purchaseType === 'direct' && (
+              <>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Quantity to Add *</label>
+                    <input
+                      type="number"
+                      value={formData.quantity}
+                      onChange={e => handleFieldChange('quantity', e.target.value)}
+                      placeholder="e.g. 24"
+                      min="1"
+                      step="1"
+                    />
+                    <p className="field-hint">Total individual units being added to stock</p>
+                  </div>
+                  <div className="form-group">
+                    <label>Cost per Unit (USD)</label>
+                    <input
+                      type="number"
+                      value={formData.cost_per_unit}
+                      onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
+                      placeholder="0.00"
+                      step="any"
+                      min="0"
+                    />
+                    <p className="field-hint">What you paid per individual unit</p>
+                  </div>
+                </div>
+
+                {directQty > 0 && (
+                  <div className="calculations-panel">
+                    <div className="calc-row">
+                      <div className="calc-item">
+                        <span className="calc-label">Total Units to Add:</span>
+                        <span className="calc-value">{directQty}</span>
+                      </div>
+                      <div className="calc-item">
+                        <span className="calc-label">Total Cost:</span>
+                        <span className="calc-value">${directTotalValue.toFixed(2)}</span>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: '12px', color: '#888', marginTop: '10px', marginBottom: 0 }}>
+                      💡 Selling price is managed separately in the Products section
+                    </p>
+                  </div>
+                )}
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Notes</label>
+                    <textarea
+                      value={formData.notes}
+                      onChange={e => handleFieldChange('notes', e.target.value)}
+                      placeholder="e.g. Personal purchase, donation, inter-branch transfer..."
+                      rows="2"
+                      style={{ fontFamily: 'inherit', resize: 'vertical' }}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button type="submit" className="btn btn-primary">
+                {purchaseType === 'supplier' ? '✓ Record Stock Receiving' : '✓ Confirm Direct Purchase'}
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setError('') }}>
+                Cancel
+              </button>
+            </div>
           </form>
         </div>
       )}
 
+      {/* ── Purchase History Table ── */}
       <div className="receivings-list">
-        <h3>Purchase History (Supplier & Direct)</h3>
-        {receivings.length === 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <h3 style={{ margin: 0 }}>Purchase History ({filteredReceivings.length} of {receivings.length})</h3>
+        </div>
+
+        {/* Search & Filter Bar */}
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #ddd', borderRadius: '4px', padding: '6px 10px', flex: '1', minWidth: '200px', background: '#fff' }}>
+            <FiSearch size={14} style={{ color: '#999', marginRight: '6px', flexShrink: 0 }} />
+            <input
+              type="text"
+              value={historySearch}
+              onChange={e => setHistorySearch(e.target.value)}
+              placeholder="Search by product or supplier..."
+              style={{ border: 'none', outline: 'none', fontSize: '13px', width: '100%', background: 'transparent' }}
+            />
+            {historySearch && (
+              <FiX size={13} style={{ color: '#999', cursor: 'pointer', marginLeft: 4 }} onClick={() => setHistorySearch('')} />
+            )}
+          </div>
+
+          <select
+            value={historyTypeFilter}
+            onChange={e => setHistoryTypeFilter(e.target.value)}
+            style={{ padding: '7px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px', background: '#fff' }}
+          >
+            <option value="all">All Types</option>
+            <option value="supplier">Supplier</option>
+            <option value="direct">Direct</option>
+          </select>
+
+          {uniqueSuppliers.length > 0 && (
+            <select
+              value={historySupplierFilter}
+              onChange={e => setHistorySupplierFilter(e.target.value)}
+              style={{ padding: '7px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px', background: '#fff' }}
+            >
+              <option value="all">All Suppliers</option>
+              {uniqueSuppliers.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+
+          {(historySearch || historyTypeFilter !== 'all' || historySupplierFilter !== 'all') && (
+            <button
+              onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistorySupplierFilter('all') }}
+              style={{ padding: '7px 12px', border: '1px solid #ddd', borderRadius: '4px', background: '#fff', fontSize: '13px', cursor: 'pointer', color: '#666' }}
+            >
+              Clear Filters
+            </button>
+          )}
+        </div>
+
+        {filteredReceivings.length === 0 ? (
           <div className="empty-state">
-            <p>No purchases recorded yet</p>
+            <p>{receivings.length === 0 ? 'No purchases recorded yet.' : 'No records match your filters.'}</p>
           </div>
         ) : (
           <div className="receivings-table">
             <table>
               <thead>
                 <tr>
-                  <th>Date</th>
-                  <th>Source</th>
-                  <th>Product</th>
+                  <th onClick={() => handleSort('date')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Date <SortIcon column="date" />
+                  </th>
+                  <th onClick={() => handleSort('product')} style={{ cursor: 'pointer' }}>
+                    Product <SortIcon column="product" />
+                  </th>
+                  <th onClick={() => handleSort('source')} style={{ cursor: 'pointer' }}>
+                    Source <SortIcon column="source" />
+                  </th>
                   <th>Type</th>
-                  <th>Quantity</th>
-                  <th>Cost per Unit</th>
-                  <th>Total Value</th>
+                  <th onClick={() => handleSort('units')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Quantity <SortIcon column="units" />
+                  </th>
+                  <th style={{ whiteSpace: 'nowrap' }}>Cost/Unit</th>
+                  <th onClick={() => handleSort('value')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Total Value <SortIcon column="value" />
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {receivings.map(r => (
+                {filteredReceivings.map(r => (
                   <tr key={r.id}>
                     <td>{new Date(r.date_received).toLocaleDateString('en-ZW')}</td>
-                    <td>{r.supplier_name}</td>
                     <td>{r.product_name}</td>
+                    <td>{r.supplier_name || '—'}</td>
                     <td>
                       <span style={{
-                        padding: '4px 8px',
+                        padding: '3px 8px',
                         borderRadius: '4px',
                         fontSize: '12px',
                         fontWeight: '500',
                         backgroundColor: r.purchase_type === 'supplier' ? '#e3f2fd' : '#f3e5f5',
-                        color: r.purchase_type === 'supplier' ? '#1976d2' : '#7b1fa2'
+                        color: r.purchase_type === 'supplier' ? '#1565c0' : '#6a1b9a'
                       }}>
                         {r.purchase_type === 'supplier' ? 'Supplier' : 'Direct'}
                       </span>
                     </td>
-                    <td>
-                      {r.purchase_type === 'supplier' 
-                        ? `${r.cartons} cartons (${r.total_units} units)`
-                        : `${r.total_units} units`
-                      }
-                    </td>
+                    <td>{r.total_units} units</td>
                     <td>${(r.cost_per_unit || 0).toFixed(2)}</td>
                     <td>${(r.total_value || 0).toFixed(2)}</td>
                   </tr>

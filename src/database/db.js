@@ -2,31 +2,34 @@ import { hashPassword, comparePassword, hashPasswordSync } from '../utils/authUt
 
 let db = null
 let initPromise = null
-const SYNC_LAST_BACKUP_KEY = 'stocka_sync_last_backup'
+let saveDebounceTimer = null
+
+const CURRENT_DB_VERSION = 3
 
 // Use window.initSqlJs that was loaded via script tag in index.html
 const loadInitSqlJs = async () => {
-  // Wait for initSqlJs to be available globally
   let attempts = 0
   while (!window.initSqlJs && attempts < 100) {
     await new Promise(resolve => setTimeout(resolve, 50))
     attempts++
   }
-  
   if (!window.initSqlJs) {
     throw new Error('Failed to load sql.js: initSqlJs not found on window')
   }
-  
   return window.initSqlJs
 }
 
-const DB_KEY = 'stocka_db'
-const DB_INIT_KEY = 'stocka_db_init'
-const DB_VERSION_KEY = 'stocka_db_version'
-const CURRENT_DB_VERSION = 3  // Increment when schema changes
+const getWasmPath = (file) => {
+  const pathname = window.location.pathname
+  if (window.location.protocol === 'file:') {
+    const dir = pathname.substring(0, pathname.lastIndexOf('/'))
+    return dir + '/' + file
+  }
+  return '/' + file
+}
 
-// Save database to localStorage
-export const saveDb = () => {
+// Write the in-memory database to file (used by debounce and direct saves)
+const performSave = async () => {
   if (!db) return
   try {
     const data = db.export()
@@ -34,106 +37,108 @@ export const saveDb = () => {
     for (let i = 0; i < data.length; i++) {
       binary += String.fromCharCode(data[i])
     }
-    localStorage.setItem(DB_KEY, btoa(binary))
+    await window.stocka.db.save(btoa(binary))
   } catch (err) {
-    console.error('Failed to save database:', err)
+    console.error('Failed to save database to file:', err)
   }
+}
+
+// Save database to file — debounced 300 ms, fire-and-forget
+export const saveDb = () => {
+  if (!db) return
+  if (saveDebounceTimer) clearTimeout(saveDebounceTimer)
+  saveDebounceTimer = setTimeout(() => {
+    saveDebounceTimer = null
+    performSave()
+  }, 300)
 }
 
 // Load or create the database
 export const getDb = async () => {
   if (db) return db
-  
-  // Prevent multiple initialization attempts
   if (initPromise) return initPromise
-  
+
   initPromise = (async () => {
     try {
       console.log('Initializing database...')
       const start = performance.now()
-      
-      // Load initSqlJs function
+
       const initFunc = await loadInitSqlJs()
-      
-      // Determine the correct base path for assets
-      // In Electron, window.location.pathname will be /C:/Users/.../dist/index.html
-      // We need to extract the directory portion
-      const getWasmPath = (file) => {
-        const pathname = window.location.pathname
-        // Check if running in Electron (file:// protocol) or web server
-        if (window.location.protocol === 'file:') {
-          // Get the directory of the current HTML file
-          const dir = pathname.substring(0, pathname.lastIndexOf('/'))
-          return dir + '/' + file
-        } else {
-          // Web server, use root-relative path
-          return '/' + file
-        }
-      }
-      
-      const SQL = await initFunc({
-        locateFile: getWasmPath
-      })
-      
+      const SQL = await initFunc({ locateFile: getWasmPath })
       console.log(`SQL.js loaded in ${performance.now() - start}ms`)
 
-      // Check database version for schema compatibility
-      const savedVersion = parseInt(localStorage.getItem(DB_VERSION_KEY) || '0')
-      const saved = localStorage.getItem(DB_KEY)
-      
-      // If version mismatch or no saved DB, create fresh database
-      if (saved && savedVersion < CURRENT_DB_VERSION) {
-        console.log(`Database version mismatch (${savedVersion} vs ${CURRENT_DB_VERSION}). Clearing and rebuilding...`)
-        localStorage.removeItem(DB_KEY)
-        db = new SQL.Database()
-        localStorage.setItem(DB_VERSION_KEY, CURRENT_DB_VERSION.toString())
-      } else if (saved) {
-        console.log('Loading existing database from storage...')
-        const binary = atob(saved)
+      // Try loading from file (primary persistence)
+      const fileResult = await window.stocka.db.load()
+      const savedBase64 = fileResult?.data
+
+      if (savedBase64) {
+        console.log('Loading existing database from file...')
+        const binary = atob(savedBase64)
         const bytes = new Uint8Array(binary.length)
         for (let i = 0; i < binary.length; i++) {
           bytes[i] = binary.charCodeAt(i)
         }
         db = new SQL.Database(bytes)
       } else {
-        console.log('Creating new database...')
-        db = new SQL.Database()
-        // Mark as initialized
-        localStorage.setItem(DB_INIT_KEY, '1')
-        localStorage.setItem(DB_VERSION_KEY, CURRENT_DB_VERSION.toString())
-      }
-      
-      // Always ensure all tables exist (CREATE TABLE IF NOT EXISTS is safe to run multiple times)
-      createTables()
-      // Run any necessary schema migrations
-      runMigrations()
-      saveDb()
-      
-      console.log(`Database ready in ${performance.now() - start}ms`)
-      
-      // Trigger automatic backup if needed (non-blocking)
-      if (typeof window !== 'undefined') {
-        // Run backup check in background, don't wait for it
-        setTimeout(async () => {
-          try {
-            const shouldBackup = await shouldCreateBackup()
-            if (shouldBackup) {
-              await createDatabaseBackup()
+        // One-time migration from localStorage (old installs only)
+        const lsData = localStorage.getItem('stocka_db')
+        if (lsData) {
+          console.log('Migrating database from localStorage to file...')
+          const migrateResult = await window.stocka.db.migrateFromLocalStorage(lsData)
+          if (migrateResult?.success) {
+            const reloadResult = await window.stocka.db.load()
+            if (reloadResult?.data) {
+              const binary = atob(reloadResult.data)
+              const bytes = new Uint8Array(binary.length)
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i)
+              }
+              db = new SQL.Database(bytes)
+              // Clear all old localStorage keys after confirmed migration
+              ;['stocka_db', 'stocka_db_init', 'stocka_db_version',
+                'stocka_backup_metadata', 'stocka_sync_last_backup']
+                .forEach(k => localStorage.removeItem(k))
+              Object.keys(localStorage)
+                .filter(k => k.startsWith('stocka_backup_') || k.startsWith('stocka_db_backup_'))
+                .forEach(k => localStorage.removeItem(k))
+              console.log('✅ Database migrated from localStorage to file')
+            } else {
+              db = new SQL.Database()
             }
-          } catch (err) {
-            console.warn('Auto-backup check failed (non-critical):', err)
+          } else {
+            db = new SQL.Database()
           }
-        }, 5000) // Delay 5s to let app stabilize
+        } else {
+          console.log('Creating new database...')
+          db = new SQL.Database()
+        }
       }
-      
+
+      createTables()
+      runMigrations()
+      await window.stocka.db.setMeta({ db_version: CURRENT_DB_VERSION })
+      // Persist right away (bypasses debounce for the initial write)
+      await performSave()
+
+      console.log(`Database ready in ${performance.now() - start}ms`)
+
+      // Automatic backup on startup — non-blocking, 5 s delay
+      setTimeout(async () => {
+        try {
+          await window.stocka.db.backup()
+        } catch (err) {
+          console.warn('Auto-backup failed (non-critical):', err)
+        }
+      }, 5000)
+
       return db
     } catch (err) {
       console.error('Database initialization failed:', err)
-      initPromise = null // Reset on error to allow retry
+      initPromise = null
       throw err
     }
   })()
-  
+
   return initPromise
 }
 
@@ -207,7 +212,7 @@ const createTables = () => {
   db.run(`
     CREATE TABLE IF NOT EXISTS stock_receivings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      supplier_id INTEGER NOT NULL,
+      supplier_id INTEGER,
       product_id INTEGER NOT NULL,
       date_received TEXT NOT NULL,
       cartons INTEGER NOT NULL,
@@ -215,7 +220,6 @@ const createTables = () => {
       total_units INTEGER NOT NULL,
       cost_per_carton REAL NOT NULL,
       cost_per_unit REAL NOT NULL,
-      selling_price_per_unit REAL,
       total_value REAL NOT NULL,
       recorded_by TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
@@ -611,6 +615,43 @@ const runMigrations = () => {
       }
     }
 
+    // Fix stock_receivings.supplier_id NOT NULL — required for direct purchases
+    try {
+      const srInfo = db.exec("PRAGMA table_info(stock_receivings)")
+      const srCols = extractResults(srInfo)
+      const supplierCol = srCols.find(col => col.name === 'supplier_id')
+      if (supplierCol && supplierCol.notnull === 1) {
+        console.log('Migrating stock_receivings: removing NOT NULL from supplier_id...')
+        db.run('BEGIN TRANSACTION')
+        db.run(`CREATE TABLE stock_receivings_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          supplier_id INTEGER,
+          product_id INTEGER NOT NULL,
+          date_received TEXT NOT NULL,
+          cartons INTEGER NOT NULL,
+          units_per_carton INTEGER NOT NULL,
+          total_units INTEGER NOT NULL,
+          cost_per_carton REAL NOT NULL,
+          cost_per_unit REAL NOT NULL,
+          total_value REAL NOT NULL,
+          recorded_by TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`)
+        db.run(`INSERT INTO stock_receivings_new
+          SELECT id, supplier_id, product_id, date_received, cartons,
+                 units_per_carton, total_units, cost_per_carton, cost_per_unit,
+                 total_value, recorded_by, created_at
+          FROM stock_receivings`)
+        db.run('DROP TABLE stock_receivings')
+        db.run('ALTER TABLE stock_receivings_new RENAME TO stock_receivings')
+        db.run('COMMIT')
+        console.log('stock_receivings migration done')
+      }
+    } catch (err) {
+      console.warn('stock_receivings migration error (non-fatal):', err.message)
+      try { db.run('ROLLBACK') } catch (_) {}
+    }
+
     // Create default admin user if it doesn't exist
     ensureDefaultAdminUser()
 
@@ -706,21 +747,23 @@ export const initializeShop = async (shopData) => {
 export const updateShop = async (id, shopData) => {
   const database = await getDb()
   database.run(
-    `UPDATE shops SET 
-      name = ?, 
-      address = ?, 
-      phone = ?, 
+    `UPDATE shops SET
+      name = ?,
+      address = ?,
+      phone = ?,
       email = ?,
+      currency = ?,
       printer_name = ?,
       printer_port = ?,
       auto_print = ?,
       print_duplicate = ?
       WHERE id = ?`,
     [
-      shopData.name || '', 
-      shopData.address || '', 
-      shopData.phone || '', 
+      shopData.name || '',
+      shopData.address || '',
+      shopData.phone || '',
       shopData.email || '',
+      shopData.currency || 'USD',
       shopData.printer_name || null,
       shopData.printer_port || null,
       shopData.auto_print !== undefined ? shopData.auto_print : 1,
@@ -770,7 +813,6 @@ export const addProduct = async (product) => {
         new Date().toISOString()
       ]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to add product:', error)
@@ -800,7 +842,6 @@ export const updateProduct = async (id, product) => {
         id
       ]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
     
     // Audit logging (non-critical - won't break if fails)
@@ -833,7 +874,6 @@ export const deleteProduct = async (id) => {
     const product = await getProductById(id)
     
     database.run('DELETE FROM products WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
     
     // Audit logging (non-critical - won't break if fails)
@@ -869,7 +909,6 @@ export const updateProductQuantity = async (productId, quantity) => {
        WHERE id = ?`,
       [quantity, new Date().toISOString(), productId]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update product quantity:', error)
@@ -885,18 +924,37 @@ export const getLatestProductPrice = async (productId) => {
   )
   const products = extractResults(result)
   if (!products[0]) return null
-  
-  // Also get latest cost_per_unit from stock_receivings
+
   const costResult = database.exec(
-    `SELECT cost_per_unit FROM stock_receivings 
+    `SELECT cost_per_unit FROM stock_receivings
      WHERE product_id = ? ORDER BY date_received DESC LIMIT 1`,
     [productId]
   )
   const costData = extractResults(costResult)
-  
+
   return {
     selling_price_per_unit: products[0].selling_price || 0,
     cost_per_unit: costData[0]?.cost_per_unit || 0
+  }
+}
+
+export const getAllLatestCostPrices = async () => {
+  try {
+    const database = await getDb()
+    const result = database.exec(`
+      SELECT sr.product_id, sr.cost_per_unit
+      FROM stock_receivings sr
+      WHERE sr.id = (
+        SELECT MAX(id) FROM stock_receivings WHERE product_id = sr.product_id
+      )
+    `)
+    return extractResults(result).reduce((map, row) => {
+      map[row.product_id] = row.cost_per_unit || 0
+      return map
+    }, {})
+  } catch (error) {
+    console.error('Failed to get all latest cost prices:', error)
+    return {}
   }
 }
 
@@ -904,11 +962,12 @@ export const getMostSoldProducts = async (limit = 10) => {
   try {
     const database = await getDb()
     const result = database.exec(`
-      SELECT 
-        p.id, 
-        p.name, 
-        p.category, 
-        p.current_quantity, 
+      SELECT
+        p.id,
+        p.name,
+        p.category,
+        p.current_quantity,
+        p.selling_price,
         p.image_data,
         SUM(si.quantity) as total_sold
       FROM products p
@@ -931,7 +990,6 @@ export const updateProductImage = async (productId, imageData) => {
       `UPDATE products SET image_data = ? WHERE id = ?`,
       [imageData, productId]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update product image:', error)
@@ -996,7 +1054,6 @@ export const updateSupplier = async (id, supplier) => {
         id
       ]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update supplier:', error)
@@ -1008,7 +1065,6 @@ export const deleteSupplier = async (id) => {
   try {
     const database = await getDb()
     database.run('DELETE FROM suppliers WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to delete supplier:', error)
@@ -1077,7 +1133,6 @@ export const addStockReceiving = async (receiving) => {
       database.run('COMMIT')
       transactionStarted = false
       
-      // Save to localStorage after successful commit
       await new Promise(resolve => setTimeout(resolve, 100))
       saveDb()
     } catch (transactionError) {
@@ -1223,10 +1278,24 @@ export const addSale = async (sale, saleItems) => {
       }
       throw transactionError
     }
-    
-    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Update shift totals so reconciliation figures are live
+    if (sale.shift_id) {
+      try {
+        database.run(
+          `UPDATE shifts SET
+             total_sales_count = total_sales_count + 1,
+             total_sales_value = total_sales_value + ?
+           WHERE id = ?`,
+          [sale.total, sale.shift_id]
+        )
+      } catch (err) {
+        console.warn('Failed to update shift totals (non-critical):', err)
+      }
+    }
+
     saveDb()
-    
+
     // Audit logging (non-critical - won't break if fails)
     try {
       const itemSummary = saleItems.map(i => `${i.product_name} x${i.quantity}`).join(', ')
@@ -1240,7 +1309,7 @@ export const addSale = async (sale, saleItems) => {
     } catch (err) {
       console.warn('Failed to audit sale (non-critical):', err)
     }
-    
+
     return saleId
   } catch (error) {
     console.error('Failed to add sale:', error)
@@ -1297,7 +1366,6 @@ export const holdSale = async (saleId, heldName) => {
       `UPDATE sales SET status = 'held', held_name = ?, held_at = ? WHERE id = ?`,
       [heldName || `Hold-${saleId}`, new Date().toISOString(), saleId]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to hold sale:', error)
@@ -1332,7 +1400,6 @@ export const recallHeldSale = async (saleId) => {
       `UPDATE sales SET status = 'pending', released_from_hold_at = ? WHERE id = ?`,
       [new Date().toISOString(), saleId]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
     
     // Return the sale with items
@@ -1367,7 +1434,6 @@ export const discardHeldSale = async (saleId) => {
     database.run(`DELETE FROM sale_items WHERE sale_id = ?`, [saleId])
     database.run(`DELETE FROM sales WHERE id = ?`, [saleId])
     
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to discard held sale:', error)
@@ -1449,7 +1515,18 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
         `UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`,
         [voidReason, voidedBy, new Date().toISOString(), saleId]
       )
-      
+
+      // Keep shift totals accurate
+      if (sale.shift_id) {
+        database.run(
+          `UPDATE shifts SET
+             total_sales_count = MAX(0, total_sales_count - 1),
+             total_sales_value = MAX(0, total_sales_value - ?)
+           WHERE id = ?`,
+          [sale.total, sale.shift_id]
+        )
+      }
+
       database.run('COMMIT')
       transactionStarted = false
     } catch (transactionError) {
@@ -1463,7 +1540,6 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
       throw transactionError
     }
     
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
     
     // Audit logging (non-critical - won't break if fails)
@@ -1482,6 +1558,52 @@ export const voidSale = async (saleId, voidReason, voidedBy) => {
     return true
   } catch (error) {
     console.error('Failed to void sale:', error)
+    throw error
+  }
+}
+
+/**
+ * Complete a recalled held sale without creating a new sale record.
+ * Stock was already deducted when the sale was first held, so we only
+ * update payment details and mark it completed.
+ */
+export const completeHeldSale = async (saleId, cashTendered, changeGiven, shiftId) => {
+  const database = await getDb()
+  try {
+    database.run(
+      `UPDATE sales
+       SET status = 'completed',
+           cash_tendered = ?,
+           change_given = ?,
+           payment_method = 'USD Cash',
+           shift_id = COALESCE(?, shift_id)
+       WHERE id = ? AND (status = 'pending' OR status = 'held')`,
+      [cashTendered, changeGiven, shiftId || null, saleId]
+    )
+
+    // Update shift totals
+    if (shiftId) {
+      const sale = await getSaleById(saleId)
+      if (sale) {
+        database.run(
+          `UPDATE shifts SET
+             total_sales_count = total_sales_count + 1,
+             total_sales_value = total_sales_value + ?
+           WHERE id = ?`,
+          [sale.total, shiftId]
+        )
+      }
+    }
+
+    saveDb()
+
+    try {
+      await logAuditAction('system', 'COMPLETE_HELD_SALE', 'SALE', String(saleId), `Held sale ${saleId} completed`)
+    } catch (_) {}
+
+    return saleId
+  } catch (error) {
+    console.error('Failed to complete held sale:', error)
     throw error
   }
 }
@@ -1515,7 +1637,6 @@ export const addExpense = async (expense) => {
     const expenseResult = database.exec('SELECT last_insert_rowid() as id')
     const expenseId = extractResults(expenseResult)[0].id
     
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
     
     // Audit logging (non-critical - won't break if fails)
@@ -1561,7 +1682,6 @@ export const updateExpense = async (id, expense) => {
       `UPDATE expenses SET description = ?, amount = ?, category = ?, date = ? WHERE id = ?`,
       [expense.description, expense.amount, expense.category, expense.date, id]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update expense:', error)
@@ -1573,7 +1693,6 @@ export const deleteExpense = async (id) => {
   try {
     const database = await getDb()
     database.run('DELETE FROM expenses WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to delete expense:', error)
@@ -1590,7 +1709,6 @@ export const addEndOfDay = async (eod) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [eod.date, eod.cashier, eod.total_sales, eod.total_expenses, eod.expected_cash, eod.actual_cash, eod.difference, eod.status || '', eod.notes || '']
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to add end of day record:', error)
@@ -1643,7 +1761,6 @@ export const addBranch = async (branch) => {
        VALUES (?, ?, ?, ?)`,
       [branch.name, branch.address || '', branch.phone || '', branch.manager_name || '']
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to add branch:', error)
@@ -1658,7 +1775,6 @@ export const updateBranch = async (id, branch) => {
       `UPDATE branches SET name = ?, address = ?, phone = ?, manager_name = ? WHERE id = ?`,
       [branch.name, branch.address || '', branch.phone || '', branch.manager_name || '', id]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update branch:', error)
@@ -1670,7 +1786,6 @@ export const deleteBranch = async (id) => {
   try {
     const database = await getDb()
     database.run('DELETE FROM branches WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to delete branch:', error)
@@ -1732,10 +1847,10 @@ export const loginUser = async (username, password) => {
       return null
     }
     
-    // Compare password with hash
-    const passwordMatch = await comparePassword(password, user.password_hash)
+    // Compare password — handles both bcrypt hash and legacy plain-text (auto-migrates)
+    const passwordMatch = await validateUserPassword(user, password)
+
     if (!passwordMatch) {
-      console.log('Password mismatch for user:', username)
       try {
         await logAuditAction('system', 'LOGIN_FAILED', 'USER', username, 'Invalid password')
       } catch (err) {
@@ -1750,7 +1865,6 @@ export const loginUser = async (username, password) => {
       `UPDATE users SET last_login = ? WHERE id = ?`,
       [new Date().toISOString(), user.id]
     )
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
     
     console.log('✅ User logged in:', username)
@@ -1785,7 +1899,6 @@ export const addUser = async (user) => {
        VALUES (?, ?, ?, ?, 1, ?)`,
       [user.username, '', passwordHash, user.role, user.created_by || 'admin']
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to add user:', error)
@@ -1828,7 +1941,6 @@ export const updateUser = async (id, user) => {
       `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
       updateValues
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update user:', error)
@@ -1840,7 +1952,6 @@ export const deactivateUser = async (id) => {
   try {
     const database = await getDb()
     database.run('UPDATE users SET is_active = 0 WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to deactivate user:', error)
@@ -1903,7 +2014,6 @@ export const createNotification = async (notification) => {
        VALUES (?, ?, ?)`,
       [notification.type, notification.message, notification.product_id || null]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to create notification:', error)
@@ -1931,7 +2041,6 @@ export const clearNotificationsForProduct = async (productId) => {
   try {
     const database = await getDb()
     database.run('DELETE FROM notifications WHERE product_id = ?', [productId])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to clear notifications:', error)
@@ -1943,7 +2052,6 @@ export const markNotificationAsRead = async (id) => {
   try {
     const database = await getDb()
     database.run('UPDATE notifications SET is_read = 1 WHERE id = ?', [id])
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to mark notification as read:', error)
@@ -2138,7 +2246,6 @@ export const logAuditAction = async (username, actionType, entityType, entityId,
        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')`,
       [username, actionType, entityType, entityId, description, oldValue, newValue]
     )
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
   } catch (error) {
     // Non-critical: don't break existing operations if audit fails
@@ -2222,7 +2329,6 @@ export const cleanupOldAuditLogs = async () => {
       `DELETE FROM transaction_audit_log WHERE created_at < ?`,
       [ninetyDaysAgo]
     )
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
     console.log('✅ Cleaned up old audit logs')
   } catch (error) {
@@ -2232,149 +2338,47 @@ export const cleanupOldAuditLogs = async () => {
 
 // ── DATABASE BACKUP & RESTORE FUNCTIONS ──
 
-const BACKUP_KEY_PREFIX = 'stocka_backup_'
-const BACKUP_METADATA_KEY = 'stocka_backup_metadata'
-const MAX_BACKUPS = 5
-
-/**
- * Create a backup of the database by exporting all tables to JSON
- * Stores in localStorage with timestamp key
- * Non-blocking - doesn't interfere with main app
- */
 export const createDatabaseBackup = async () => {
   try {
-    const database = await getDb()
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const backupKey = `${BACKUP_KEY_PREFIX}${timestamp}`
-    
-    // Export all tables to JSON
-    const tables = [
-      'shops', 'users', 'products', 'suppliers', 'stock_receivings', 
-      'stock_movements', 'sales', 'sale_items', 'expenses', 'notifications',
-      'end_of_day', 'branches', 'shifts', 'sale_holds', 'transaction_audit_log'
-    ]
-    
-    const backup = {
-      created_at: new Date().toISOString(),
-      db_version: CURRENT_DB_VERSION,
-      tables: {}
+    const result = await window.stocka.db.backup()
+    if (!result?.success) {
+      console.warn('Backup failed:', result?.error)
+      return null
     }
-    
-    // Export each table
-    for (const tableName of tables) {
-      try {
-        const result = database.exec(`SELECT * FROM ${tableName}`)
-        backup.tables[tableName] = extractResults(result)
-      } catch (err) {
-        // Table might not exist, skip it
-        console.warn(`Table ${tableName} not found during backup:`, err.message)
-      }
-    }
-    
-    // Store backup as JSON string in localStorage
-    const backupJson = JSON.stringify(backup)
-    localStorage.setItem(backupKey, backupJson)
-    
-    // Update metadata
-    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
-    metadata[backupKey] = {
-      created_at: backup.created_at,
-      size: backupJson.length
-    }
-    localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
-    
-    // Cleanup old backups if we have too many
-    await manageBackupStorage()
-    
-    console.log(`✅ Database backup created: ${backupKey} (${(backupJson.length / 1024).toFixed(2)}KB)`)
-    return backupKey
+    console.log(`✅ Database backup created: ${result.filename}`)
+    return result.filename
   } catch (error) {
     console.warn('Failed to create database backup (non-critical):', error)
     return null
   }
 }
 
-/**
- * Get list of available backups with metadata
- * @returns {Promise<Array>} - Array of {key, created_at, size} objects
- */
 export const getBackupHistory = async () => {
   try {
-    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
-    return Object.entries(metadata).map(([key, data]) => ({
-      key,
-      created_at: data.created_at,
-      size: data.size,
-      date: new Date(data.created_at).toLocaleDateString(),
-      time: new Date(data.created_at).toLocaleTimeString()
-    })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    const result = await window.stocka.db.listBackups()
+    if (!result?.success) return []
+    return (result.backups || []).map(b => ({
+      key: b.filename,
+      created_at: b.createdAt,
+      size: b.sizeBytes,
+      date: new Date(b.createdAt).toLocaleDateString(),
+      time: new Date(b.createdAt).toLocaleTimeString()
+    }))
   } catch (error) {
     console.warn('Failed to get backup history:', error)
     return []
   }
 }
 
-/**
- * Restore database from a backup
- * Warning: This will overwrite current database!
- * @param {string} backupKey - Backup key to restore
- * @returns {Promise<boolean>} - True if restore successful
- */
-export const restoreFromBackup = async (backupKey) => {
+// Restore by copying backup file over stocka.db; the page reload loads the restored db.
+export const restoreFromBackup = async (filename) => {
   try {
-    const backupJson = localStorage.getItem(backupKey)
-    if (!backupJson) {
-      throw new Error(`Backup not found: ${backupKey}`)
-    }
-    
-    const backup = JSON.parse(backupJson)
-    const database = await getDb()
-    
-    console.log(`Restoring database from backup: ${backupKey}`)
-    
-    // Clear existing tables (keep schema intact)
-    const tables = Object.keys(backup.tables)
-    for (const tableName of tables) {
-      try {
-        database.run(`DELETE FROM ${tableName}`)
-      } catch (err) {
-        console.warn(`Could not clear table ${tableName}:`, err.message)
-      }
-    }
-    
-    // Restore data from backup
-    for (const [tableName, rows] of Object.entries(backup.tables)) {
-      if (!Array.isArray(rows) || rows.length === 0) continue
-      
-      try {
-        const firstRow = rows[0]
-        const columns = Object.keys(firstRow)
-        const placeholders = columns.map(() => '?').join(', ')
-        const columnList = columns.join(', ')
-        
-        for (const row of rows) {
-          const values = columns.map(col => row[col])
-          database.run(
-            `INSERT INTO ${tableName} (${columnList}) VALUES (${placeholders})`,
-            values
-          )
-        }
-      } catch (err) {
-        console.warn(`Failed to restore table ${tableName}:`, err.message)
-      }
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, 100))
-    saveDb()
-    
-    // Log audit entry for restore
+    const result = await window.stocka.db.restore(filename)
+    if (!result?.success) throw new Error(result?.error || 'Restore failed')
     try {
-      await logAuditAction('system', 'RESTORE_DATABASE', 'BACKUP', backupKey, `Database restored from backup: ${backupKey}`)
-    } catch (err) {
-      console.warn('Failed to audit restore (non-critical):', err)
-    }
-    
-    console.log(`✅ Database restored successfully from: ${backupKey}`)
+      await logAuditAction('system', 'RESTORE_DATABASE', 'BACKUP', filename, `Database restored from backup: ${filename}`)
+    } catch (_) {}
+    console.log(`✅ Database restored from: ${filename}`)
     return true
   } catch (error) {
     console.error('Failed to restore from backup:', error)
@@ -2382,123 +2386,87 @@ export const restoreFromBackup = async (backupKey) => {
   }
 }
 
-/**
- * Manage backup storage - keep only recent backups
- * Removes backups older than 30 days or keeps only last 5
- * Called automatically after creating backup
- */
-export const manageBackupStorage = async () => {
-  try {
-    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
-    const backups = Object.entries(metadata)
-      .map(([key, data]) => ({ key, created_at: new Date(data.created_at) }))
-      .sort((a, b) => b.created_at - a.created_at)
-    
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    
-    // Remove old backups
-    let removed = 0
-    for (const [key, data] of Object.entries(metadata)) {
-      const backupDate = new Date(data.created_at)
-      
-      // Remove if older than 30 days OR if we have more than MAX_BACKUPS
-      if (backupDate < thirtyDaysAgo || backups.indexOf(backups.find(b => b.key === key)) >= MAX_BACKUPS) {
-        localStorage.removeItem(key)
-        delete metadata[key]
-        removed++
-      }
-    }
-    
-    if (removed > 0) {
-      localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
-      console.log(`🧹 Cleaned up ${removed} old backups`)
-    }
-  } catch (error) {
-    console.warn('Failed to manage backup storage (non-critical):', error)
-  }
-}
+// Retention is managed by the main process (db:backup keeps the last 10)
+export const manageBackupStorage = async () => {}
 
-/**
- * Check if a backup should be created (>24 hours since last backup)
- * @returns {Promise<boolean>} - True if backup should be created
- */
-export const shouldCreateBackup = async () => {
-  try {
-    const backups = await getBackupHistory()
-    if (backups.length === 0) return true
-    
-    const lastBackup = new Date(backups[0].created_at)
-    const now = new Date()
-    const hoursSinceLastBackup = (now - lastBackup) / (1000 * 60 * 60)
-    
-    return hoursSinceLastBackup >= 24
-  } catch (error) {
-    return true // Create backup if check fails
-  }
-}
+export const shouldCreateBackup = async () => false
 
-/**
- * Export backup as downloadable file (JSON format)
- * @param {string} backupKey - Backup key to export
- * @returns {Promise<string>} - JSON string suitable for download
- */
-export const exportBackupAsFile = async (backupKey) => {
+// Load a backup .db file and dump all tables to JSON so Settings.jsx can create a download link.
+export const exportBackupAsFile = async (filename) => {
   try {
-    const backupJson = localStorage.getItem(backupKey)
-    if (!backupJson) {
-      throw new Error(`Backup not found: ${backupKey}`)
-    }
-    
-    const backup = JSON.parse(backupJson)
-    
-    // Pretty print for easier reading
-    const exportJson = {
-      ...backup,
+    const result = await window.stocka.db.loadBackup(filename)
+    if (!result?.success || !result?.data) throw new Error(`Backup not found: ${filename}`)
+
+    const binary = atob(result.data)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+
+    const initFunc = await loadInitSqlJs()
+    const SQL = await initFunc({ locateFile: getWasmPath })
+    const backupDb = new SQL.Database(bytes)
+
+    const tables = [
+      'shops', 'users', 'products', 'suppliers', 'stock_receivings',
+      'stock_movements', 'sales', 'sale_items', 'expenses', 'notifications',
+      'end_of_day', 'branches', 'shifts', 'sale_holds', 'transaction_audit_log'
+    ]
+    const exportData = {
+      created_at: new Date().toISOString(),
       export_date: new Date().toISOString(),
-      app_version: '1.0.0'
+      app_version: '1.0.0',
+      db_version: CURRENT_DB_VERSION,
+      tables: {}
     }
-    
-    return JSON.stringify(exportJson, null, 2)
+    for (const tableName of tables) {
+      try {
+        const r = backupDb.exec(`SELECT * FROM ${tableName}`)
+        exportData.tables[tableName] = extractResults(r)
+      } catch (_) {}
+    }
+    backupDb.close()
+    return JSON.stringify(exportData, null, 2)
   } catch (error) {
     console.error('Failed to export backup:', error)
     throw error
   }
 }
 
-/**
- * Import backup from file (called from file upload)
- * @param {string} jsonString - JSON string from backup file
- * @returns {Promise<boolean>} - True if import successful
- */
+// Restore data from an exported JSON backup directly into the live database and persist to file.
 export const importBackupFromFile = async (jsonString) => {
   try {
     const backup = JSON.parse(jsonString)
-    
-    // Validate backup structure
-    if (!backup.tables || !backup.created_at) {
-      throw new Error('Invalid backup file format')
+    if (!backup.tables || !backup.created_at) throw new Error('Invalid backup file format')
+
+    const database = await getDb()
+    const ALLOWED_TABLES = new Set([
+      'products', 'sales', 'sale_items', 'expenses', 'suppliers',
+      'stock_receivings', 'stock_movements', 'shifts', 'users', 'shops',
+      'end_of_day', 'notifications', 'branches', 'transaction_audit_log'
+    ])
+
+    for (const tableName of Object.keys(backup.tables).filter(t => ALLOWED_TABLES.has(t))) {
+      try { database.run(`DELETE FROM ${tableName}`) } catch (_) {}
     }
-    
-    // Store as new backup
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const backupKey = `${BACKUP_KEY_PREFIX}${timestamp}_imported`
-    
-    localStorage.setItem(backupKey, JSON.stringify({
-      created_at: backup.created_at,
-      db_version: backup.db_version || CURRENT_DB_VERSION,
-      tables: backup.tables
-    }))
-    
-    // Update metadata
-    const metadata = JSON.parse(localStorage.getItem(BACKUP_METADATA_KEY) || '{}')
-    metadata[backupKey] = {
-      created_at: new Date().toISOString(),
-      size: jsonString.length
+    for (const [tableName, rows] of Object.entries(backup.tables)) {
+      if (!ALLOWED_TABLES.has(tableName) || !Array.isArray(rows) || rows.length === 0) continue
+      try {
+        const columns = Object.keys(rows[0])
+        const placeholders = columns.map(() => '?').join(', ')
+        for (const row of rows) {
+          database.run(
+            `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`,
+            columns.map(c => row[c])
+          )
+        }
+      } catch (err) {
+        console.warn(`Failed to restore table ${tableName}:`, err.message)
+      }
     }
-    localStorage.setItem(BACKUP_METADATA_KEY, JSON.stringify(metadata))
-    
-    console.log(`✅ Backup imported: ${backupKey}`)
-    return backupKey
+
+    await performSave()
+    const importedKey = `imported_${new Date().toISOString().replace(/[:.]/g, '-')}`
+    console.log(`✅ Backup imported: ${importedKey}`)
+    return importedKey
   } catch (error) {
     console.error('Failed to import backup:', error)
     throw error
@@ -2519,25 +2487,21 @@ export const startShift = async (userData, openingFloat, branchId = null) => {
     const database = await getDb()
     const startedAt = new Date().toISOString()
     
-    // Insert the shift record
+    // Insert the shift record (USD-only schema)
+    const openingCash = typeof openingFloat === 'object'
+      ? (openingFloat.opening_cash ?? openingFloat.opening_usd_cash ?? 0)
+      : (parseFloat(openingFloat) || 0)
+
     database.run(
       `INSERT INTO shifts (
         cashier_username, cashier_display_name, branch_id, status,
-        opening_usd_cash, opening_zwg_cash, opening_swipe_usd, opening_swipe_zwg, 
-        opening_ecocash_usd, opening_ecocash_zwg,
-        started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        opening_cash, started_at
+      ) VALUES (?, ?, ?, 'open', ?, ?)`,
       [
         userData.username,
         userData.name || userData.username,
         branchId,
-        'open',
-        openingFloat.opening_usd_cash || 0,
-        openingFloat.opening_zwg_cash || 0,
-        openingFloat.opening_swipe_usd || 0,
-        openingFloat.opening_swipe_zwg || 0,
-        openingFloat.opening_ecocash_usd || 0,
-        openingFloat.opening_ecocash_zwg || 0,
+        openingCash,
         startedAt
       ]
     )
@@ -2578,36 +2542,13 @@ export const startShift = async (userData, openingFloat, branchId = null) => {
 export const updateShiftSalesForPaymentMethod = async (shiftId, paymentMethod, amount) => {
   try {
     const database = await getDb()
-    let updateField = ''
-    
-    switch (paymentMethod) {
-      case 'USD Cash':
-        updateField = 'sales_usd_cash'
-        break
-      case 'ZWG Cash':
-        updateField = 'sales_zwg_cash'
-        break
-      case 'Swipe USD':
-        updateField = 'sales_swipe_usd'
-        break
-      case 'Swipe ZWG':
-        updateField = 'sales_swipe_zwg'
-        break
-      case 'EcoCash USD':
-        updateField = 'sales_ecocash_usd'
-        break
-      case 'EcoCash ZWG':
-        updateField = 'sales_ecocash_zwg'
-        break
-      default:
-        return
-    }
-    
     database.run(
-      `UPDATE shifts SET ${updateField} = ${updateField} + ?, total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`,
-      [amount, amount, shiftId]
+      `UPDATE shifts SET
+         total_sales_count = total_sales_count + 1,
+         total_sales_value = total_sales_value + ?
+       WHERE id = ?`,
+      [amount, shiftId]
     )
-    
     saveDb()
   } catch (error) {
     console.error('Failed to update shift sales:', error)
@@ -2632,9 +2573,19 @@ export const closeShift = async (shiftId, closingFloat, notes = '') => {
       throw new Error('Shift not found')
     }
     
-    // Calculate variance (USD only)
-    const expected_cash = (shift.opening_cash || 0) + (shift.total_sales_value || 0)
-    const variance = (closingFloat.closing_cash || 0) - expected_cash
+    // Get expenses paid from the till during this shift
+    const expenseResult = database.exec(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`,
+      [shiftId]
+    )
+    const shiftExpenses = extractResults(expenseResult)[0]?.total || 0
+
+    // Expected cash = opening float + sales - expenses paid out
+    const closingCash = typeof closingFloat === 'object'
+      ? (closingFloat.closing_cash || 0)
+      : (parseFloat(closingFloat) || 0)
+    const expected_cash = (shift.opening_cash || 0) + (shift.total_sales_value || 0) - shiftExpenses
+    const variance = closingCash - expected_cash
     
     // Determine reconciliation status
     let reconciliation_status = 'balanced'
@@ -2644,7 +2595,7 @@ export const closeShift = async (shiftId, closingFloat, notes = '') => {
     
     // Update shift with closing data (USD-only fields)
     database.run(
-      `UPDATE shifts SET 
+      `UPDATE shifts SET
         closing_cash = ?,
         variance = ?,
         reconciliation_status = ?,
@@ -2653,7 +2604,7 @@ export const closeShift = async (shiftId, closingFloat, notes = '') => {
         status = 'closed'
       WHERE id = ?`,
       [
-        closingFloat.closing_cash || 0,
+        closingCash,
         variance,
         reconciliation_status,
         notes,
@@ -2682,8 +2633,8 @@ export const closeShift = async (shiftId, closingFloat, notes = '') => {
       })
       
       // Notification 2: Shortage alert (if shortage > $5)
-      if (overall_variance < -5) {
-        const shortageAmount = Math.abs(overall_variance).toFixed(2)
+      if (variance < -5) {
+        const shortageAmount = Math.abs(variance).toFixed(2)
         await createNotification({
           type: 'SHIFT_SHORTAGE',
           message: `⚠️ Alert: Cashier ${shift.cashier_username} short by $${shortageAmount} (Shift ended at ${new Date(closedAt).toLocaleTimeString()})`,
@@ -2919,12 +2870,12 @@ export const getShiftSummary = async (shiftId) => {
     }
     expensesStmt.free()
     
-    // Compute derived fields for compatibility with ShiftDashboard (USD-only)
+    // Compute derived fields — use live queried totals for accuracy
     const openingFloatSum = shift.opening_cash || 0
     const closingFloatSum = shift.closing_cash || 0
-    const totalSales = shift.total_sales_value || 0
-    
-    const expectedCash = openingFloatSum + totalSales
+    const totalSales = salesTotal
+
+    const expectedCash = openingFloatSum + salesTotal - expensesTotal
     const actualCash = closingFloatSum
     const balance = actualCash - expectedCash
     
@@ -2971,14 +2922,15 @@ export const getDeadStockProducts = async (days = 30) => {
     const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
     
     const result = database.exec(`
-      SELECT p.*, COUNT(si.id) as sales_count, MAX(si.id) as last_sale_id
+      SELECT p.*,
+        COALESCE(
+          (SELECT cost_per_unit FROM stock_receivings
+           WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1),
+          0
+        ) as latest_cost_per_unit
       FROM products p
-      LEFT JOIN sale_items si ON p.id = si.product_id AND si.id IN (
-        SELECT id FROM sale_items ORDER BY id DESC
-      )
-      WHERE p.current_quantity > 0 
-      AND (p.last_sold_date IS NULL OR p.last_sold_date < ?)
-      GROUP BY p.id
+      WHERE p.current_quantity > 0
+        AND (p.last_sold_date IS NULL OR p.last_sold_date < ?)
       ORDER BY p.last_sold_date ASC
     `, [cutoffDate])
     
@@ -3024,15 +2976,17 @@ export const getProductSalesVelocity = async (days = 30) => {
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
     
     const result = database.exec(`
-      SELECT 
+      SELECT
         p.id, p.name, p.current_quantity, p.reorder_level,
-        COUNT(si.id) as units_sold,
-        SUM(si.quantity) as total_quantity_sold,
-        ROUND(CAST(SUM(si.quantity) AS FLOAT) / ?, 2) as velocity_per_day,
-        MAX(si.id) as last_sale_id
+        COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
+        ROUND(CAST(COALESCE(SUM(si.quantity), 0) AS FLOAT) / ?, 2) as velocity_per_day
       FROM products p
-      LEFT JOIN sale_items si ON p.id = si.product_id 
-      LEFT JOIN sales s ON si.sale_id = s.id AND s.created_at >= ?
+      LEFT JOIN (
+        SELECT si.product_id, si.quantity
+        FROM sale_items si
+        JOIN sales s ON si.sale_id = s.id
+        WHERE s.status = 'completed' AND s.created_at >= ?
+      ) si ON p.id = si.product_id
       GROUP BY p.id
       HAVING total_quantity_sold > 0
       ORDER BY velocity_per_day DESC
@@ -3123,14 +3077,13 @@ export const getManagerAnalytics = async () => {
     `)
     const totalRevenue = extractResults(revenueResult)[0]?.total || 0
     
-    // Inventory value
+    // Inventory value — use latest cost per product (correlated subquery avoids duplication)
     const inventoryResult = database.exec(`
-      SELECT SUM(current_quantity * cost_price) as value FROM (
-        SELECT p.id, p.current_quantity, COALESCE(sr.cost_per_unit, 0) as cost_price
-        FROM products p
-        LEFT JOIN stock_receivings sr ON p.id = sr.product_id
-        ORDER BY sr.id DESC
-      )
+      SELECT COALESCE(SUM(p.current_quantity * COALESCE(
+        (SELECT cost_per_unit FROM stock_receivings
+         WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1),
+        0
+      )), 0) as value FROM products p
     `)
     const inventoryValue = extractResults(inventoryResult)[0]?.value || 0
     
@@ -3189,22 +3142,25 @@ export const recordDirectPurchase = async (purchase) => {
     transactionStarted = true
     
     try {
+      const qty = purchase.quantity || 0
+      const cpu = parseFloat(purchase.cost_per_unit) || 0
+      const totalCost = qty * cpu
+      const dateReceived = purchase.date_received || new Date().toISOString().split('T')[0]
+
       // Insert into stock_receivings with supplier_id = NULL for direct purchases
       database.run(
-        `INSERT INTO stock_receivings 
-         (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, 
+        `INSERT INTO stock_receivings
+         (supplier_id, product_id, date_received, cartons, units_per_carton, total_units,
           cost_per_carton, cost_per_unit, total_value, recorded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
         [
-          null,  // No supplier for direct purchases
           purchase.product_id,
-          new Date().toISOString(),
-          1,  // Direct purchases treated as 1 "carton"
-          purchase.quantity,  // Quantity is the units
-          purchase.quantity,
-          purchase.cost_per_unit * purchase.quantity,  // Total cost
-          purchase.cost_per_unit,
-          purchase.cost_per_unit * purchase.quantity,
+          dateReceived,
+          qty,
+          qty,
+          totalCost,
+          cpu,
+          totalCost,
           purchase.recorded_by || 'System'
         ]
       )
@@ -3222,14 +3178,11 @@ export const recordDirectPurchase = async (purchase) => {
         [newQuantity, new Date().toISOString(), purchase.product_id]
       )
       
-      // Record in stock movements for detailed audit trail (if notes provided)
-      if (purchase.notes) {
-        database.run(
-          `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by)
-           VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`,
-          [purchase.product_id, product.name, purchase.quantity, purchase.notes, purchase.recorded_by || 'System']
-        )
-      }
+      database.run(
+        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by)
+         VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`,
+        [purchase.product_id, product.name, qty, purchase.notes || '', purchase.recorded_by || 'System']
+      )
       
       database.run('COMMIT')
       transactionStarted = false
@@ -3244,7 +3197,6 @@ export const recordDirectPurchase = async (purchase) => {
       throw transactionError
     }
     
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to record direct purchase:', error)
@@ -3386,7 +3338,6 @@ export const updateSaleReceiptNumber = async (saleId, receiptNumber) => {
       'UPDATE sales SET receipt_number = ? WHERE id = ?',
       [receiptNumber, saleId]
     )
-    await new Promise(resolve => setTimeout(resolve, 100))
     saveDb()
   } catch (error) {
     console.error('Failed to update receipt number:', error)
@@ -3447,7 +3398,6 @@ export const createHold = async (shiftId, productId, quantity) => {
       `INSERT INTO sale_holds (shift_id, product_id, quantity) VALUES (?, ?, ?)`,
       [shiftId, productId, quantity]
     )
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
     
     const result = database.exec(`SELECT * FROM sale_holds WHERE shift_id = ? AND product_id = ? ORDER BY id DESC LIMIT 1`, [shiftId, productId])
@@ -3490,7 +3440,6 @@ export const deleteHoldsOnLogout = async (shiftId) => {
   try {
     const database = await getDb()
     database.run(`DELETE FROM sale_holds WHERE shift_id = ?`, [shiftId])
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
   } catch (error) {
     console.error('Failed to delete holds:', error)
@@ -3507,7 +3456,6 @@ export const releaseHold = async (holdId) => {
   try {
     const database = await getDb()
     database.run(`DELETE FROM sale_holds WHERE id = ?`, [holdId])
-    await new Promise(resolve => setTimeout(resolve, 50))
     saveDb()
   } catch (error) {
     console.error('Failed to release hold:', error)
@@ -3516,12 +3464,12 @@ export const releaseHold = async (holdId) => {
 }
 
 export const createSyncBackup = async (reason = 'manual') => {
-  const saved = localStorage.getItem(DB_KEY)
-  if (!saved) return null
-  const key = `${DB_KEY}_backup_${Date.now()}`
-  localStorage.setItem(key, saved)
-  localStorage.setItem(SYNC_LAST_BACKUP_KEY, JSON.stringify({ key, reason, at: new Date().toISOString() }))
-  return key
+  try {
+    const result = await window.stocka.db.backup()
+    return result?.success ? result.filename : null
+  } catch (_) {
+    return null
+  }
 }
 
 export const getSyncPreview = async () => {

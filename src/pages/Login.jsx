@@ -19,7 +19,6 @@ function Login() {
     }
     setLoading(true)
     try {
-      console.log('Login attempted with:', username)
       const user = await loginUser(username, password)
       
       if (user) {
@@ -58,7 +57,8 @@ function Login() {
       localStorage.setItem('stocka_user', JSON.stringify({
         id: data.user.id,
         username,
-        role: 'Admin',
+        name: data.user.user_metadata?.name || username,
+        role: data.user.user_metadata?.role || 'Cashier',
         auth_mode: 'cloud'
       }))
       window.location.hash = '#/dashboard'

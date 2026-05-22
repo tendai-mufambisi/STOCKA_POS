@@ -47,8 +47,7 @@ function DeadStock({ user }) {
 
   const getTotalInventoryValue = () => {
     return filteredProducts.reduce((sum, p) => {
-      // We would need cost_price, but let's estimate from stock_receivings if available
-      return sum + (p.current_quantity || 0) * 10 // Placeholder
+      return sum + (p.current_quantity || 0) * (p.latest_cost_per_unit || 0)
     }, 0)
   }
 
@@ -133,12 +132,6 @@ function DeadStock({ user }) {
                 </div>
               </div>
 
-              {product.current_quantity > 0 && (
-                <div className="card-action">
-                  <button className="action-btn promote">Promote on Sale</button>
-                  <button className="action-btn discount">Apply Discount</button>
-                </div>
-              )}
             </div>
           ))}
         </div>

@@ -133,6 +133,31 @@
   color: rgba(255,255,255,0.6);
 }
 
+.close-shift-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: #e65100;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  transition: background 0.2s;
+}
+
+.close-shift-btn:hover {
+  background: #bf360c;
+}
+
+.close-shift-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .logout-btn {
   width: 100%;
   padding: 10px;

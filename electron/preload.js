@@ -26,5 +26,34 @@ contextBridge.exposeInMainWorld('stocka', {
     printLegacy: (printerPort, receiptData, shopInfo, isDuplicate = false) =>
       ipcRenderer.invoke('printer:print-receipt', printerPort, receiptData, shopInfo, isDuplicate),
     getSettings: () => ipcRenderer.invoke('printer:get-settings')
+  },
+
+  license: {
+    check:    ()    => ipcRenderer.invoke('license:check'),
+    activate: (key) => ipcRenderer.invoke('license:activate', key),
+    getInfo:  ()    => ipcRenderer.invoke('license:get-info'),
+  },
+
+  updater: {
+    onUpdateAvailable:  (cb) => ipcRenderer.on('updater:update-available',  (_, info) => cb(info)),
+    onDownloadProgress: (cb) => ipcRenderer.on('updater:download-progress', (_, info) => cb(info)),
+    onUpdateDownloaded: (cb) => ipcRenderer.on('updater:update-downloaded', ()       => cb()),
+    download:  () => ipcRenderer.invoke('updater:download'),
+    install:   () => ipcRenderer.invoke('updater:install'),
+    checkNow:  () => ipcRenderer.invoke('updater:check'),
+  },
+
+  db: {
+    load:                    ()           => ipcRenderer.invoke('db:load'),
+    save:                    (base64)     => ipcRenderer.invoke('db:save', base64),
+    backup:                  ()           => ipcRenderer.invoke('db:backup'),
+    listBackups:             ()           => ipcRenderer.invoke('db:list-backups'),
+    restore:                 (filename)   => ipcRenderer.invoke('db:restore', filename),
+    getPaths:                ()           => ipcRenderer.invoke('db:get-paths'),
+    exportFile:              (destPath)   => ipcRenderer.invoke('db:export-file', destPath),
+    migrateFromLocalStorage: (base64)     => ipcRenderer.invoke('db:migrate-from-localstorage', base64),
+    getMeta:                 ()           => ipcRenderer.invoke('db:get-meta'),
+    setMeta:                 (meta)       => ipcRenderer.invoke('db:set-meta', meta),
+    loadBackup:              (filename)   => ipcRenderer.invoke('db:load-backup', filename),
   }
 })

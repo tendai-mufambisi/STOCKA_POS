@@ -62,7 +62,7 @@ function ShiftDashboard({ user }) {
 
     setIsClosing(true)
     try {
-      const result = await closeShift(shiftId, parseFloat(endCash), closeNotes)
+      const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) }, closeNotes)
       setError(`✓ Shift closed. Balance: $${result.balance.toFixed(2)}`)
       setCloseNotes('')
       setEndCash('')

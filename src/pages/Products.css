@@ -528,6 +528,14 @@
   font-weight: 600;
 }
 
+.price-info {
+  color: #1b5e20;
+  font-weight: 700;
+  background: #e8f5e9;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
 .list-item-details {
   display: flex;
   gap: 12px;

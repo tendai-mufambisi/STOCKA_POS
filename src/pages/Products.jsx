@@ -31,7 +31,7 @@ function Products() {
   const [itemsPerPage, setItemsPerPage] = useState(25)
 
   const units = ['each', 'pack']
-  const categories = ['Food', 'Non-Food', 'Drinks']
+  const categories = ['Food', 'Non-Food', 'Drinks', 'Other']
 
   useEffect(() => {
     loadData()
@@ -105,11 +105,14 @@ function Products() {
           ...formData,
           selling_price: parseFloat(formData.selling_price) || 0
         })
+        console.log('Product updated successfully')
+        console.log('Updated product details:', formData)
       } else {
         await addProduct({
           ...formData,
           selling_price: parseFloat(formData.selling_price) || 0
         })
+        
       }
       await loadData()
       setFormData({
@@ -457,6 +460,9 @@ function Products() {
                           <span className={`status-badge ${getStatusColor(status)}`}>{status}</span>
                           {product.category && <span className="category-tag">{product.category}</span>}
                           <span className="qty-info">{product.current_quantity || 0} {product.unit}</span>
+                          {product.selling_price > 0 && (
+                            <span className="price-info">${parseFloat(product.selling_price).toFixed(2)}</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -489,6 +495,10 @@ function Products() {
                     <div className="detail-row">
                       <span className="label">Quantity:</span>
                       <span className="value">{product.current_quantity || 0} {product.unit}</span>
+                    </div>
+                    <div className="detail-row">
+                      <span className="label">Selling Price:</span>
+                      <span className="value">${parseFloat(product.selling_price || 0).toFixed(2)}</span>
                     </div>
                     <div className="detail-row">
                       <span className="label">Reorder Level:</span>

@@ -8,14 +8,12 @@
     "dev": "concurrently \"npm run vite\" \"npm run electron:dev\"",
     "vite": "vite",
     "electron:dev": "wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
-    "build": "cross-env NODE_ENV=production BUILD_TARGET=desktop vite build",
     "build:web": "cross-env NODE_ENV=production BUILD_TARGET=web vite build",
     "dev:web": "cross-env BUILD_TARGET=web vite",
-    "postinstall": "electron-rebuild",
     "preview": "vite preview",
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
+    "dist": "cross-env NODE_ENV=production BUILD_TARGET=desktop vite build && electron-builder",
+    "release": "cross-env NODE_ENV=production BUILD_TARGET=desktop vite build && electron-builder --publish always",
+    "postinstall": "electron-builder install-app-deps",
     "schema:help": "node scripts/schema-sync.js help",
     "schema:list": "node scripts/schema-sync.js list",
     "schema:new": "npx supabase migration new",
@@ -29,7 +27,7 @@
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
     "bcryptjs": "^2.4.3",
-    "electron-squirrel-startup": "^1.0.1",
+    "electron-updater": "^6.3.9",
     "grep": "^0.1.0",
     "node-printer": "^1.0.4",
     "react": "^18.2.0",
@@ -39,28 +37,30 @@
     "recharts": "^3.8.0",
     "serialport": "^13.0.0",
     "sql.js": "^1.14.1",
-    "xlsx": "^0.18.5",
-    "yarn": "^1.22.22"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^7.11.1",
-    "@electron-forge/maker-deb": "^7.11.1",
-    "@electron-forge/maker-rpm": "^7.11.1",
-    "@electron-forge/maker-squirrel": "^7.11.1",
-    "@electron-forge/maker-zip": "^7.11.1",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
-    "@electron-forge/plugin-fuses": "^7.11.1",
-    "@electron/fuses": "^1.8.0",
-    "@electron/rebuild": "^3.x.x",
     "@vitejs/plugin-react": "^4.2.1",
     "concurrently": "^8.2.2",
     "cross-env": "^10.1.0",
     "electron": "^29.1.0",
+    "electron-builder": "^24.13.3",
     "supabase": "^2.95.2",
     "vite": "^5.1.4",
     "wait-on": "^7.2.0"
   },
   "build": {
+    "appId": "co.zw.digitsdigital.stocka",
+    "productName": "Stocka",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "src/utils/printerUtils.js",
+      "package.json"
+    ],
     "asar": true,
     "asarUnpack": [
       "node_modules/node-printer/**",
@@ -68,14 +68,21 @@
       "node_modules/@serialport/**",
       "src/utils/printerUtils.js"
     ],
-    "appId": "com.stocka.app",
-    "productName": "Stocka",
-    "directories": {
-      "output": "release"
-    },
     "win": {
-      "target": "portable",
-      "certificateFile": null
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Stocka"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "tendai-mufambisi",
+      "repo": "STOCKA_POS"
     }
   }
 }

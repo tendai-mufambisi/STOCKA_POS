@@ -18,7 +18,9 @@ import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
 import Notifications from '../components/Notifications'
-import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift } from '../database/db'
+import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift } from '../database/db'
+import ClosingFloatModal from '../components/ClosingFloatModal'
+import OpeningFloatModal from '../components/OpeningFloatModal'
 
 import {
   FiHome,
@@ -51,6 +53,95 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
+
+  // App update state
+  const [updateInfo, setUpdateInfo] = useState(null)   // { version, releaseCount }
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState(0)
+  const [updateReady, setUpdateReady] = useState(false)
+
+  useEffect(() => {
+    if (!window.stocka?.updater) return
+
+    window.stocka.updater.onUpdateAvailable((info) => setUpdateInfo(info))
+    window.stocka.updater.onDownloadProgress(({ percent }) => {
+      setUpdateDownloading(true)
+      setUpdateProgress(percent)
+    })
+    window.stocka.updater.onUpdateDownloaded(() => {
+      setUpdateDownloading(false)
+      setUpdateReady(true)
+    })
+
+    // When the device comes back online, re-check for updates
+    const handleOnline = () => {
+      if (!updateInfo && !updateReady) {
+        window.stocka.updater.checkNow()
+      }
+    }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [updateInfo, updateReady])
+
+  // Shift state (for Cashier role)
+  const [currentShift, setCurrentShift] = useState(null)
+  const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
+  const [isClosingShift, setIsClosingShift] = useState(false)
+  const [showOpeningFloatModal, setShowOpeningFloatModal] = useState(false)
+  const [isStartingShift, setIsStartingShift] = useState(false)
+
+  const loadCurrentShift = async () => {
+    try {
+      const shift = await getCurrentShift(user.username)
+      setCurrentShift(shift)
+      if (!shift && user.role?.toLowerCase() === 'cashier') {
+        setShowOpeningFloatModal(true)
+      }
+    } catch (err) {
+      console.error('Failed to load shift:', err)
+    }
+  }
+
+  const handleOpeningFloatSubmit = async (floatData) => {
+    setIsStartingShift(true)
+    try {
+      const shift = await startShift(user, floatData)
+      setCurrentShift(shift)
+      setShowOpeningFloatModal(false)
+    } catch (err) {
+      console.error('Failed to start shift:', err)
+    } finally {
+      setIsStartingShift(false)
+    }
+  }
+
+  const handleOpeningFloatCancel = () => {
+    setShowOpeningFloatModal(false)
+  }
+
+  const handleCloseShiftClick = () => {
+    if (currentShift) setShowClosingFloatModal(true)
+  }
+
+  const handleClosingFloatSubmit = async (closingFloat, notes) => {
+    setIsClosingShift(true)
+    try {
+      await closeShift(currentShift.id, closingFloat, notes)
+      setShowClosingFloatModal(false)
+      setCurrentShift(null)
+      setTimeout(() => {
+        localStorage.removeItem('stocka_user')
+        window.location.href = '/'
+      }, 2000)
+    } catch (err) {
+      console.error('Failed to close shift:', err)
+      setIsClosingShift(false)
+    }
+  }
+
+  const handleClosingFloatCancel = () => {
+    setShowClosingFloatModal(false)
+  }
 
   const handleLogout = () => {
     performLogout()
@@ -105,6 +196,7 @@ function Dashboard() {
   useEffect(() => {
     if (user.id) {
       loadDashboardData()
+      loadCurrentShift()
     }
   }, [user.id])
 
@@ -151,8 +243,8 @@ function Dashboard() {
       const todayEnd = todayStart + 24 * 60 * 60 * 1000
 
       const todaysSales = sales.filter(s => {
-        const saleDate = new Date(s.date_created).getTime()
-        return saleDate >= todayStart && saleDate < todayEnd
+        const saleDate = new Date(s.created_at).getTime()
+        return s.status === 'completed' && saleDate >= todayStart && saleDate < todayEnd
       })
       
       const todaysExpenses = expenses.filter(e => {
@@ -161,7 +253,7 @@ function Dashboard() {
       })
 
       const lowStockItems = products.filter(p => p.current_quantity <= p.reorder_level)
-      const stockValue = products.reduce((sum, p) => sum + ((p.current_quantity || 0) * 10), 0)
+      const stockValue = products.reduce((sum, p) => sum + ((p.current_quantity || 0) * (p.selling_price || 0)), 0)
       
       setDashboardStats({
         todaysSales: todaysSales.reduce((sum, s) => sum + (s.total || 0), 0),
@@ -183,7 +275,7 @@ function Dashboard() {
     { id: 'dashboard',  icon: 'home',       label: 'Dashboard',       group: 'main',    roles: ['Admin', 'Manager', 'Cashier'] },
     { id: 'products',   icon: 'package',    label: 'Products',         group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'inventory',  icon: 'package',    label: 'Current Inventory', group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'reconciliation', icon: 'check-square', label: 'Reconciliation',   group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'reconciliation', icon: 'bar-chart-2', label: 'Reconciliation',   group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'stock',      icon: 'trending-down', label: 'Receive Stock',    group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock',   roles: ['Admin', 'Manager'] },
@@ -203,10 +295,6 @@ function Dashboard() {
   const filteredNavItems = navItems.filter(item => 
     !item.roles || item.roles.some(role => role.toLowerCase() === userRole.toLowerCase())
   )
-
-  // Debug logging
-  console.log('🔍 User role:', userRole)
-  console.log('🔍 Filtered nav items:', filteredNavItems.length, filteredNavItems)
 
   const groupLabels = {
     main:    '',
@@ -340,7 +428,7 @@ function Dashboard() {
       case 'suppliers':
         return <Suppliers />
       case 'sales':
-        return <Sales user={user} />
+        return <Sales user={user} currentShift={currentShift} />
       case 'expenses':
         return <Expenses />
       case 'reports':
@@ -410,6 +498,16 @@ function Dashboard() {
               <div className="user-role">{user.role}</div>
             </div>
           </div>
+          {currentShift && (
+            <button
+              className="close-shift-btn"
+              onClick={handleCloseShiftClick}
+              disabled={isClosingShift}
+            >
+              <FiLogOut size={18} style={{ marginRight: '8px' }} />
+              {isClosingShift ? 'Closing...' : 'Close My Shift'}
+            </button>
+          )}
           <button className="logout-btn" onClick={handleLogout}>
             <FiLogOut size={18} style={{ marginRight: '8px' }} />
             Sign Out
@@ -430,11 +528,77 @@ function Dashboard() {
         {!isFullScreenPage && <div className="main-header">
           <div className="header-right">
             {user.role !== 'Cashier' && <Notifications user={user} />}
-            
           </div>
         </div>}
+
+        {(updateInfo || updateDownloading || updateReady) && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '12px',
+            background: updateReady ? '#1b5e20' : '#2e7d32',
+            color: '#fff', padding: '10px 18px', borderRadius: '8px',
+            marginBottom: '16px', fontSize: '14px'
+          }}>
+            <FiDownload size={16} />
+            {updateReady ? (
+              <>
+                <span style={{ flex: 1 }}>Update ready — restart to apply the new version.</span>
+                <button
+                  onClick={() => window.stocka.updater.install()}
+                  style={{
+                    background: '#fff', color: '#2e7d32', border: 'none',
+                    borderRadius: '5px', padding: '5px 14px', cursor: 'pointer', fontWeight: 600
+                  }}
+                >
+                  Restart &amp; Install
+                </button>
+              </>
+            ) : updateDownloading ? (
+              <>
+                <span style={{ flex: 1 }}>Downloading update… {updateProgress}%</span>
+                <div style={{ width: '120px', height: '6px', background: 'rgba(255,255,255,0.3)', borderRadius: '3px' }}>
+                  <div style={{ width: `${updateProgress}%`, height: '100%', background: '#fff', borderRadius: '3px', transition: 'width 0.3s' }} />
+                </div>
+              </>
+            ) : (
+              <>
+                <span style={{ flex: 1 }}>
+                  {updateInfo.releaseCount > 1
+                    ? `${updateInfo.releaseCount} Stocka updates are available — latest is v${updateInfo.version}.`
+                    : `A new version of Stocka (v${updateInfo.version}) is available.`}
+                </span>
+                <button
+                  onClick={() => { setUpdateDownloading(true); window.stocka.updater.download() }}
+                  style={{
+                    background: '#fff', color: '#2e7d32', border: 'none',
+                    borderRadius: '5px', padding: '5px 14px', cursor: 'pointer', fontWeight: 600
+                  }}
+                >
+                  Update Now
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         {renderPage()}
       </main>
+
+      {showOpeningFloatModal && (
+        <OpeningFloatModal
+          user={user}
+          onConfirm={handleOpeningFloatSubmit}
+          onCancel={handleOpeningFloatCancel}
+          isLoading={isStartingShift}
+        />
+      )}
+      {showClosingFloatModal && currentShift && (
+        <ClosingFloatModal
+          shift={currentShift}
+          onConfirm={handleClosingFloatSubmit}
+          onCancel={handleClosingFloatCancel}
+          isLoading={isClosingShift}
+        />
+      )}
     </div>
   )
 }
@@ -631,7 +795,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
               {recentSales.slice(0, 5).map((sale, idx) => (
                 <div key={idx} className="sale-item">
                   <div className="sale-time">
-                    {new Date(sale.date_created).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(sale.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}
                   </div>
                   <div className="sale-amount">${sale.total?.toFixed(2)}</div>
                 </div>

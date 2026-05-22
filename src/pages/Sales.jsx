@@ -1,22 +1,22 @@
 import { useState, useEffect } from 'react'
-import { getProducts, addSale, getLatestProductPrice, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getCurrentShift, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId, closeShift } from '../database/db'
+import { getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
 import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
-import ClosingFloatModal from '../components/ClosingFloatModal'
 import './Sales.css'
 import {
-  FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2, FiLogOut
+  FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2
 } from 'react-icons/fi'
 
-function Sales({ user }) {
+function Sales({ user, currentShift }) {
   // Product & Cart State
   const [products, setProducts] = useState([])
   const [mostSoldProducts, setMostSoldProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [searchFocused, setSearchFocused] = useState(false)
   const [cart, setCart] = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   
@@ -24,6 +24,7 @@ function Sales({ user }) {
   const [heldSales, setHeldSales] = useState([])
   const [showHeldModal, setShowHeldModal] = useState(false)
   const [showHeldPanel, setShowHeldPanel] = useState(false)
+  const [recalledSaleId, setRecalledSaleId] = useState(null) // tracks a recalled held sale
   
   // Checkout Flow State
   const [checkoutStep, setCheckoutStep] = useState(null) // null | 'paymentMethod' | 'cashTendered'
@@ -44,12 +45,6 @@ function Sales({ user }) {
   const [voidReason, setVoidReason] = useState('')
   const [showVoidModal, setShowVoidModal] = useState(false)
 
-  // Shift State
-  const [currentShift, setCurrentShift] = useState(null)
-  const [shiftWarning, setShiftWarning] = useState('')
-  const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
-  const [isClosingShift, setIsClosingShift] = useState(false)
-
   // Printer Hook
   const { printReceipt, printTestReceipt, isPrinting, printError, printSuccess } = useReceiptPrinter()
 
@@ -60,7 +55,6 @@ function Sales({ user }) {
   useEffect(() => {
     loadProducts()
     loadHeldSales()
-    loadCurrentShift()
     loadShopInfo()
   }, [])
 
@@ -70,18 +64,6 @@ function Sales({ user }) {
       setHeldSales(held)
     } catch (err) {
       console.error('Failed to load held sales:', err)
-    }
-  }
-
-  const loadCurrentShift = async () => {
-    try {
-      const shift = await getCurrentShift(user.id)
-      setCurrentShift(shift)
-      if (!shift) {
-        setShiftWarning('No active shift. Sales will not be linked to a shift.')
-      }
-    } catch (err) {
-      console.error('Failed to load current shift:', err)
     }
   }
 
@@ -136,34 +118,22 @@ function Sales({ user }) {
   const loadProducts = async () => {
     try {
       setLoading(true)
-      const productsData = await getProducts()
-      const mostSold = await getMostSoldProducts(10)
-      
-      // Load prices for each product
-      const enrichedProducts = []
-      for (const product of productsData) {
-        const price = await getLatestProductPrice(product.id)
-        enrichedProducts.push({
-          ...product,
-          selling_price: price?.selling_price_per_unit || 0,
-          cost_price: price?.cost_per_unit || 0
-        })
-      }
-      
-      // Enrich most sold products with prices
-      const enrichedMostSold = []
-      for (const product of mostSold) {
-        const price = await getLatestProductPrice(product.id)
-        enrichedMostSold.push({
-          ...product,
-          selling_price: price?.selling_price_per_unit || 0,
-          cost_price: price?.cost_per_unit || 0
-        })
-      }
-      
+      const [productsData, mostSold, costPrices] = await Promise.all([
+        getProducts(),
+        getMostSoldProducts(10),
+        getAllLatestCostPrices()
+      ])
+
+      const enrich = (product) => ({
+        ...product,
+        selling_price: product.selling_price || 0,
+        cost_price: costPrices[product.id] || 0
+      })
+
+      const enrichedProducts = productsData.map(enrich)
       enrichedProducts.sort((a, b) => (b.current_quantity || 0) - (a.current_quantity || 0))
       setProducts(enrichedProducts)
-      setMostSoldProducts(enrichedMostSold)
+      setMostSoldProducts(mostSold.map(enrich))
     } catch (err) {
       setError('Failed to load products')
       console.error(err)
@@ -173,13 +143,21 @@ function Sales({ user }) {
   }
 
   const searchResults = search.trim()
-    ? products.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 10)
+    ? products.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 20)
+    : searchFocused
+    ? products.slice(0, 30)
     : []
 
   const addToCart = (product) => {
     if (product.current_quantity <= 0) {
       setError('Product out of stock')
       setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (!product.selling_price || product.selling_price <= 0) {
+      setError(`"${product.name}" has no price set. Update the price in Products before selling.`)
+      setTimeout(() => setError(''), 5000)
       return
     }
 
@@ -274,50 +252,19 @@ function Sales({ user }) {
 
     setIsProcessing(true)
     try {
-      // Create a pending sale (not completed yet)
       const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-      
-      const sale = {
-        cashier: user.username,
-        total: cartTotal,
-        cash_tendered: 0,
-        change_given: 0,
-        shift_id: currentShift?.id || null
-      }
 
-      const saleId = await addSale(sale, cart)
-      
-      // Auto-generate hold label with sale ID
-      const holdLabel = `Hold-${saleId}`
-      
-      // Then hold it
-      await holdSale(saleId, holdLabel)
-      
-      // Reload held sales
-      await loadHeldSales()
-      
-      setCart([])
-      setSearch('')
-      
-      // Show success with hold ID
-      setError(`✓ Sale held as "${holdLabel}" - Total: $${cartTotal.toFixed(2)}`)
-      setTimeout(() => setError(''), 4000)
-      
-      await loadProducts()
-    } catch (err) {
-      setError('Failed to hold sale')
-      console.error(err)
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const handleRecallSale = async (heldSaleId) => {
-    try {
-      // If cart has items, automatically hold them first
-      if (cart.length > 0) {
-        const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-        
+      if (recalledSaleId) {
+        // Re-hold a recalled sale — update its status back to held directly
+        await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
+        setRecalledSaleId(null)
+        setCart([])
+        setSearch('')
+        await loadHeldSales()
+        setError(`✓ Sale re-held as "Hold-${recalledSaleId}" - Total: $${cartTotal.toFixed(2)}`)
+        setTimeout(() => setError(''), 4000)
+      } else {
+        // New hold — create the sale record and hold it
         const sale = {
           cashier: user.username,
           total: cartTotal,
@@ -329,14 +276,42 @@ function Sales({ user }) {
         const saleId = await addSale(sale, cart)
         const holdLabel = `Hold-${saleId}`
         await holdSale(saleId, holdLabel)
+        await loadHeldSales()
+        setCart([])
+        setSearch('')
+        setError(`✓ Sale held as "${holdLabel}" - Total: $${cartTotal.toFixed(2)}`)
+        setTimeout(() => setError(''), 4000)
+        await loadProducts()
+      }
+    } catch (err) {
+      setError('Failed to hold sale')
+      console.error(err)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleRecallSale = async (heldSaleId) => {
+    try {
+      // If cart already has items from a recalled sale, re-hold it before switching
+      if (cart.length > 0 && recalledSaleId) {
+        await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
+      } else if (cart.length > 0) {
+        // Non-recalled items in cart — create and hold them
+        const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
+        const saleId = await addSale({
+          cashier: user.username,
+          total: cartTotal,
+          cash_tendered: 0,
+          change_given: 0,
+          shift_id: currentShift?.id || null
+        }, cart)
+        await holdSale(saleId, `Hold-${saleId}`)
+        await loadProducts()
       }
 
-      // Get the held sale details
-      const heldSale = await getSaleById(heldSaleId)
       const items = await getSaleItems(heldSaleId)
-      
-      // Restore the cart with the items
-      const cartItemsWithPrices = items.map(item => ({
+      const cartItems = items.map(item => ({
         product_id: item.product_id,
         product_name: item.product_name,
         selling_price: item.selling_price,
@@ -344,17 +319,16 @@ function Sales({ user }) {
         quantity: item.quantity,
         subtotal: item.subtotal
       }))
-      
-      setCart(cartItemsWithPrices)
-      
-      // Mark as recalled
+
+      setCart(cartItems)
+      setRecalledSaleId(heldSaleId)
+
+      // Mark as pending (in progress)
       await recallHeldSale(heldSaleId)
-      
-      // Reload held sales
       await loadHeldSales()
-      
+
       setShowHeldPanel(false)
-      setError(`Sale "${heldSale.id}" recalled ✓`)
+      setError(`Sale #${heldSaleId} recalled ✓`)
       setTimeout(() => setError(''), 3000)
     } catch (err) {
       setError('Failed to recall sale')
@@ -450,17 +424,23 @@ function Sales({ user }) {
     try {
       const cashAmount_ = parseFloat(cashAmount)
       const change = Math.max(0, cashAmount_ - cartTotal)
+      let saleId
 
-      const sale = {
-        cashier: user.username,
-        total: cartTotal,
-        cash_tendered: cashAmount_,
-        change_given: change,
-        shift_id: currentShift?.id || null
+      if (recalledSaleId) {
+        // Complete the existing held sale — stock was already deducted at hold time
+        saleId = await completeHeldSale(recalledSaleId, cashAmount_, change, currentShift?.id || null)
+        setRecalledSaleId(null)
+      } else {
+        // Fresh sale — create the record and deduct stock
+        const sale = {
+          cashier: user.username,
+          total: cartTotal,
+          cash_tendered: cashAmount_,
+          change_given: change,
+          shift_id: currentShift?.id || null
+        }
+        saleId = await addSale(sale, cart)
       }
-
-      // Add sale and get the ID
-      const saleId = await addSale(sale, cart)
 
       // Generate and store receipt number
       try {
@@ -545,42 +525,6 @@ function Sales({ user }) {
   const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
   const change = Math.max(0, parseFloat(cashTendered || 0) - cartTotal)
 
-  const handleCloseShiftClick = () => {
-    if (!currentShift) {
-      setError('No active shift to close')
-      return
-    }
-    setShowClosingFloatModal(true)
-  }
-
-  const handleClosingFloatSubmit = async (closingFloat, notes) => {
-    setIsClosingShift(true)
-    try {
-      // Close the shift in the database
-      const closedShift = await closeShift(currentShift.id, closingFloat, notes)
-      
-      setShowClosingFloatModal(false)
-      setCurrentShift(null)
-      
-      // Show confirmation and navigate to dashboard
-      setError(`✓ Shift closed. Status: ${closedShift.reconciliation_status}`)
-      
-      // Log out after 2 seconds
-      setTimeout(() => {
-        localStorage.removeItem('stocka_user')
-        window.location.href = '/'
-      }, 2000)
-    } catch (err) {
-      console.error('Failed to close shift:', err)
-      setError('Failed to close shift. Please try again.')
-      setIsClosingShift(false)
-    }
-  }
-
-  const handleClosingFloatCancel = () => {
-    setShowClosingFloatModal(false)
-  }
-
   if (loading) {
     return <div className="sales-page"><div className="loading">Loading...</div></div>
   }
@@ -662,6 +606,8 @@ function Sales({ user }) {
               placeholder="Search product name..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
               className="product-search"
               autoFocus
             />
@@ -669,7 +615,36 @@ function Sales({ user }) {
             {error && <div className="error-message">{error}</div>}
 
             <div className="search-results">
-              {!search ? (
+              {searchFocused || search.trim() ? (
+                searchResults.length === 0 ? (
+                  <div className="no-results">No products found</div>
+                ) : (
+                  <>
+                    {!search.trim() && <div className="most-sold-title">All Products</div>}
+                    {searchResults.map(product => (
+                      <button
+                        key={product.id}
+                        className="product-result"
+                        onClick={() => addToCart(product)}
+                        disabled={product.current_quantity <= 0}
+                      >
+                        <div className="result-image-wrapper">
+                          {product.image_data ? (
+                            <img src={product.image_data} alt={product.name} className="result-image" />
+                          ) : (
+                            <div className="result-image-placeholder"><FiPackage size={32} /></div>
+                          )}
+                        </div>
+                        <div className="result-info">
+                          <div className="result-name">{product.name}</div>
+                          <div className="result-price">${product.selling_price.toFixed(2)}</div>
+                          <div className="result-qty">Stock: {product.current_quantity}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )
+              ) : (
                 mostSoldProducts.length > 0 ? (
                   <>
                     <div className="most-sold-title">Top Selling Products</div>
@@ -698,30 +673,6 @@ function Sales({ user }) {
                 ) : (
                   <div className="no-search">No products available yet</div>
                 )
-              ) : searchResults.length === 0 ? (
-                <div className="no-results">No products found</div>
-              ) : (
-                searchResults.map(product => (
-                  <button
-                    key={product.id}
-                    className="product-result"
-                    onClick={() => addToCart(product)}
-                    disabled={product.current_quantity <= 0}
-                  >
-                    <div className="result-image-wrapper">
-                      {product.image_data ? (
-                        <img src={product.image_data} alt={product.name} className="result-image" />
-                      ) : (
-                        <div className="result-image-placeholder"><FiPackage size={32} /></div>
-                      )}
-                    </div>
-                    <div className="result-info">
-                      <div className="result-name">{product.name}</div>
-                      <div className="result-price">${product.selling_price.toFixed(2)}</div>
-                      <div className="result-qty">Stock: {product.current_quantity}</div>
-                    </div>
-                  </button>
-                ))
               )}
             </div>
           </div>
@@ -825,35 +776,6 @@ function Sales({ user }) {
               </>
             )}
 
-            {/* Close Shift Button */}
-            {currentShift && (
-              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #eee' }}>
-                <button
-                  onClick={handleCloseShiftClick}
-                  disabled={isClosingShift}
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    backgroundColor: '#ff9800',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    cursor: isClosingShift ? 'not-allowed' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    opacity: isClosingShift ? 0.6 : 1,
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <FiLogOut size={18} />
-                  {isClosingShift ? 'Closing Shift...' : 'Close My Shift'}
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1035,15 +957,6 @@ function Sales({ user }) {
         </div>
       )}
 
-      {/* Closing Float Modal */}
-      {showClosingFloatModal && currentShift && (
-        <ClosingFloatModal
-          shift={currentShift}
-          onConfirm={handleClosingFloatSubmit}
-          onCancel={handleClosingFloatCancel}
-          isLoading={isClosingShift}
-        />
-      )}
     </div>
   )
 }

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Recurse -File)",
+      "Bash(Select-Object -First 50)",
+      "Bash(Format-Table Name, DirectoryName)",
+      "Bash(node -e \"try { require\\('electron-updater'\\); console.log\\('electron-updater: installed'\\) } catch\\(e\\) { console.log\\('electron-updater: NOT installed'\\) }\")",
+      "Bash(node -e \"const p = require\\('./package.json'\\); console.log\\('electron-builder in deps:', !!p.dependencies['electron-builder'] || !!p.devDependencies['electron-builder']\\); console.log\\('electron-forge in devDeps:', Object.keys\\(p.devDependencies\\).filter\\(k=>k.includes\\('forge'\\)\\).join\\(', '\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('postinstall:', p.scripts.postinstall\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")",
+      "Bash(npm install *)",
+      "Bash(node -e \"try{require\\('electron-updater'\\);console.log\\('electron-updater OK'\\)}catch\\(e\\){console.log\\('MISSING:',e.message\\)}\")",
+      "Bash(node -e \"try{require\\('electron-builder'\\);console.log\\('electron-builder OK'\\)}catch\\(e\\){console.log\\('MISSING:',e.message\\)}\")",
+      "Bash(node -e \"const lic=require\\('./electron/license'\\); console.log\\('license.js loads OK, exports:', Object.keys\\(lic\\).join\\(', '\\)\\)\")"
+    ]
+  }
+}

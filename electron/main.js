@@ -4,6 +4,7 @@ const path = require('path')
 const nodePrinter = require('node-printer')
 const { PosPrinter } = require('@plick/electron-pos-printer')
 const logger = require('./logger')
+const { verifyLicense, saveLicense, loadLicense } = require('./license')
 
 // Set userData path before app is ready (must be first)
 const userDataPath = path.join(process.env.APPDATA || process.env.HOME, 'Stocka')
@@ -84,6 +85,8 @@ function createWindow() {
 app.whenReady().then(() => {
   logger.info('⚡ App ready')
   createWindow()
+  // Delay updater 10 s so startup is not slowed down
+  setTimeout(setupAutoUpdater, 10000)
 
   app.on('activate', () => {
     logger.info('🔄 App activated')
@@ -776,3 +779,245 @@ function formatMoney(amount) {
   const num = parseFloat(amount || 0)
   return `$${num.toFixed(2)}`
 }
+
+// ══════════════════════════════════════════════════════════
+// AUTO-UPDATER
+// ══════════════════════════════════════════════════════════
+
+function setupAutoUpdater() {
+  try {
+    const { autoUpdater } = require('electron-updater')
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
+
+    const runCheck = () => {
+      autoUpdater.checkForUpdates().catch(err => logger.warn('Update check skipped: ' + err.message))
+    }
+
+    runCheck()
+    setInterval(runCheck, 4 * 60 * 60 * 1000)
+
+    autoUpdater.on('update-available', (info) => {
+      // releaseNotes is an array when the user is multiple versions behind
+      const releaseCount = Array.isArray(info.releaseNotes) ? info.releaseNotes.length : 1
+      logger.info(`Update available: v${info.version} (${releaseCount} release(s) behind)`)
+      if (mainWindow) mainWindow.webContents.send('updater:update-available', {
+        version: info.version,
+        releaseCount
+      })
+    })
+
+    autoUpdater.on('download-progress', (progress) => {
+      if (mainWindow) mainWindow.webContents.send('updater:download-progress', { percent: Math.round(progress.percent) })
+    })
+
+    autoUpdater.on('update-downloaded', () => {
+      logger.info('Update downloaded, ready to install')
+      if (mainWindow) mainWindow.webContents.send('updater:update-downloaded')
+    })
+
+    autoUpdater.on('error', err => {
+      logger.error('Auto-update error: ' + err.message)
+    })
+
+    ipcMain.handle('updater:download', () => autoUpdater.downloadUpdate())
+    ipcMain.handle('updater:install', () => autoUpdater.quitAndInstall())
+    // Called by the renderer when it detects the device came back online
+    ipcMain.handle('updater:check', () => runCheck())
+
+    logger.info('✅ Auto-updater active (manual mode)')
+  } catch (err) {
+    logger.warn('Auto-updater unavailable: ' + err.message)
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// LICENSE IPC HANDLERS
+// ══════════════════════════════════════════════════════════
+
+ipcMain.handle('license:check', async () => {
+  const data = loadLicense()
+  return { valid: !!data, data: data || null }
+})
+
+ipcMain.handle('license:activate', async (event, licenseString) => {
+  try {
+    if (typeof licenseString !== 'string' || licenseString.length > 4096) {
+      return { success: false, error: 'Invalid license key format.' }
+    }
+    const data = verifyLicense(licenseString)
+    if (!data) {
+      return { success: false, error: 'Invalid license key. Please check the key and contact support if the problem persists.' }
+    }
+    saveLicense(licenseString)
+    logger.info(`✅ License activated for: ${data.customer}`)
+    return { success: true, data }
+  } catch (err) {
+    logger.error('License activation error: ' + err.message)
+    return { success: false, error: 'Activation failed. Please try again.' }
+  }
+})
+
+ipcMain.handle('license:get-info', async () => {
+  const data = loadLicense()
+  return { data: data || null }
+})
+
+// ══════════════════════════════════════════════════════════
+// DATABASE IPC HANDLERS - File-based persistence
+// ══════════════════════════════════════════════════════════
+
+const fs = require('fs')
+const fsPromises = require('fs').promises
+
+const dbFilePath = path.join(userDataPath, 'stocka.db')
+const dbTmpPath  = path.join(userDataPath, 'stocka.db.tmp')
+const backupsDirPath = path.join(userDataPath, 'backups')
+const metaFilePath = path.join(userDataPath, 'stocka_meta.json')
+
+const ensureBackupsDir = () => fsPromises.mkdir(backupsDirPath, { recursive: true }).catch(() => {})
+
+ipcMain.handle('db:load', async () => {
+  try {
+    const data = await fsPromises.readFile(dbFilePath)
+    return { success: true, data: data.toString('base64') }
+  } catch (err) {
+    if (err.code === 'ENOENT') return { success: true, data: null }
+    logger.warn('db:load error: ' + err.message)
+    return { success: true, data: null }
+  }
+})
+
+ipcMain.handle('db:save', async (event, base64) => {
+  try {
+    const buf = Buffer.from(base64, 'base64')
+    await fsPromises.writeFile(dbTmpPath, buf)
+    await fsPromises.rename(dbTmpPath, dbFilePath)
+    return { success: true }
+  } catch (err) {
+    logger.error('db:save error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:backup', async () => {
+  try {
+    await ensureBackupsDir()
+    await fsPromises.access(dbFilePath)
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const filename = `stocka_${timestamp}.db`
+    const destPath = path.join(backupsDirPath, filename)
+    await fsPromises.copyFile(dbFilePath, destPath)
+    // Keep only the 10 most recent backups
+    const allFiles = await fsPromises.readdir(backupsDirPath)
+    const dbFiles = allFiles
+      .filter(f => f.startsWith('stocka_') && f.endsWith('.db'))
+      .sort()
+      .reverse()
+    if (dbFiles.length > 10) {
+      for (const old of dbFiles.slice(10)) {
+        try { await fsPromises.unlink(path.join(backupsDirPath, old)) } catch (_) {}
+      }
+    }
+    return { success: true, filename }
+  } catch (err) {
+    if (err.code === 'ENOENT') return { success: false, error: 'No database file to backup' }
+    logger.error('db:backup error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:list-backups', async () => {
+  try {
+    await ensureBackupsDir()
+    const files = await fsPromises.readdir(backupsDirPath)
+    const dbFiles = files.filter(f => f.startsWith('stocka_') && f.endsWith('.db'))
+    const backups = []
+    for (const filename of dbFiles) {
+      const filePath = path.join(backupsDirPath, filename)
+      const stat = await fsPromises.stat(filePath)
+      backups.push({ filename, path: filePath, createdAt: stat.mtime.toISOString(), sizeBytes: stat.size })
+    }
+    backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    return { success: true, backups }
+  } catch (err) {
+    logger.error('db:list-backups error: ' + err.message)
+    return { success: false, error: err.message, backups: [] }
+  }
+})
+
+ipcMain.handle('db:restore', async (event, filename) => {
+  try {
+    if (!/^[\w\-\.]+\.db$/.test(filename)) return { success: false, error: 'Invalid backup filename' }
+    const srcPath = path.join(backupsDirPath, filename)
+    await fsPromises.access(srcPath)
+    await fsPromises.copyFile(srcPath, dbFilePath)
+    return { success: true }
+  } catch (err) {
+    logger.error('db:restore error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:get-paths', async () => {
+  return { success: true, dbPath: dbFilePath, backupsPath: backupsDirPath, userDataPath }
+})
+
+ipcMain.handle('db:export-file', async (event, destPath) => {
+  try {
+    if (!path.isAbsolute(destPath)) return { success: false, error: 'Destination path must be absolute' }
+    await fsPromises.access(dbFilePath)
+    await fsPromises.copyFile(dbFilePath, destPath)
+    return { success: true }
+  } catch (err) {
+    logger.error('db:export-file error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:migrate-from-localstorage', async (event, base64) => {
+  try {
+    // Only write if stocka.db does not already exist
+    try {
+      await fsPromises.access(dbFilePath)
+      return { success: true, migrated: false, reason: 'db file already exists' }
+    } catch (_) {}
+    const buf = Buffer.from(base64, 'base64')
+    await fsPromises.writeFile(dbTmpPath, buf)
+    await fsPromises.rename(dbTmpPath, dbFilePath)
+    return { success: true, migrated: true }
+  } catch (err) {
+    logger.error('db:migrate-from-localstorage error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:get-meta', async () => {
+  try {
+    const data = await fsPromises.readFile(metaFilePath, 'utf8')
+    return { success: true, meta: JSON.parse(data) }
+  } catch (_) {
+    return { success: true, meta: {} }
+  }
+})
+
+ipcMain.handle('db:set-meta', async (event, meta) => {
+  try {
+    await fsPromises.writeFile(metaFilePath, JSON.stringify(meta), 'utf8')
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('db:load-backup', async (event, filename) => {
+  try {
+    if (!/^[\w\-\.]+\.db$/.test(filename)) return { success: false, error: 'Invalid filename' }
+    const filePath = path.join(backupsDirPath, filename)
+    const data = await fsPromises.readFile(filePath)
+    return { success: true, data: data.toString('base64') }
+  } catch (err) {
+    logger.error('db:load-backup error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})

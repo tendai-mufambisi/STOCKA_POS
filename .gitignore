@@ -15,7 +15,14 @@ dist-ssr
 # Electron and build output
 out/
 release/
+dist-electron/
 .electron-builds/
+
+# Environment and secrets — NEVER commit these
+*.pem
+.env
+.env.local
+.env.*.local
 
 # Editor directories and files
 .vscode/*

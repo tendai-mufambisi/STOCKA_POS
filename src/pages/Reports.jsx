@@ -127,8 +127,8 @@ function Reports({ user }) {
     const dayEnd = selectedTime + 24 * 60 * 60 * 1000
 
     const daySales = sales.filter(s => {
-      const saleTime = new Date(s.date_created).getTime()
-      return saleTime >= dayStart && saleTime < dayEnd
+      const saleTime = new Date(s.created_at).getTime()
+      return s.status === 'completed' && saleTime >= dayStart && saleTime < dayEnd
     })
 
     const dayExpenses = expenses.filter(e => {
@@ -138,7 +138,9 @@ function Reports({ user }) {
 
     const dayItems = saleItems.filter(si => {
       const sale = sales.find(s => s.id === si.sale_id)
-      return sale && new Date(sale.date_created).getTime() >= dayStart && new Date(sale.date_created).getTime() < dayEnd
+      return sale && sale.status === 'completed' &&
+        new Date(sale.created_at).getTime() >= dayStart &&
+        new Date(sale.created_at).getTime() < dayEnd
     })
 
     const totalRevenue = daySales.reduce((sum, s) => sum + (s.total || 0), 0)
@@ -171,12 +173,12 @@ function Reports({ user }) {
     })
     setPaymentBreakdown(paymentData)
     setChartData(daySales.map(s => ({
-      time: new Date(s.date_created).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' }),
+      time: new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' }),
       amount: s.total || 0
     })))
     setTableData(daySales.map(s => ({
       ...s,
-      time: new Date(s.date_created).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })
+      time: new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })
     })))
   }
 
@@ -186,12 +188,12 @@ function Reports({ user }) {
 
     const dayData = {}
     const rangedSales = sales.filter(s => {
-      const saleTime = new Date(s.date_created).getTime()
-      return saleTime >= start && saleTime < end
+      const saleTime = new Date(s.created_at).getTime()
+      return s.status === 'completed' && saleTime >= start && saleTime < end
     })
 
     rangedSales.forEach(s => {
-      const date = new Date(s.date_created).toLocaleDateString('en-ZW')
+      const date = new Date(s.created_at).toLocaleDateString('en-ZW')
       if (!dayData[date]) {
         dayData[date] = { date, revenue: 0, count: 0, usd: 0, zwg: 0, swipe: 0, ecocash: 0 }
       }
@@ -229,9 +231,10 @@ function Reports({ user }) {
   const generateCashierPerformanceReport = (sales) => {
     const cashierData = {}
 
-    const filteredSales = filterCashier 
-      ? sales.filter(s => (s.cashier || 'System') === filterCashier)
-      : sales
+    const filteredSales = sales.filter(s =>
+      s.status === 'completed' &&
+      (!filterCashier || (s.cashier || 'System') === filterCashier)
+    )
 
     filteredSales.forEach(s => {
       const cashier = s.cashier || 'System'
@@ -268,7 +271,7 @@ function Reports({ user }) {
     const productSales = {}
 
     saleItems.forEach(si => {
-      const sale = sales.find(s => s.id === si.sale_id)
+      const sale = sales.find(s => s.id === si.sale_id && s.status === 'completed')
       if (sale) {
         if (!productSales[si.product_id]) {
           productSales[si.product_id] = { productName: si.product_name, units: 0, revenue: 0, cogs: 0 }
@@ -303,8 +306,8 @@ function Reports({ user }) {
     const monthData = {}
     
     const rangedSales = sales.filter(s => {
-      const saleTime = new Date(s.date_created).getTime()
-      return saleTime >= start && saleTime < end
+      const saleTime = new Date(s.created_at).getTime()
+      return s.status === 'completed' && saleTime >= start && saleTime < end
     })
 
     const rangedExpenses = expenses.filter(e => {
@@ -313,7 +316,7 @@ function Reports({ user }) {
     })
 
     rangedSales.forEach(s => {
-      const date = new Date(s.date_created)
+      const date = new Date(s.created_at)
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
       const monthLabel = date.toLocaleDateString('en-ZW', { month: 'short', year: 'numeric' })
       
@@ -335,14 +338,14 @@ function Reports({ user }) {
     })
 
     const rangedSaleItems = saleItems.filter(si => {
-      const sale = sales.find(s => s.id === si.sale_id)
-      return sale && new Date(sale.date_created).getTime() >= start && new Date(sale.date_created).getTime() < end
+      const sale = sales.find(s => s.id === si.sale_id && s.status === 'completed')
+      return sale && new Date(sale.created_at).getTime() >= start && new Date(sale.created_at).getTime() < end
     })
 
     rangedSaleItems.forEach(si => {
       const sale = sales.find(s => s.id === si.sale_id)
       if (sale) {
-        const date = new Date(sale.date_created)
+        const date = new Date(sale.created_at)
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
         if (monthData[monthKey]) {
           monthData[monthKey].cogs += (si.quantity || 0) * (si.cost_price || 0)

@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import ShopSetup from './pages/ShopSetup'
+import Activation from './pages/Activation'
 import ErrorBoundary from './components/ErrorBoundary'
 import { getShop } from './database/db'
 import { FiPackage } from 'react-icons/fi'
@@ -11,32 +12,41 @@ function App() {
   const [setupComplete, setSetupComplete] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadingError, setLoadingError] = useState(false)
+  const [licenseValid, setLicenseValid] = useState(null)
   const isLoggedIn = localStorage.getItem('stocka_user')
 
   useEffect(() => {
-    const checkSetup = async () => {
+    const init = async () => {
       try {
-        // Set timeout for database check
+        // License check — Electron only, skip in dev/web mode
+        if (window.stocka?.license) {
+          const lic = await window.stocka.license.check()
+          if (!lic?.valid) {
+            setLicenseValid(false)
+            setLoading(false)
+            return
+          }
+        }
+        setLicenseValid(true)
+
+        // Database / setup check
         const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Database initialization timeout')), 8000)
         )
-        
-        const shopPromise = getShop()
-        const shop = await Promise.race([shopPromise, timeoutPromise])
-        
-        setSetupComplete(shop?.setup_complete === 1 || localStorage.getItem('stocka_db_init') === '1')
+        const shop = await Promise.race([getShop(), timeoutPromise])
+        setSetupComplete(shop?.setup_complete === 1)
         setLoadingError(false)
       } catch (error) {
         console.error('Setup check failed:', error)
-        // Default to login if database fails
         setSetupComplete(true)
         setLoadingError(true)
+        setLicenseValid(true)
       } finally {
         setLoading(false)
       }
     }
-    
-    checkSetup()
+
+    init()
   }, [])
 
   if (loading) {
@@ -72,6 +82,11 @@ function App() {
         </div>
       </div>
     )
+  }
+
+  // License not activated — show activation screen
+  if (licenseValid === false) {
+    return <Activation onActivated={() => window.location.reload()} />
   }
 
   // If there was an error, show a fallback
