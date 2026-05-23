@@ -1,6 +1,6 @@
 {
   "name": "stocka",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Stocka - Retail Inventory & POS for Zimbabwe",
   "author": "Tendai Mufambisi",
   "main": "electron/main.js",
@@ -52,6 +52,7 @@
   "build": {
     "appId": "co.zw.digitsdigital.stocka",
     "productName": "Stocka",
+    "icon": "src/assets/icon.png",
     "directories": {
       "output": "release"
     },
@@ -59,6 +60,7 @@
       "dist/**/*",
       "electron/**/*",
       "src/utils/printerUtils.js",
+      "src/assets/icon.png",
       "package.json"
     ],
     "asar": true,
@@ -69,7 +71,8 @@
       "src/utils/printerUtils.js"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "src/assets/icon.png"
     },
     "nsis": {
       "oneClick": false,

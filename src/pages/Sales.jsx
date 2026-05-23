@@ -410,6 +410,13 @@ function Sales({ user, currentShift }) {
       const cashAmount_ = parseFloat(cashAmount)
       const change = Math.max(0, cashAmount_ - cartTotal)
       let saleId
+      let sale = {
+        cashier: user.username,
+        total: cartTotal,
+        cash_tendered: cashAmount_,
+        change_given: change,
+        shift_id: currentShift?.id || null
+      }
 
       if (recalledSaleId) {
         // Complete the existing held sale — stock was already deducted at hold time
@@ -417,13 +424,6 @@ function Sales({ user, currentShift }) {
         setRecalledSaleId(null)
       } else {
         // Fresh sale — create the record and deduct stock
-        const sale = {
-          cashier: user.username,
-          total: cartTotal,
-          cash_tendered: cashAmount_,
-          change_given: change,
-          shift_id: currentShift?.id || null
-        }
         saleId = await addSale(sale, cart)
       }
 
@@ -444,7 +444,7 @@ function Sales({ user, currentShift }) {
         }
 
         // Auto-print if enabled and printer is configured
-        if (printerSettings?.auto_print === 1) {
+        if (printerSettings?.auto_print) {
           // Check if shop info is available
           if (!shopInfo) {
             setError('Shop not configured. Please configure your shop in Settings to enable printing.')
@@ -482,7 +482,9 @@ function Sales({ user, currentShift }) {
           }
         }
       } catch (err) {
-        // Don't fail the sale due to receipt/print errors
+        console.error('[RECEIPT/PRINT]', err)
+        setError('Print error: ' + (err.message || 'Unknown error'))
+        setTimeout(() => setError(''), 5000)
       }
       
       setLastSale({

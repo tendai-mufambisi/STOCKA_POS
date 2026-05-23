@@ -743,34 +743,72 @@ function Settings({ user }) {
                 </button>
               </div>
 
-              {availablePrinters.length > 0 && (
-                <div>
-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
-                    Detected Printers — click to select:
-                  </label>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {availablePrinters.map(printer => (
-                      <button
-                        key={printer.port}
-                        type="button"
-                        onClick={() => setFormData({ ...formData, printer_name: printer.name })}
-                        style={{
-                          padding: '10px 14px',
-                          border: `2px solid ${formData.printer_name === printer.name ? '#1976d2' : '#ddd'}`,
-                          borderRadius: '6px',
-                          backgroundColor: formData.printer_name === printer.name ? '#e3f2fd' : '#fff',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontWeight: formData.printer_name === printer.name ? '600' : 'normal'
-                        }}
-                      >
-                        🖨️ {printer.name}
-                        {formData.printer_name === printer.name && ' ✓ Selected'}
-                      </button>
-                    ))}
+              {availablePrinters.length > 0 && (() => {
+                const primary   = availablePrinters.filter(p => !p.isVirtual && !p.isDuplicate)
+                const dupes     = availablePrinters.filter(p => !p.isVirtual && p.isDuplicate)
+                const virtual_  = availablePrinters.filter(p => p.isVirtual)
+
+                const renderBtn = (printer) => (
+                  <button
+                    key={printer.name}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, printer_name: printer.name })}
+                    style={{
+                      padding: '10px 14px',
+                      border: `2px solid ${formData.printer_name === printer.name ? '#1976d2' : '#ddd'}`,
+                      borderRadius: '6px',
+                      backgroundColor: formData.printer_name === printer.name ? '#e3f2fd' : '#fff',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontWeight: formData.printer_name === printer.name ? '600' : 'normal',
+                      opacity: (printer.isVirtual || printer.isDuplicate) ? 0.55 : 1
+                    }}
+                  >
+                    🖨️ {printer.name}
+                    {printer.isDefault && <span style={{ marginLeft: 6, fontSize: 11, color: '#1976d2' }}>(default)</span>}
+                    {formData.printer_name === printer.name && ' ✓ Selected'}
+                  </button>
+                )
+
+                return (
+                  <div>
+                    {primary.length > 0 && (
+                      <>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
+                          Physical Printers — click to select:
+                        </label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: 12 }}>
+                          {primary.map(renderBtn)}
+                        </div>
+                      </>
+                    )}
+                    {dupes.length > 0 && (
+                      <details style={{ marginBottom: 8 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 13, color: '#e65100', userSelect: 'none' }}>
+                          ⚠️ {dupes.length} duplicate installation{dupes.length > 1 ? 's' : ''} detected — open Devices &amp; Printers and delete these
+                        </summary>
+                        <div style={{ marginTop: 6, padding: '10px 12px', backgroundColor: '#fff3e0', borderRadius: 6, fontSize: 13, color: '#555', marginBottom: 8 }}>
+                          These are leftover copies from multiple installs of the same printer.
+                          To clean up: press <strong>Win+R</strong>, type <code>control printers</code>, right-click each duplicate and choose <strong>Remove device</strong>.
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {dupes.map(renderBtn)}
+                        </div>
+                      </details>
+                    )}
+                    {virtual_.length > 0 && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 13, color: '#888', userSelect: 'none' }}>
+                          {virtual_.length} virtual/software printer{virtual_.length > 1 ? 's' : ''} (PDF, Fax, etc.)
+                        </summary>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: 8 }}>
+                          {virtual_.map(renderBtn)}
+                        </div>
+                      </details>
+                    )}
                   </div>
-                </div>
-              )}
+                )
+              })()}
             </div>
 
             {/* Test Print */}

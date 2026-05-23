@@ -40,6 +40,7 @@ function createWindow() {
     },
     titleBarStyle: 'default',
     title: 'Stocka',
+    icon: path.join(__dirname, '..', 'src', 'assets', 'icon.png'),
     show: false
   })
 
@@ -162,75 +163,114 @@ ipcMain.handle('printer:test-by-name', async (event, printerName) => {
 
 /**
  * Scan for available Windows printers (thermal receipt printers)
- * Uses PowerShell to reliably get printer list from Windows
+ * Uses node-printer (native binding) for reliable enumeration
  */
+// Windows virtual/software printers that are never physical receipt printers
+const VIRTUAL_PRINTER_PATTERNS = [
+  /microsoft print to pdf/i,
+  /microsoft xps/i,
+  /fax/i,
+  /onenote/i,
+  /send to onenote/i,
+  /adobe pdf/i,
+  /adobe acrobat/i,
+  /cutepdf/i,
+  /dopdf/i,
+  /bullzip/i,
+  /pdf creator/i,
+  /foxit/i,
+  /nitro pdf/i,
+  /pdf24/i,
+  /primopdf/i,
+  /\\\\.*\\\\/,  // UNC network printer paths
+]
+
+function isVirtualPrinter(name) {
+  return VIRTUAL_PRINTER_PATTERNS.some(pattern => pattern.test(name))
+}
+
+// Detects Windows duplicate-install suffixes: "POS-58 (1)", "POS-58(copy of 3)"
+const DUPLICATE_SUFFIX = /(\s*\(\d+\)|\s*\(copy of \d+\))$/i
+
+function isDuplicatePrinter(name) {
+  return DUPLICATE_SUFFIX.test(name)
+}
+
+function basePrinterName(name) {
+  return name.replace(DUPLICATE_SUFFIX, '').trim()
+}
+
+function tagPrinters(names, extraProps, srcList) {
+  // Track which base names already have a "primary" entry
+  const seenBase = new Set()
+
+  return names.map((name, i) => {
+    const extra = srcList ? extraProps(srcList[i]) : extraProps()
+    const isDuplicate = isDuplicatePrinter(name)
+    const base = basePrinterName(name)
+    let isDuplicateOf = null
+
+    if (isDuplicate) {
+      isDuplicateOf = base
+    } else {
+      seenBase.add(base)
+    }
+
+    return {
+      name,
+      port: name,
+      type: 'windows_printer',
+      isVirtual: isVirtualPrinter(name),
+      isDuplicate,
+      isDuplicateOf,
+      ...extra
+    }
+  }).sort((a, b) => {
+    // Order: physical originals → physical duplicates → virtual
+    if (a.isVirtual !== b.isVirtual) return a.isVirtual ? 1 : -1
+    if (a.isDuplicate !== b.isDuplicate) return a.isDuplicate ? 1 : -1
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
+    return 0
+  })
+}
+
 ipcMain.handle('printer:scan', async () => {
   try {
-    logger.info('🖨️ Scanning for available printers')
+    logger.info('🖨️ Scanning for available printers via node-printer')
 
+    let printerList = []
+    try {
+      printerList = nodePrinter.getPrinters()
+      logger.info(`✅ node-printer found ${printerList.length} printer(s) total`)
+    } catch (err) {
+      logger.warn('⚠️ node-printer.getPrinters() failed, falling back to PowerShell: ' + err.message)
+    }
+
+    if (printerList.length > 0) {
+      const all = tagPrinters(printerList.map(p => p.name), p => ({ isDefault: !!p.isDefault }), printerList)
+      return { success: true, printers: all, count: all.length }
+    }
+
+    // Fallback: PowerShell WMI
     const { execFile } = require('child_process')
-
     return new Promise((resolve) => {
-      // Use PowerShell to get Windows printer list via WMI
-      const psScript = `
-Get-WmiObject Win32_Printer | Select-Object Name | ForEach-Object { Write-Host $_.Name }
-`
-
-      execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 5000 }, (error, stdout, stderr) => {
+      const psScript = `Get-WmiObject Win32_Printer | Select-Object Name | ForEach-Object { Write-Host $_.Name }`
+      execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 5000 }, (error, stdout) => {
         if (error || !stdout.trim()) {
-          logger.warn('⚠️ Failed to get printer list via PowerShell')
-          logger.info('ℹ️ Returning default printer option')
-          resolve({
-            success: true,
-            printers: [
-              {
-                name: 'Default Printer',
-                port: 'default',
-                type: 'default'
-              }
-            ],
-            count: 1,
-            message: 'Could not enumerate printers. Please configure manually in Settings.'
-          })
+          logger.warn('⚠️ PowerShell fallback also failed — no printers detected')
+          resolve({ success: true, printers: [], count: 0, message: 'No printers found. Ensure your Bluetooth printer is paired in Windows Settings → Bluetooth, then added in Devices & Printers.' })
           return
         }
 
-        // Parse printer list from PowerShell output
-        const printerNames = stdout
-          .split('\n')
-          .map(line => line.trim())
-          .filter(line => line.length > 0)
-
-        logger.info(`✅ Found ${printerNames.length} printer(s):`, printerNames)
-
-        const devices = printerNames.map(name => ({
-          name: name,
-          port: name,
-          type: 'windows_printer'
-        }))
-
-        // Add default option at the start
-        devices.unshift({
-          name: 'Default Printer',
-          port: 'default',
-          type: 'default'
-        })
-
-        resolve({
-          success: true,
-          printers: devices,
-          count: devices.length
-        })
+        const names = stdout.split('\n').map(l => l.trim()).filter(Boolean)
+        const all = tagPrinters(names, () => ({}), null)
+        logger.info(`✅ PowerShell fallback found ${all.length} printer(s)`)
+        resolve({ success: true, printers: all, count: all.length })
       })
     })
   } catch (error) {
-    logger.error('❌ Printer scan fatal error', error.message)
-    return {
-      success: false,
-      error: error.message,
-      printers: [],
-      count: 0
-    }
+    logger.error('❌ Printer scan fatal error: ' + error.message)
+    return { success: false, error: error.message, printers: [], count: 0 }
   }
 })
 
@@ -401,113 +441,117 @@ ipcMain.handle('printer:print-receipt', async (event, printerName, receiptData, 
 })
 
 /**
- * Send raw ESC/POS bytes to thermal printer via Windows Print API
- * Uses PowerShell to access System.Printing for raw data printing
- * @param {string} printerName - Name of the Windows printer
- * @param {Buffer} escposCommands - ESC/POS binary commands
- * @returns {Promise} Result object with success status
+ * Send raw ESC/POS bytes to a Windows printer.
+ *
+ * Strategy:
+ *  1. Look up the printer's port via WMI.
+ *  2. COM port (Bluetooth SPP) → write directly with System.IO.Ports.SerialPort.
+ *     No Add-Type / C# compilation needed; SerialPort is part of .NET Framework.
+ *  3. USB / other port → use WinSpool P/Invoke (Add-Type) with the corrected
+ *     DOCINFO as a struct + ref, which avoids the "startdoc:1905" issue.
  */
 async function sendToWindowsPrinter(printerName, escposCommands) {
   const { execFile } = require('child_process')
-  const fs = require('fs')
+  const fsSync = require('fs')
   const os = require('os')
-  const pathModule = require('path')
-  
+  const p = require('path')
+
   return new Promise((resolve) => {
-    try {
-      logger.info(`🖨️ [PRINTER] Sending to Windows printer: ${printerName}`)
-      logger.info(`📊 [PRINTER] Buffer size: ${escposCommands.length} bytes`)
+    const stamp = Date.now()
+    const dataFile   = p.join(os.tmpdir(), `receipt-${stamp}.prn`)
+    const scriptFile = p.join(os.tmpdir(), `rawprint-${stamp}.ps1`)
 
-      // Write buffer to temporary file
-      const tmpDir = os.tmpdir()
-      const tmpFile = pathModule.join(tmpDir, `receipt-${Date.now()}.prn`)
-      
-      fs.writeFile(tmpFile, escposCommands, (writeErr) => {
-        if (writeErr) {
-          logger.error(`❌ [PRINTER] Failed to write temp file: ${writeErr.message}`)
-          resolve({
-            success: false,
-            error: `Failed to write print data: ${writeErr.message}`
-          })
-          return
-        }
+    const cleanup = () => {
+      try { fsSync.unlinkSync(dataFile)   } catch (_) {}
+      try { fsSync.unlinkSync(scriptFile) } catch (_) {}
+    }
 
-        logger.info(`📝 [PRINTER] Wrote ESC/POS data to ${tmpFile}`)
+    // No here-strings, no Add-Type, no quote escaping — just plain PowerShell.
+    // For Bluetooth printers Windows assigns a COM port; we write to it directly
+    // via System.IO.Ports.SerialPort (built into .NET Framework, always available).
+    const scriptLines = [
+      'param([string]$PrinterName, [string]$DataFile)',
+      '$prn = Get-WmiObject Win32_Printer | Where-Object { $_.Name -eq $PrinterName } | Select-Object -First 1',
+      'if (-not $prn) { Write-Host "ERROR:notfound:Printer not found in Windows"; exit 1 }',
+      '$port = ($prn.PortName -replace ":", "").Trim()',
+      'Write-Host "INFO:port:$port"',
+      '$bytes = [IO.File]::ReadAllBytes($DataFile)',
+      'if ($port -match "^COM[0-9]+$") {',
+      '    try {',
+      '        $sp = New-Object System.IO.Ports.SerialPort $port, 9600',
+      '        $sp.WriteTimeout = 12000',
+      '        $sp.Open()',
+      '        $sp.Write($bytes, 0, $bytes.Length)',
+      '        Start-Sleep -Milliseconds 1000',
+      '        $sp.Close()',
+      '        Write-Host "SUCCESS:$($bytes.Length)"',
+      '    } catch {',
+      '        Write-Host "ERROR:com:$($_.Exception.Message)"',
+      '        exit 1',
+      '    }',
+      '} else {',
+      '    Write-Host "ERROR:notcom:$port"',
+      '    exit 1',
+      '}',
+    ]
+    const script = scriptLines.join('\r\n')
 
-        // Use PowerShell to print raw file to Windows printer
-        // Handle "default" printer name as system default
-        let queueName = printerName
-        if (printerName === 'default' || printerName === 'Default Printer') {
-          queueName = '(Get-WmiObject Win32_Printer | Where-Object {$_.Default -eq $true}).Name'
-        } else {
-          // Escape quotes in printer name
-          queueName = `"${printerName.replace(/"/g, '\\"')}"`
-        }
+    logger.info(`🖨️ [PRINTER] → "${printerName}" (${escposCommands.length} bytes)`)
 
-        const psScript = `
-try {
-  [System.Printing.PrintServer]$ps = [System.Printing.PrintServer]::GetDefaultPrintServer()
-  [System.Printing.PrintQueue]$pq = [System.Printing.PrintQueue]::OpenPrinterQueue($ps, ${queueName})
-  [System.IO.FileStream]$fs = New-Object System.IO.FileStream("${tmpFile}", [System.IO.FileMode]::Open)
-  [System.Printing.PrintTicket]$pt = New-Object System.Printing.PrintTicket
-  [System.Printing.PrintCapabilities]$pc = $pq.GetPrintCapabilities()
-  if ($pc.RawPrintTicketSupport) { $pt.RawPrintTicket = $true }
-  $pq.AddJob("Stocka Receipt", $fs, $false, $pt) | Out-Null
-  $fs.Dispose()
-  Start-Sleep -Milliseconds 500
-  Write-Host "SUCCESS"
-} catch {
-  Write-Host "ERROR: $($_.Exception.Message)"
-}
-`
+    fsSync.writeFile(dataFile, escposCommands, (e1) => {
+      if (e1) return resolve({ success: false, error: 'Write data file: ' + e1.message })
 
-        execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 10000 }, (error, stdout, stderr) => {
-          // Clean up temp file
-          fs.unlink(tmpFile, (unlinkErr) => {
-            if (unlinkErr) logger.warn(`⚠️ [PRINTER] Failed to delete temp file: ${unlinkErr.message}`)
-          })
+      fsSync.writeFile(scriptFile, script, 'utf8', (e2) => {
+        if (e2) { cleanup(); return resolve({ success: false, error: 'Write script: ' + e2.message }) }
 
-          if (error) {
-            logger.error(`❌ [PRINTER] PowerShell print error: ${error.message}`)
-            if (stderr) logger.error(`❌ [PRINTER] stderr: ${stderr}`)
-            resolve({
-              success: false,
-              error: `Failed to print: ${error.message}`
-            })
-            return
+        execFile('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-File', scriptFile,
+          '-PrinterName', printerName,
+          '-DataFile', dataFile
+        ], { timeout: 20000 }, (err, stdout, stderr) => {
+          cleanup()
+
+          const lines = (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+          const se    = (stderr || '').trim()
+
+          const portLine    = lines.find(l => l.startsWith('INFO:port:'))
+          const successLine = lines.find(l => l.startsWith('SUCCESS'))
+          const errorLine   = lines.find(l => l.startsWith('ERROR:'))
+
+          if (portLine) logger.info(`🖨️ [PRINTER] Port: ${portLine.replace('INFO:port:', '')}`)
+          logger.info(`🖨️ [PRINTER] stdout lines: ${JSON.stringify(lines)}`)
+          if (se) logger.warn(`⚠️ [PRINTER] stderr: ${se}`)
+
+          if (successLine) {
+            return resolve({ success: true, message: 'Receipt printed successfully' })
           }
 
-          const output = stdout.trim()
-          if (output.includes('SUCCESS')) {
-            logger.info(`✅ [PRINTER] Successfully sent ${escposCommands.length} bytes to "${printerName}"`)
-            resolve({
-              success: true,
-              message: 'Receipt printed successfully'
-            })
-          } else if (output.includes('ERROR:')) {
-            const errorMsg = output.split('ERROR:')[1]?.trim() || 'Unknown error'
-            logger.error(`❌ [PRINTER] PowerShell error: ${errorMsg}`)
-            resolve({
-              success: false,
-              error: `Print failed: ${errorMsg}`
-            })
-          } else {
-            logger.error(`❌ [PRINTER] PowerShell returned unexpected output: ${output}`)
-            resolve({
-              success: false,
-              error: 'Print command did not complete successfully'
-            })
+          if (errorLine) {
+            const parts = errorLine.split(':')
+            const kind  = parts[1]
+            const rest  = parts.slice(2).join(':')
+            let msg = errorLine
+            if (kind === 'notfound') {
+              msg = `Printer "${printerName}" not found. Check the name in Settings matches exactly what appears in Devices & Printers.`
+            } else if (kind === 'com') {
+              msg = `COM port error: ${rest}. The printer may be off, out of Bluetooth range, or the port is in use by another app.`
+            } else if (kind === 'notcom') {
+              msg = `Printer "${printerName}" uses port "${rest}", not a COM port. ` +
+                'Bluetooth printers must be paired via Bluetooth & devices and show a COM port. ' +
+                'Check printer properties in Devices & Printers to see which port it uses.'
+            }
+            logger.error(`❌ [PRINTER] ${errorLine}`)
+            return resolve({ success: false, error: msg })
           }
+
+          // Script crashed entirely — no recognisable output
+          const detail = se || (err ? err.message : '') || 'No output'
+          logger.error(`❌ [PRINTER] Script crashed: ${detail}`)
+          resolve({ success: false, error: 'Print script error: ' + detail })
         })
       })
-
-    } catch (err) {
-      logger.error(`❌ [PRINTER] Critical error: ${err.message}`)
-      resolve({
-        success: false,
-        error: 'Print operation failed: ' + err.message
-      })
-    }
+    })
   })
 }
 
