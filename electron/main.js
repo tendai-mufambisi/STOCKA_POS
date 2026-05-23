@@ -40,7 +40,7 @@ function createWindow() {
     },
     titleBarStyle: 'default',
     title: 'Stocka',
-    icon: path.join(__dirname, '..', 'src', 'assets', 'icon.png'),
+    icon: path.join(__dirname, '..', 'src', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     show: false
   })
 

@@ -61,6 +61,7 @@
       "electron/**/*",
       "src/utils/printerUtils.js",
       "src/assets/icon.png",
+      "src/assets/icon.ico",
       "package.json"
     ],
     "asar": true,
@@ -72,7 +73,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "src/assets/icon.png"
+      "icon": "src/assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
