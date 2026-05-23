@@ -3,30 +3,37 @@ const fs = require('fs')
 const path = require('path')
 const { app } = require('electron')
 
-// Paste the contents of stocka-public.pem here after running:
-//   openssl genrsa -out stocka-private.pem 2048
-//   openssl rsa -in stocka-private.pem -pubout -out stocka-public.pem
-const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiH5Fp9n83afr/49S6G9K
-jxBKfHIx+LbaY269ZWfscJWty0kMqFpNXjnVbIBGhghl2HsBUtpvAtB03pLOuXk0
-/M/k4vwOEz424N1sK5EpHU2CezsFY95dBUikokFknoHUfQaP+NmW9Ntc3sd15uxt
-vpusgf+0R3Yyj+DGWKR9cueL+/Pqskr8gGZQPAuDcJnnBOEwN7m3kjyMeKr1VNML
-G41FUWdPLSit/kPhrMlN5CUSSy2fnhnETq6TN9VY6LTuFkvBzkhKYISnnBd8TDBP
-NkZf666KkHvs8fb2uBEYUsAVzYpT32Cg0X956+J/quZMcoTgzJNMzeMQQ7STtTge
-pwIDAQAB
------END PUBLIC KEY-----`
+// ── KEEP THIS IN SYNC WITH tools/generate-license.js ────────────────────────
+const HMAC_SECRET = '76d6d54eb2a4f41870407c78b43ad6151431f06465e20f0c'
+// ────────────────────────────────────────────────────────────────────────────
 
-/**
- * Verify a base64-encoded license string against the embedded public key.
- * Returns the license data object on success, or null if invalid.
- */
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+function fromBase32(str) {
+  const lookup = {}
+  for (let i = 0; i < ALPHABET.length; i++) lookup[ALPHABET[i]] = i
+  let bits = 0, val = 0
+  const out = []
+  for (const ch of str) {
+    if (!(ch in lookup)) return null
+    val = (val << 5) | lookup[ch]
+    bits += 5
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8 }
+  }
+  return Buffer.from(out)
+}
+
 function verifyLicense(licenseString) {
   try {
-    const decoded = JSON.parse(Buffer.from(licenseString.trim(), 'base64').toString('utf8'))
-    const payload = JSON.stringify(decoded.data)
-    const signature = Buffer.from(decoded.sig, 'base64')
-    const valid = crypto.verify('sha256', Buffer.from(payload), PUBLIC_KEY, signature)
-    return valid ? decoded.data : null
+    const raw = licenseString.trim().replace(/-/g, '').toUpperCase()
+    if (raw.length !== 16) return null
+    const bytes = fromBase32(raw)
+    if (!bytes || bytes.length < 10) return null
+    const seed        = bytes.slice(0, 6)
+    const mac         = bytes.slice(6, 10)
+    const expectedMac = crypto.createHmac('sha256', HMAC_SECRET).update(seed).digest().slice(0, 4)
+    if (!mac.equals(expectedMac)) return null
+    return { customer: 'Licensed', email: '', issued: '' }
   } catch {
     return null
   }
