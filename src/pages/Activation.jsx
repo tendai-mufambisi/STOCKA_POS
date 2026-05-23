@@ -1,36 +1,57 @@
 import { useState } from 'react'
-import { FiPackage, FiKey, FiCheckCircle } from 'react-icons/fi'
+import { FiCheckCircle } from 'react-icons/fi'
+import fullLogo from '../assets/full_logo.png'
 
 export default function Activation({ onActivated }) {
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
-  const [activating, setActivating] = useState(false)
-  const [activated, setActivated] = useState(null) // holds license data after success
+  const [errorType, setErrorType] = useState('') // 'invalid' | 'already_used'
+  const [state, setState] = useState('idle') // 'idle' | 'validating' | 'success'
+
+  // Require at least 8 chars before enabling the button
+  const isReady = key.trim().length >= 8
+
+  const handleChange = (e) => {
+    setKey(e.target.value.toUpperCase())
+    if (error) {
+      setError('')
+      setErrorType('')
+    }
+  }
 
   const handleActivate = async () => {
-    if (!key.trim()) return
+    if (!isReady || state === 'validating') return
     setError('')
-    setActivating(true)
+    setState('validating')
     try {
       const result = await window.stocka.license.activate(key.trim())
       if (result.success) {
-        setActivated(result.data)
-        setTimeout(onActivated, 1500) // brief success pause before reload
+        setState('success')
+        setTimeout(onActivated, 800)
       } else {
-        setError(result.error || 'Invalid license key. Please check the key and try again.')
+        const msg = (result.error || '').toLowerCase()
+        if (msg.includes('another machine') || msg.includes('different machine')) {
+          setState('idle')
+          setErrorType('already_used')
+          setError('This key is already activated on another computer. Each Stocka licence works on one machine. Contact us to transfer it.')
+        } else if (msg.includes('already') || msg.includes('activated')) {
+          // Already activated on this machine — treat as valid
+          setState('success')
+          setTimeout(onActivated, 800)
+        } else {
+          setState('idle')
+          setErrorType('invalid')
+          setError("This key isn't valid. Check for typos, or WhatsApp us to get a new one.")
+        }
       }
     } catch {
+      setState('idle')
       setError('Activation failed. Please restart the app and try again.')
-    } finally {
-      setActivating(false)
     }
   }
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleActivate()
-    }
+    if (e.key === 'Enter' && isReady && state === 'idle') handleActivate()
   }
 
   return (
@@ -39,81 +60,85 @@ export default function Activation({ onActivated }) {
       alignItems: 'center',
       justifyContent: 'center',
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
+      background: '#f5f5f0',
       padding: '24px',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
       <div style={{
         background: '#fff',
-        borderRadius: '16px',
+        borderRadius: '12px',
         padding: '48px 40px',
         maxWidth: '480px',
         width: '100%',
-        boxShadow: '0 24px 64px rgba(0,0,0,0.4)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
         textAlign: 'center',
       }}>
         {/* Logo */}
-        <div style={{
-          width: '64px',
-          height: '64px',
-          borderRadius: '16px',
-          background: 'linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          margin: '0 auto 20px',
-        }}>
-          <FiPackage size={32} color="#fff" />
-        </div>
+        <img
+          src={fullLogo}
+          alt="Stocka"
+          style={{ height: '60px', objectFit: 'contain', display: 'block', margin: '0 auto 24px' }}
+        />
 
-        <h1 style={{ margin: '0 0 4px', fontSize: '26px', fontWeight: 700, color: '#1a1a2e' }}>
-          Stocka
-        </h1>
+        <p style={{ margin: '0 0 6px', fontSize: '14px', color: '#555', lineHeight: 1.5 }}>
+          Welcome! Let's get your shop running.
+        </p>
         <p style={{ margin: '0 0 32px', fontSize: '13px', color: '#999' }}>
-          POS &amp; Inventory Management
+          Paste your activation key below to begin.
         </p>
 
-        {activated ? (
+        {state === 'success' ? (
           <div style={{ padding: '24px 0' }}>
-            <FiCheckCircle size={48} color="#2e7d32" style={{ marginBottom: '16px' }} />
-            <h2 style={{ color: '#2e7d32', margin: '0 0 8px', fontSize: '20px' }}>Activated!</h2>
-            <p style={{ color: '#555', margin: 0, fontSize: '14px' }}>
-              Licensed to <strong>{activated.customer}</strong>
-            </p>
-            <p style={{ color: '#999', margin: '4px 0 0', fontSize: '12px' }}>
-              Loading Stocka...
-            </p>
+            <FiCheckCircle size={52} color="#2e7d32" style={{ marginBottom: '16px' }} />
+            <h2 style={{ color: '#2e7d32', margin: '0 0 8px', fontSize: '22px' }}>Activated!</h2>
+            <p style={{ color: '#666', margin: 0, fontSize: '14px' }}>Setting up your shop...</p>
           </div>
         ) : (
           <>
-            <div style={{ textAlign: 'left', marginBottom: '24px' }}>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#333', marginBottom: '8px' }}>
-                <FiKey size={13} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
-                License Key
+            <div style={{ marginBottom: '8px', textAlign: 'left' }}>
+              <label style={{
+                display: 'block',
+                marginBottom: '8px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: '#333',
+              }}>
+                Activation Key
               </label>
               <textarea
                 value={key}
-                onChange={e => setKey(e.target.value)}
+                onChange={handleChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Paste your license key here..."
-                rows={4}
+                placeholder="Paste your activation key here"
+                disabled={state === 'validating'}
+                autoFocus
+                spellCheck={false}
+                rows={3}
                 style={{
                   width: '100%',
-                  padding: '12px',
-                  border: error ? '1px solid #e53935' : '1px solid #ddd',
-                  borderRadius: '8px',
-                  fontSize: '12px',
+                  padding: '14px 16px',
+                  fontSize: '14px',
                   fontFamily: 'monospace',
-                  resize: 'vertical',
-                  outline: 'none',
+                  letterSpacing: '1px',
+                  border: `2px solid ${error ? '#e53935' : isReady ? '#2e7d32' : '#ddd'}`,
+                  borderRadius: '8px',
                   boxSizing: 'border-box',
-                  color: '#333',
-                  background: '#fafafa',
-                  lineHeight: '1.5',
+                  outline: 'none',
+                  transition: 'border-color 0.2s',
+                  background: state === 'validating' ? '#f9f9f9' : '#fff',
+                  color: '#1a1a1a',
+                  resize: 'none',
+                  lineHeight: 1.6,
                 }}
               />
               {error && (
-                <p style={{ margin: '8px 0 0', fontSize: '13px', color: '#e53935' }}>
+                <p style={{
+                  margin: '8px 0 0',
+                  fontSize: '13px',
+                  color: '#e53935',
+                  textAlign: 'left',
+                  lineHeight: 1.4,
+                }}>
                   {error}
                 </p>
               )}
@@ -121,35 +146,59 @@ export default function Activation({ onActivated }) {
 
             <button
               onClick={handleActivate}
-              disabled={activating || !key.trim()}
+              disabled={!isReady || state === 'validating'}
               style={{
                 width: '100%',
                 padding: '14px',
-                background: activating || !key.trim()
-                  ? '#ccc'
-                  : 'linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%)',
+                marginTop: '12px',
+                background: isReady && state !== 'validating'
+                  ? 'linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%)'
+                  : '#ccc',
                 color: '#fff',
                 border: 'none',
                 borderRadius: '8px',
-                fontSize: '15px',
+                fontSize: '16px',
                 fontWeight: 600,
-                cursor: activating || !key.trim() ? 'not-allowed' : 'pointer',
-                transition: 'opacity 0.2s',
-                marginBottom: '20px',
+                cursor: isReady && state !== 'validating' ? 'pointer' : 'not-allowed',
+                transition: 'background 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
               }}
             >
-              {activating ? 'Activating…' : 'Activate Stocka'}
+              {state === 'validating' ? (
+                <>
+                  <span style={{
+                    width: '16px',
+                    height: '16px',
+                    border: '2px solid rgba(255,255,255,0.4)',
+                    borderTopColor: '#fff',
+                    borderRadius: '50%',
+                    display: 'inline-block',
+                    animation: 'spin 0.7s linear infinite',
+                  }} />
+                  Activating...
+                </>
+              ) : 'Activate Stocka'}
             </button>
 
-            <p style={{ margin: 0, fontSize: '12px', color: '#aaa' }}>
-              Need a license key?{' '}
-              <span style={{ color: '#2e7d32', fontWeight: 600 }}>
-                Contact support@digitsdigital.co.zw
-              </span>
+            <p style={{ margin: '24px 0 0', fontSize: '13px', color: '#aaa' }}>
+              Lost your key?{' '}
+              <a
+                href="https://wa.me/263XXXXXXXXX"
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: '#2e7d32', textDecoration: 'none', fontWeight: 600 }}
+              >
+                WhatsApp us
+              </a>
             </p>
           </>
         )}
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }

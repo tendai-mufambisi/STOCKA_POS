@@ -6,7 +6,7 @@ import ShopSetup from './pages/ShopSetup'
 import Activation from './pages/Activation'
 import ErrorBoundary from './components/ErrorBoundary'
 import { getShop } from './database/db'
-import { FiPackage } from 'react-icons/fi'
+import iconPng from './assets/icon.png'
 
 function App() {
   const [setupComplete, setSetupComplete] = useState(null)
@@ -62,7 +62,7 @@ function App() {
         color: '#fff',
         fontFamily: 'system-ui, -apple-system, sans-serif'
       }}>
-        <div style={{ marginBottom: '20px', fontSize: '32px' }}><FiPackage size={32} color="#fff" /></div>
+        <img src={iconPng} alt="Stocka" style={{ width: '72px', height: '72px', borderRadius: '18px', marginBottom: '20px', boxShadow: '0 4px 16px rgba(0,0,0,0.2)', display: 'block', margin: '0 auto 20px' }} />
         <h1 style={{ marginBottom: '10px' }}>Stocka</h1>
         <p style={{ marginBottom: '30px', opacity: 0.9 }}>Initializing database...</p>
         <div style={{
@@ -80,6 +80,7 @@ function App() {
             borderRadius: '2px'
           }} />
         </div>
+        <p style={{ marginTop: '32px', opacity: 0.4, fontSize: '12px' }}>v1.0 — Proudly Zimbabwean</p>
       </div>
     )
   }

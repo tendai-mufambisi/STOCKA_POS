@@ -717,31 +717,55 @@ export const getShop = async () => {
 
 export const initializeShop = async (shopData) => {
   const database = await getDb()
-  
-  // Insert shop details
+
   database.run(
     `INSERT INTO shops (name, address, phone, email, currency, setup_complete)
      VALUES (?, ?, ?, ?, ?, 1)`,
-    [shopData.name, shopData.address, shopData.phone, shopData.email, shopData.currency]
+    [shopData.name, shopData.address || '', shopData.phone || '', shopData.email || '', shopData.currency || 'USD']
   )
-  
-  // Create admin user with provided username
-  if (shopData.adminPassword && shopData.adminUsername) {
+
+  // Support new PIN-based flow (ownerName/ownerPin) and legacy flow (adminUsername/adminPassword)
+  const username = shopData.ownerName || shopData.adminUsername
+  const credential = shopData.ownerPin || shopData.adminPassword
+
+  if (username && credential) {
     try {
-      const passwordHash = hashPasswordSync(shopData.adminPassword)
+      const passwordHash = hashPasswordSync(credential)
       database.run(
         `INSERT INTO users (username, password, password_hash, role, is_active, created_by)
          VALUES (?, ?, ?, 'Admin', 1, 'system')`,
-        [shopData.adminUsername, '', passwordHash]
+        [username, '', passwordHash]
       )
-      console.log(`✅ Admin user created with username: ${shopData.adminUsername}`)
+      // Remove the placeholder default admin created before setup ran
+      database.run(
+        `DELETE FROM users WHERE username = 'admin' AND created_by = 'system' AND username != ?`,
+        [username]
+      )
     } catch (error) {
       console.error('Failed to create admin user:', error)
       throw error
     }
   }
-  
+
   saveDb()
+}
+
+export const resetOwnerPin = async (username, newPin) => {
+  try {
+    const database = await getDb()
+    const user = await getUserByUsername(username)
+    if (!user) throw new Error('User not found')
+    const passwordHash = hashPasswordSync(newPin)
+    database.run(
+      `UPDATE users SET password_hash = ?, password = '' WHERE id = ?`,
+      [passwordHash, user.id]
+    )
+    saveDb()
+    return true
+  } catch (error) {
+    console.error('Failed to reset PIN:', error)
+    throw error
+  }
 }
 
 export const updateShop = async (id, shopData) => {

@@ -1,200 +1,205 @@
-import { useState, useEffect } from 'react'
-import { getShop, initializeShop, loginUser } from '../database/db'
-import { validateRequired, validateEmail, validatePhone, validateUsername, validatePassword } from '../utils/validation'
+import { useState, useRef } from 'react'
+import { FiCheckCircle, FiInfo } from 'react-icons/fi'
+import { initializeShop, addProduct, loginUser } from '../database/db'
+import { validateEmail } from '../utils/validation'
+import iconPng from '../assets/icon.png'
+import fullLogo from '../assets/full_logo.png'
 import './ShopSetup.css'
 
-function ShopSetup({ onSetupComplete }) {
-  const [shop, setShop] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [setupComplete, setSetupCompleted] = useState(false)
-  const [formData, setFormData] = useState({
-    name: '',
-    address: '',
-    phone: '',
-    email: '',
-    currency: 'USD',
-    adminUsername: '',
-    adminPassword: '',
-    confirmPassword: ''
-  })
-  const [error, setError] = useState('')
-  const [setupStep, setSetupStep] = useState(1) // Step 1: Shop Details, Step 2: Admin Account, Step 3: Complete
+// ── Reusable 4-digit PIN box component ──────────────────────────────────────
+function PinBoxes({ value, onChange, id, disabled }) {
+  const refs = [useRef(), useRef(), useRef(), useRef()]
+  const digits = value.split('')
 
-  useEffect(() => {
-    const checkSetup = async () => {
-      const existingShop = await getShop()
-      setShop(existingShop)
+  const handleInput = (i, e) => {
+    const d = e.target.value.replace(/\D/g, '').slice(-1)
+    const next = [...digits]
+    next[i] = d
+    onChange(next.join(''))
+    if (d && i < 3) refs[i + 1].current?.focus()
+  }
+
+  const handleKeyDown = (i, e) => {
+    if (e.key === 'Backspace') {
+      if (digits[i]) {
+        const next = [...digits]
+        next[i] = ''
+        onChange(next.join(''))
+      } else if (i > 0) {
+        refs[i - 1].current?.focus()
+      }
+    }
+  }
+
+  const handlePaste = (e) => {
+    e.preventDefault()
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 4)
+    onChange(pasted.padEnd(4, '').slice(0, 4))
+    if (pasted.length >= 4) refs[3].current?.focus()
+    else if (pasted.length > 0) refs[Math.min(pasted.length, 3)].current?.focus()
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+      {[0, 1, 2, 3].map((i) => (
+        <input
+          key={i}
+          ref={refs[i]}
+          type="password"
+          inputMode="numeric"
+          maxLength={1}
+          value={digits[i] || ''}
+          onChange={(e) => handleInput(i, e)}
+          onKeyDown={(e) => handleKeyDown(i, e)}
+          onPaste={handlePaste}
+          disabled={disabled}
+          autoComplete="off"
+          style={{
+            width: '56px',
+            height: '56px',
+            fontSize: '20px',
+            textAlign: 'center',
+            border: `2px solid ${digits[i] ? '#2e7d32' : '#ddd'}`,
+            borderRadius: '10px',
+            outline: 'none',
+            background: '#fff',
+            transition: 'border-color 0.15s',
+            cursor: disabled ? 'not-allowed' : 'text',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ── Step indicator ──────────────────────────────────────────────────────────
+function StepDots({ current, total }) {
+  return (
+    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '28px' }}>
+      {Array.from({ length: total }, (_, i) => (
+        <div
+          key={i}
+          style={{
+            width: i === current - 1 ? '24px' : '8px',
+            height: '8px',
+            borderRadius: '4px',
+            background: i < current ? '#2e7d32' : '#ddd',
+            transition: 'all 0.2s',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ── Main component ──────────────────────────────────────────────────────────
+function ShopSetup({ onSetupComplete }) {
+  const [step, setStep] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState(false)
+
+  // Step 1 — shop details
+  const [shopName, setShopName] = useState('')
+  const [address, setAddress] = useState('')
+  const [phoneSuffix, setPhoneSuffix] = useState('')
+  const [email, setEmail] = useState('')
+
+  // Step 2 — currency
+  const [currency, setCurrency] = useState('USD')
+
+  // Step 3 — owner PIN
+  const [ownerName, setOwnerName] = useState('')
+  const [pin, setPin] = useState('')
+  const [confirmPin, setConfirmPin] = useState('')
+
+  // Step 4 — first product (optional)
+  const [productName, setProductName] = useState('')
+  const [productPrice, setProductPrice] = useState('')
+  const [productQty, setProductQty] = useState('')
+  const [productSaving, setProductSaving] = useState(false)
+
+  const TOTAL_STEPS = 4
+
+  const go = (n) => {
+    setError('')
+    setStep(n)
+  }
+
+  // ── Step 1 validation ──
+  const handleStep1 = () => {
+    if (!shopName.trim()) { setError('Shop name is required.'); return }
+    if (!address.trim()) { setError('Address is required — it appears on every receipt.'); return }
+    if (email.trim()) {
+      const v = validateEmail(email.trim())
+      if (!v.valid) { setError(v.error); return }
+    }
+    go(2)
+  }
+
+  // ── Step 2 — just a select, always valid ──
+
+  // ── Step 3 validation ──
+  const handleStep3 = () => {
+    if (!ownerName.trim()) { setError('Please enter your name.'); return }
+    if (pin.length !== 4) { setError('PIN must be exactly 4 digits.'); return }
+    if (confirmPin !== pin) { setError('PINs do not match. Please re-enter.'); return }
+    go(4)
+  }
+
+  // ── Finish setup + optional first product ──
+  const finishSetup = async (withProduct = false) => {
+    setLoading(true)
+    setError('')
+    try {
+      const phone = phoneSuffix.trim() ? `+263${phoneSuffix.trim()}` : ''
+      await initializeShop({
+        name: shopName.trim(),
+        address: address.trim(),
+        phone,
+        email: email.trim(),
+        currency,
+        ownerName: ownerName.trim(),
+        ownerPin: pin,
+      })
+
+      if (withProduct && productName.trim()) {
+        await addProduct({
+          name: productName.trim(),
+          selling_price: parseFloat(productPrice) || 0,
+          current_quantity: parseInt(productQty) || 0,
+          category: '',
+          unit: 'each',
+          reorder_level: 5,
+        })
+      }
+
+      // Auto-login as owner
+      const user = await loginUser(ownerName.trim(), pin)
+      if (user) {
+        localStorage.setItem('stocka_user', JSON.stringify(user))
+      }
+
+      setDone(true)
+      onSetupComplete()
+      setTimeout(() => { window.location.hash = '#/dashboard' }, 800)
+    } catch (err) {
+      setError('Setup failed. Please try again.')
+      console.error(err)
+    } finally {
       setLoading(false)
     }
-    checkSetup()
-  }, [])
-
-  const handleChange = (e) => {
-    const { name, value } = e.target
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }))
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-
-    if (setupStep === 1) {
-      // Validate shop details
-      const nameValidation = validateRequired(formData.name, 'Shop name')
-      if (!nameValidation.valid) {
-        setError(nameValidation.error)
-        return
-      }
-      
-      // Validate email if provided
-      if (formData.email) {
-        const emailValidation = validateEmail(formData.email)
-        if (!emailValidation.valid) {
-          setError(emailValidation.error)
-          return
-        }
-      }
-      
-      // Validate phone if provided
-      if (formData.phone) {
-        const phoneValidation = validatePhone(formData.phone)
-        if (!phoneValidation.valid) {
-          setError(phoneValidation.error)
-          return
-        }
-      }
-      
-      // Move to admin account setup
-      setSetupStep(2)
-      return
-    }
-
-    if (setupStep === 2) {
-      // Validate admin account
-      const usernameValidation = validateUsername(formData.adminUsername)
-      if (!usernameValidation.valid) {
-        setError(usernameValidation.error)
-        return
-      }
-      
-      const passwordValidation = validatePassword(formData.adminPassword)
-      if (!passwordValidation.valid) {
-        setError(passwordValidation.error)
-        return
-      }
-      
-      if (formData.adminPassword !== formData.confirmPassword) {
-        setError('Passwords do not match')
-        return
-      }
-
-      try {
-        setLoading(true)
-        await initializeShop(formData)
-        setSetupCompleted(true)
-        setSetupStep(3)
-        setLoading(false)
-        
-        // Auto-login after 2 seconds
-        setTimeout(async () => {
-          try {
-            const user = await loginUser(formData.adminUsername, formData.adminPassword)
-            if (user) {
-              localStorage.setItem('stocka_user', JSON.stringify(user))
-              onSetupComplete()
-              window.location.hash = '#/dashboard'
-            }
-          } catch (err) {
-            console.error('Auto-login failed:', err)
-            setError('Setup complete, but auto-login failed. Please sign in manually.')
-          }
-        }, 2000)
-      } catch (err) {
-        setError('Failed to complete setup. Please try again.')
-        console.error(err)
-        setLoading(false)
-      }
-    }
-  }
-
-  const handleBackStep = () => {
-    setSetupStep(1)
-    setError('')
-  }
-
-  if (loading && setupStep !== 3) {
-    return <div className="setup-loading">Loading...</div>
-  }
-
-  if (shop?.setup_complete && setupStep !== 3) {
-    onSetupComplete()
-    return null
-  }
-
-  // Step 3: Setup Complete
-  if (setupStep === 3 && setupComplete) {
+  // ── Success screen ──
+  if (done) {
     return (
       <div className="shop-setup-page">
-        <div className="setup-container" style={{ maxWidth: '500px' }}>
-          <div className="setup-header" style={{ textAlign: 'center' }}>
-            <div style={{
-              width: '80px',
-              height: '80px',
-              background: 'linear-gradient(135deg, #2e7d32 0%, #1a5c2a 100%)',
-              color: 'white',
-              fontSize: '40px',
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 20px'
-            }}>
-              ✓
-            </div>
-            <h1 style={{ margin: '0 0 12px 0', fontSize: '28px', color: '#2e7d32' }}>
-              Stocka is Ready! 🎉
-            </h1>
-            <p style={{ margin: '0 0 30px 0', color: '#666', fontSize: '16px' }}>
-              Your shop has been successfully set up.
-            </p>
-          </div>
-
-          <div style={{
-            background: '#f5f5f5',
-            padding: '20px',
-            borderRadius: '8px',
-            marginBottom: '30px'
-          }}>
-            <p style={{ margin: '0 0 15px 0', color: '#333', fontWeight: '600' }}>
-              Shop Details:
-            </p>
-            <div style={{ fontSize: '14px', color: '#666', lineHeight: '1.8' }}>
-              <div><strong>Shop Name:</strong> {formData.name}</div>
-              <div><strong>Admin Username:</strong> {formData.adminUsername}</div>
-              <div><strong>Currency:</strong> {formData.currency}</div>
-            </div>
-          </div>
-
-          <div style={{
-            background: '#e8f5e9',
-            padding: '16px',
-            borderRadius: '8px',
-            borderLeft: '4px solid #2e7d32',
-            marginBottom: '30px'
-          }}>
-            <p style={{ margin: '0', color: '#1b5e20', fontSize: '14px' }}>
-              ✓ Admin account created<br/>
-              ✓ Database initialized<br/>
-              ✓ Redirecting to dashboard...
-            </p>
-          </div>
-
-          <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>
-            You are being logged in as Admin. Redirecting in a moment...
-          </p>
+        <div className="setup-container" style={{ maxWidth: '440px', textAlign: 'center' }}>
+          <img src={iconPng} alt="Stocka" style={{ width: '72px', height: '72px', borderRadius: '18px', display: 'block', margin: '0 auto 16px' }} />
+          <h1 style={{ margin: '0 0 8px', fontSize: '26px', color: '#2e7d32' }}>You're all set!</h1>
+          <p style={{ color: '#666', margin: '0 0 4px' }}>Welcome, {ownerName}.</p>
+          <p style={{ color: '#999', fontSize: '13px', margin: 0 }}>Opening your dashboard...</p>
         </div>
       </div>
     )
@@ -202,134 +207,273 @@ function ShopSetup({ onSetupComplete }) {
 
   return (
     <div className="shop-setup-page">
-      <div className="setup-container">
-        <div className="setup-header">
-          <div className="setup-logo">S</div>
-          <h1>Welcome to Stocka</h1>
-          <p>Let's set up your retail shop</p>
+      <div className="setup-container" style={{ maxWidth: step === 4 ? '520px' : '480px' }}>
+
+        {/* Header */}
+        <div className="setup-header" style={{ marginBottom: '8px' }}>
+          <img src={fullLogo} alt="Stocka" style={{ height: '48px', objectFit: 'contain', display: 'block', margin: '0 auto 16px' }} />
+          <h1 style={{ fontSize: '22px' }}>
+            {step === 1 && 'Tell us about your shop'}
+            {step === 2 && 'How does your shop handle money?'}
+            {step === 3 && 'Set up your owner PIN'}
+            {step === 4 && 'Add your first product'}
+          </h1>
+          <p style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>
+            {step === 1 && 'This information will appear on every receipt your customers receive.'}
+            {step === 2 && 'You can change this later in Settings.'}
+            {step === 3 && 'This PIN unlocks Stocka every time you open it.'}
+            {step === 4 && 'Optional — you can add products later from the Products page.'}
+          </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="setup-form">
-          {setupStep === 1 ? (
-            <>
-              <h2 className="step-title">Step 1: Shop Details</h2>
-              <div className="form-group">
-                <label>Shop Name *</label>
+        <StepDots current={step} total={TOTAL_STEPS} />
+
+        {/* ── Step 1: Shop Details ── */}
+        {step === 1 && (
+          <div className="setup-form">
+            <div className="form-group">
+              <label>Shop Name *</label>
+              <input
+                type="text"
+                placeholder="e.g. Tatenda General Dealer"
+                value={shopName}
+                onChange={e => { setShopName(e.target.value); setError('') }}
+                maxLength={100}
+                autoFocus
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Address *</label>
+              <textarea
+                placeholder="e.g. 42 Robert Mugabe Rd, Harare"
+                value={address}
+                onChange={e => { setAddress(e.target.value); setError('') }}
+                maxLength={200}
+                rows={2}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Phone Number</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0' }}>
+                <span style={{
+                  padding: '10px 12px',
+                  background: '#f5f5f5',
+                  border: '1px solid #ddd',
+                  borderRight: 'none',
+                  borderRadius: '6px 0 0 6px',
+                  fontSize: '14px',
+                  color: '#555',
+                  whiteSpace: 'nowrap',
+                }}>
+                  +263
+                </span>
                 <input
-                  type="text"
-                  name="name"
-                  placeholder="Enter your shop name"
-                  value={formData.name}
-                  onChange={handleChange}
-                  maxLength={100}
+                  type="tel"
+                  placeholder="77 123 4567"
+                  value={phoneSuffix}
+                  onChange={e => setPhoneSuffix(e.target.value.replace(/\D/g, ''))}
+                  maxLength={12}
+                  style={{
+                    flex: 1,
+                    padding: '10px 12px',
+                    border: '1px solid #ddd',
+                    borderRadius: '0 6px 6px 0',
+                    fontSize: '14px',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
                 />
               </div>
+            </div>
 
-              <div className="form-group">
-                <label>Address</label>
-                <input
-                  type="text"
-                  name="address"
-                  placeholder="Enter shop address"
-                  value={formData.address}
-                  onChange={handleChange}
-                  maxLength={200}
-                />
-              </div>
+            <div className="form-group">
+              <label>Email <span style={{ fontWeight: 400, color: '#aaa' }}>(Optional)</span></label>
+              <input
+                type="email"
+                placeholder="shop@example.com"
+                value={email}
+                onChange={e => { setEmail(e.target.value); setError('') }}
+              />
+            </div>
 
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Phone Number</label>
-                  <input
-                    type="tel"
-                    name="phone"
-                    placeholder="Enter phone number"
-                    value={formData.phone}
-                    onChange={handleChange}
-                    maxLength={20}
-                  />
-                </div>
+            {error && <div className="error-msg">{error}</div>}
 
-                <div className="form-group">
-                  <label>Email</label>
-                  <input
-                    type="email"
-                    name="email"
-                    placeholder="Enter email"
-                    value={formData.email}
-                    onChange={handleChange}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label>Currency</label>
-                <select name="currency" value={formData.currency} onChange={handleChange}>
-                  <option value="USD">USD ($)</option>
-                  <option value="ZWL">ZWL (ZWL)</option>
-                  <option value="EUR">EUR (€)</option>
-                  <option value="GBP">GBP (£)</option>
-                </select>
-              </div>
-            </>
-          ) : (
-            <>
-              <h2 className="step-title">Step 2: Create Admin Account</h2>
-              <div className="form-group">
-                <label>Admin Username *</label>
-                <input
-                  type="text"
-                  name="adminUsername"
-                  placeholder="Enter admin username"
-                  value={formData.adminUsername}
-                  onChange={handleChange}
-                  minLength={3}
-                />
-                <small className="form-hint">Minimum 3 characters</small>
-              </div>
-
-              <div className="form-group">
-                <label>Admin Password *</label>
-                <input
-                  type="password"
-                  name="adminPassword"
-                  placeholder="Enter admin password"
-                  value={formData.adminPassword}
-                  onChange={handleChange}
-                  minLength={6}
-                />
-                <small className="form-hint">Minimum 6 characters. Keep this safe!</small>
-              </div>
-
-              <div className="form-group">
-                <label>Confirm Password *</label>
-                <input
-                  type="password"
-                  name="confirmPassword"
-                  placeholder="Confirm admin password"
-                  value={formData.confirmPassword}
-                  onChange={handleChange}
-                  minLength={6}
-                />
-              </div>
-            </>
-          )}
-
-          {error && <div className="error-msg">{error}</div>}
-
-          <div className="setup-button-group">
-            {setupStep === 2 && (
-              <button type="button" className="setup-back-btn" onClick={handleBackStep}>
-                Back
+            <div className="setup-button-group">
+              <button className="setup-submit-btn" onClick={handleStep1}>
+                Next →
               </button>
-            )}
-            <button type="submit" className="setup-submit-btn">
-              {setupStep === 1 ? 'Next' : 'Complete Setup'}
-            </button>
+            </div>
           </div>
-        </form>
+        )}
 
-        <p className="setup-note">You can change these details later in Settings</p>
+        {/* ── Step 2: Currency ── */}
+        {step === 2 && (
+          <div className="setup-form">
+            <div className="form-group">
+              <label>Default Currency</label>
+              <select
+                value={currency}
+                onChange={e => setCurrency(e.target.value)}
+                style={{ fontSize: '15px', padding: '12px' }}
+              >
+                <option value="USD">USD — US Dollar ($)</option>
+                <option value="ZWL">ZWL — Zimbabwe Gold (ZiG)</option>
+                <option value="ZAR">ZAR — South African Rand (R)</option>
+                <option value="GBP">GBP — British Pound (£)</option>
+              </select>
+            </div>
+
+            {error && <div className="error-msg">{error}</div>}
+
+            <div className="setup-button-group">
+              <button className="setup-back-btn" onClick={() => go(1)}>← Back</button>
+              <button className="setup-submit-btn" onClick={() => go(3)}>Continue →</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Step 3: Owner PIN ── */}
+        {step === 3 && (
+          <div className="setup-form">
+            <div className="form-group">
+              <label>Your Name</label>
+              <input
+                type="text"
+                placeholder="e.g. Tatenda"
+                value={ownerName}
+                onChange={e => { setOwnerName(e.target.value); setError('') }}
+                maxLength={50}
+                autoFocus
+              />
+              <small className="form-hint">This name appears on reports and receipts.</small>
+            </div>
+
+            <div className="form-group" style={{ textAlign: 'center' }}>
+              <label style={{ display: 'block', marginBottom: '14px' }}>Create your PIN</label>
+              <PinBoxes value={pin} onChange={(v) => { setPin(v); setError('') }} id="pin" />
+            </div>
+
+            <div className="form-group" style={{ textAlign: 'center' }}>
+              <label style={{ display: 'block', marginBottom: '14px' }}>Confirm PIN</label>
+              <PinBoxes value={confirmPin} onChange={(v) => { setConfirmPin(v); setError('') }} id="confirm" />
+            </div>
+
+            {/* Info box */}
+            <div style={{
+              display: 'flex',
+              gap: '10px',
+              background: '#e8f5e9',
+              border: '1px solid #a5d6a7',
+              borderRadius: '8px',
+              padding: '14px 16px',
+              marginBottom: '16px',
+            }}>
+              <FiInfo size={18} color="#2e7d32" style={{ flexShrink: 0, marginTop: '1px' }} />
+              <p style={{ margin: 0, fontSize: '13px', color: '#1b5e20', lineHeight: 1.5 }}>
+                <strong>Important:</strong> If you forget this PIN, you'll need your Stocka activation key to reset it.
+                Write your activation key down somewhere safe — not on this computer.
+              </p>
+            </div>
+
+            {error && <div className="error-msg">{error}</div>}
+
+            <div className="setup-button-group">
+              <button className="setup-back-btn" onClick={() => go(2)}>← Back</button>
+              <button className="setup-submit-btn" onClick={handleStep3}>Continue →</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Step 4: First Product (skippable) ── */}
+        {step === 4 && (
+          <div className="setup-form">
+            <div className="form-group">
+              <label>Product Name</label>
+              <input
+                type="text"
+                placeholder="e.g. Mazoe Orange 2L"
+                value={productName}
+                onChange={e => setProductName(e.target.value)}
+                maxLength={100}
+                autoFocus
+              />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Selling Price ({currency})</label>
+                <input
+                  type="number"
+                  placeholder="0.00"
+                  value={productPrice}
+                  onChange={e => setProductPrice(e.target.value)}
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div className="form-group">
+                <label>Opening Stock (units)</label>
+                <input
+                  type="number"
+                  placeholder="0"
+                  value={productQty}
+                  onChange={e => setProductQty(e.target.value)}
+                  min="0"
+                  step="1"
+                />
+              </div>
+            </div>
+
+            {error && <div className="error-msg">{error}</div>}
+
+            <div className="setup-button-group" style={{ flexDirection: 'column', gap: '10px' }}>
+              <button
+                className="setup-submit-btn"
+                disabled={loading || !productName.trim()}
+                onClick={() => finishSetup(true)}
+                style={{ opacity: !productName.trim() ? 0.5 : 1 }}
+              >
+                {loading ? 'Saving…' : 'Add Product & Open Stocka'}
+              </button>
+              <button
+                onClick={() => finishSetup(false)}
+                disabled={loading}
+                style={{
+                  padding: '11px',
+                  background: 'none',
+                  border: '1px solid #ddd',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  color: '#888',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Skip for now — I'll add products later
+              </button>
+            </div>
+
+            <p className="setup-note" style={{ marginTop: '16px' }}>← <button
+              onClick={() => go(3)}
+              style={{ background: 'none', border: 'none', color: '#2e7d32', cursor: 'pointer', fontSize: '13px' }}
+            >Back to PIN setup</button></p>
+          </div>
+        )}
+
+        {step < 4 && (
+          <p className="setup-note">You can change any of these details later in Settings.</p>
+        )}
       </div>
     </div>
   )

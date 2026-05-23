@@ -13,7 +13,8 @@
       "Bash(node -e \"try{require\\('electron-builder'\\);console.log\\('electron-builder OK'\\)}catch\\(e\\){console.log\\('MISSING:',e.message\\)}\")",
       "Bash(node -e \"const lic=require\\('./electron/license'\\); console.log\\('license.js loads OK, exports:', Object.keys\\(lic\\).join\\(', '\\)\\)\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

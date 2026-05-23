@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import './Dashboard.css'
+import fullLogo from '../assets/full_logo.png'
 import Products from './Products'
 import StockControl from './StockControl'
 import CurrentInventory from './CurrentInventory'
@@ -245,7 +246,8 @@ function Dashboard() {
         stockValue: stockValue,
         todaysExpenses: todaysExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
         lowStockItems: lowStockItems,
-        recentSales: todaysSales.reverse().slice(0, 5)
+        recentSales: todaysSales.reverse().slice(0, 5),
+        totalCompletedSales: sales.filter(s => s.status === 'completed').length,
       })
     } catch (err) {
       console.error('Failed to load dashboard stats', err)
@@ -399,6 +401,8 @@ function Dashboard() {
                   renderNavIcon={renderNavIcon}
                   activeCashiers={activeCashiers}
                   activeCashiersLoading={activeCashiersLoading}
+                  totalProducts={dashboardStats?.totalProducts ?? null}
+                  totalCompletedSales={dashboardStats?.totalCompletedSales ?? null}
                 />
       case 'products':
         return <Products />
@@ -446,8 +450,19 @@ function Dashboard() {
     <div className="dashboard-layout">
       <aside className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-logo">
-          <h2>Stocka</h2>
-          <p>Retail Management</p>
+          <img
+            src={fullLogo}
+            alt="Stocka"
+            style={{
+              height: '55px',
+              objectFit: 'contain',
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: '8px',
+              padding: '4px 10px',
+              display: 'block',
+              margin: '0 auto',
+            }}
+          />
         </div>
 
         <nav className="sidebar-nav">
@@ -587,7 +602,146 @@ function Dashboard() {
 }
 
 // ── DASHBOARD HOME ──
-function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading }) {
+function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) {
+  const [dismissed, setDismissed] = React.useState(
+    () => localStorage.getItem('stocka_onboarding_dismissed') === '1'
+  )
+
+  const hasSale = totalCompletedSales !== null && totalCompletedSales > 0
+  const hasProducts = totalProducts !== null && totalProducts > 0
+  const allDone = hasSale && hasProducts
+
+  if (dismissed || allDone) return null
+
+  const handleDismiss = () => {
+    localStorage.setItem('stocka_onboarding_dismissed', '1')
+    setDismissed(true)
+  }
+
+  const items = [
+    {
+      done: hasSale,
+      label: 'Make a test sale',
+      hint: 'Head to Sales / POS to ring up your first transaction.',
+      action: () => setActivePage('sales'),
+      actionLabel: 'Open Sales',
+    },
+    {
+      done: hasProducts,
+      label: 'Add products to your inventory',
+      hint: 'Add the items your shop carries so you can sell them.',
+      action: () => setActivePage('products'),
+      actionLabel: 'Add Products',
+    },
+  ]
+
+  return (
+    <div style={{
+      position: 'fixed',
+      bottom: '24px',
+      right: '24px',
+      width: '300px',
+      background: '#fff',
+      borderRadius: '12px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+      border: '1px solid #e8f5e9',
+      zIndex: 500,
+      fontFamily: 'system-ui, sans-serif',
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
+        padding: '14px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+      }}>
+        <div>
+          <p style={{ margin: 0, color: '#fff', fontWeight: 700, fontSize: '14px' }}>
+            You're ready to sell!
+          </p>
+          <p style={{ margin: '2px 0 0', color: 'rgba(255,255,255,0.75)', fontSize: '12px' }}>
+            {items.filter(i => i.done).length} of {items.length} steps done
+          </p>
+        </div>
+        <button
+          onClick={handleDismiss}
+          style={{
+            background: 'rgba(255,255,255,0.2)',
+            border: 'none',
+            borderRadius: '6px',
+            color: '#fff',
+            cursor: 'pointer',
+            padding: '4px 8px',
+            fontSize: '12px',
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+      <div style={{ padding: '12px 16px' }}>
+        {items.map((item, i) => (
+          <div key={i} style={{
+            display: 'flex',
+            gap: '10px',
+            alignItems: 'flex-start',
+            marginBottom: i < items.length - 1 ? '12px' : 0,
+          }}>
+            <div style={{
+              width: '20px',
+              height: '20px',
+              borderRadius: '50%',
+              border: `2px solid ${item.done ? '#2e7d32' : '#ddd'}`,
+              background: item.done ? '#2e7d32' : 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              marginTop: '1px',
+            }}>
+              {item.done && <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>✓</span>}
+            </div>
+            <div style={{ flex: 1 }}>
+              <p style={{
+                margin: 0,
+                fontSize: '13px',
+                fontWeight: 600,
+                color: item.done ? '#aaa' : '#333',
+                textDecoration: item.done ? 'line-through' : 'none',
+              }}>
+                {item.label}
+              </p>
+              {!item.done && (
+                <>
+                  <p style={{ margin: '2px 0 6px', fontSize: '12px', color: '#999', lineHeight: 1.4 }}>
+                    {item.hint}
+                  </p>
+                  <button
+                    onClick={item.action}
+                    style={{
+                      padding: '5px 10px',
+                      background: '#f0f7f0',
+                      color: '#2e7d32',
+                      border: '1px solid #a5d6a7',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {item.actionLabel} →
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
   const today = new Date().toLocaleDateString('en-ZW', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
@@ -636,6 +790,15 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
         <h1>Good day, {user.username}!</h1>
         <p>{today}</p>
       </div>
+
+      {/* Onboarding checklist — shown to Admin only, disappears when done or dismissed */}
+      {(user.role === 'Admin' || user.role === 'Manager') && (
+        <OnboardingPanel
+          totalProducts={totalProducts}
+          totalCompletedSales={totalCompletedSales}
+          setActivePage={setActivePage}
+        />
+      )}
 
       <div className="stats-grid">
         {stats.map((stat, i) => {
