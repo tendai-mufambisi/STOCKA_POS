@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
-import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import './Sales.css'
@@ -100,20 +99,6 @@ function Sales({ user, currentShift }) {
       return () => clearTimeout(timer)
     }
   }, [showConfirmation])
-
-  // Setup real-time sync for sales data (products, held sales)
-  const syncState = useRealtimeSync({
-    pollInterval: 60000, // Refresh every 60 seconds (less frequent for sales)
-    onSyncComplete: () => {
-      // Reload products and held sales when sync completes
-      Promise.all([
-        loadProducts(),
-        loadHeldSales()
-      ]).catch(err => 
-        console.warn('[Sales Sync] Error reloading data:', err)
-      )
-    }
-  })
 
   const loadProducts = async () => {
     try {

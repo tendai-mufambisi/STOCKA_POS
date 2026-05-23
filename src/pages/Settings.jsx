@@ -3,7 +3,6 @@ import { useState, useEffect } from 'react'
 import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser, getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile } from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
-import { canSyncToCloud, previewSync, pushLocalChangesToCloud, pullCloudChangesToLocal } from '../services/syncService'
 import './Settings.css'
 
 function Settings({ user }) {
@@ -49,9 +48,6 @@ function Settings({ user }) {
   const [scanningComPorts, setScanningComPorts] = useState(false)
   const [testingPrinter, setTestingPrinter] = useState(false)
   const [printStatus, setPrintStatus] = useState('')
-  const [syncState, setSyncState] = useState({ toUpload: 0, totalProducts: 0, pendingConflicts: 0, cloudConfigured: false })
-  const [syncing, setSyncing] = useState(false)
-  
   // Backup state
   const [backups, setBackups] = useState([])
   const [creatingBackup, setCreatingBackup] = useState(false)
@@ -65,17 +61,7 @@ function Settings({ user }) {
       loadUsers()
       loadBackups()
     }
-    loadSyncPreview()
   }, [isAdmin])
-
-  const loadSyncPreview = async () => {
-    try {
-      const result = await previewSync()
-      setSyncState(result)
-    } catch (err) {
-      console.error('Failed to load sync preview:', err)
-    }
-  }
 
   const handleChangePassword = async (e) => {
     e.preventDefault()
@@ -313,48 +299,6 @@ function Settings({ user }) {
     }
   }
 
-  const handleSyncPush = async () => {
-    setError('')
-    setSuccess('')
-    if (!canSyncToCloud()) {
-      setError('Cloud sync is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
-      return
-    }
-    try {
-      setSyncing(true)
-      const shopId = formData.email || formData.name || 'default-shop'
-      const actor = user?.username || 'desktop-user'
-      const result = await pushLocalChangesToCloud({ shopId, actor })
-      setSuccess(`Upload complete: ${result.pushed} product(s) pushed.`)
-      await loadSyncPreview()
-    } catch (err) {
-      setError(`Sync upload failed: ${err.message}`)
-    } finally {
-      setSyncing(false)
-    }
-  }
-
-  const handleSyncPull = async () => {
-    setError('')
-    setSuccess('')
-    if (!canSyncToCloud()) {
-      setError('Cloud sync is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
-      return
-    }
-    try {
-      setSyncing(true)
-      const shopId = formData.email || formData.name || 'default-shop'
-      const actor = user?.username || 'desktop-user'
-      const result = await pullCloudChangesToLocal({ shopId, actor })
-      setSuccess(`Download complete: ${result.imported} imported, ${result.conflicts} conflict(s) logged.`)
-      await loadSyncPreview()
-    } catch (err) {
-      setError(`Sync download failed: ${err.message}`)
-    } finally {
-      setSyncing(false)
-    }
-  }
-
   const handleSaveShop = async (e) => {
     e.preventDefault()
     setError('')
@@ -530,14 +474,6 @@ function Settings({ user }) {
             onClick={() => setActiveTab('system')}
           >
             ⚙️ System
-          </button>
-        )}
-        {!isCashier && (
-          <button
-            className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`}
-            onClick={() => setActiveTab('sync')}
-          >
-            ☁️ Cloud Sync
           </button>
         )}
         {isAdmin && (
@@ -953,32 +889,6 @@ function Settings({ user }) {
                 <span className="value online">🟢 Online</span>
               </div>
             </div>
-          </div>
-        )}
-
-        {activeTab === 'sync' && !isCashier && (
-          <div className="settings-section">
-            <h3>Cloud Sync</h3>
-            <div className="info-box">
-              <div className="info-row"><span className="label">Cloud configured</span><span className="value">{syncState.cloudConfigured ? 'Yes' : 'No'}</span></div>
-              <div className="info-row"><span className="label">Products pending upload</span><span className="value">{syncState.toUpload}</span></div>
-              <div className="info-row"><span className="label">Total local products</span><span className="value">{syncState.totalProducts}</span></div>
-              <div className="info-row"><span className="label">Pending conflicts</span><span className="value">{syncState.pendingConflicts}</span></div>
-            </div>
-            <div className="button-group" style={{ marginTop: '16px' }}>
-              <button type="button" className="btn btn-primary" disabled={syncing} onClick={handleSyncPush}>
-                {syncing ? 'Syncing...' : 'Upload local changes'}
-              </button>
-              <button type="button" className="btn btn-secondary" disabled={syncing} onClick={handleSyncPull}>
-                {syncing ? 'Syncing...' : 'Download cloud changes'}
-              </button>
-              <button type="button" className="btn btn-secondary" disabled={syncing} onClick={loadSyncPreview}>
-                Refresh preview
-              </button>
-            </div>
-            <p style={{ marginTop: '12px', color: '#666' }}>
-              A backup snapshot is created before every upload/download sync.
-            </p>
           </div>
         )}
 

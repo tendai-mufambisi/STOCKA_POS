@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems } from '../database/db'
 import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
-import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import { utils, writeFile } from 'xlsx'
 import './Products.css'
 
@@ -36,16 +35,6 @@ function Products() {
   useEffect(() => {
     loadData()
   }, [])
-
-  // Setup real-time sync for product data
-  const syncState = useRealtimeSync({
-    pollInterval: 45000, // Refresh every 45 seconds
-    onSyncComplete: () => {
-      loadData().catch(err => 
-        console.warn('[Products Sync] Error reloading data:', err)
-      )
-    }
-  })
 
   const loadData = async () => {
     try {

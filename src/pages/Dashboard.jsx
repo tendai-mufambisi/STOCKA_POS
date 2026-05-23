@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import './Dashboard.css'
-import { useRealtimeSync } from '../hooks/useRealtimeSync'
 import Products from './Products'
 import StockControl from './StockControl'
 import CurrentInventory from './CurrentInventory'
@@ -30,7 +29,6 @@ import {
   FiShoppingCart,
   FiCreditCard,
   FiClock,
-  FiMapPin,
   FiSettings,
   FiDollarSign,
   FiAlertTriangle,
@@ -199,21 +197,6 @@ function Dashboard() {
       loadCurrentShift()
     }
   }, [user.id])
-
-  // Setup real-time sync for dashboard data
-  const syncState = useRealtimeSync({
-    pollInterval: 30000, // Refresh every 30 seconds
-    enabled: user.id ? true : false,
-    dependencies: [user.id],
-    onSyncComplete: () => {
-      // Reload dashboard data when sync completes
-      if (user.id) {
-        loadDashboardData().catch(err => 
-          console.warn('[Dashboard Sync] Error reloading data:', err)
-        )
-      }
-    }
-  })
 
   const loadDashboardData = async () => {
     try {
@@ -820,12 +803,9 @@ function ComingSoon({ page }) {
     stock:      'Stock Control',
     suppliers:  'Suppliers',
     sales:      'Sales / POS',
-    customers:  'Customers',
-    quotations: 'Quotations',
     expenses:   'Expenses',
     reports:    'Reports',
     endofday:   'End of Day',
-    branches:   'Branches',
     settings:   'Settings',
   }
 
