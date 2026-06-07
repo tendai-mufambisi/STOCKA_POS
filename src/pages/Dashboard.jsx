@@ -790,7 +790,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
   return (
     <>
       <div className="page-header">
-        <h1>Hello, {user.username}!</h1>
+        <h1>How are you, {user.username}!</h1>
         <p>{today}</p>
       </div>
 
