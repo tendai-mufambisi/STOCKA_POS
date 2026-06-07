@@ -1,14 +1,26 @@
 /** @typedef {import('@serialport/bindings-interface').PortInfo} PortInfo */
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, protocol } = require('electron')
 const path = require('path')
-const nodePrinter = require('node-printer')
-const { PosPrinter } = require('@plick/electron-pos-printer')
+const fs = require('fs')
+// @plick/electron-pos-printer is incompatible with Electron 29 (sandbox defaults break its renderer IPC)
+// We use Electron's native webContents.print() directly instead.
 const logger = require('./logger')
 const { verifyLicense, saveLicense, loadLicense } = require('./license')
+const { initDb, getSql, saveDb, closeDb } = require('./database/index')
+const { createTables, runMigrations } = require('./database/schema')
+const { registerAll: registerDomainIpc } = require('./database/ipc')
+const btPrinter = require('./printer')
 
 // Set userData path before app is ready (must be first)
 const userDataPath = path.join(process.env.APPDATA || process.env.HOME, 'Stocka')
 app.setPath('userData', userDataPath)
+
+// Register stocka:// custom protocol so Google OAuth can redirect back into the app
+if (process.defaultApp) {
+  if (process.argv.length >= 2) app.setAsDefaultProtocolClient('stocka', process.execPath, [path.resolve(process.argv[1])])
+} else {
+  app.setAsDefaultProtocolClient('stocka')
+}
 
 logger.info('🚀 Stocka Application Starting')
 logger.info(`Node Environment: ${process.env.NODE_ENV || 'production'}`)
@@ -83,8 +95,26 @@ function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   logger.info('⚡ App ready')
+
+  // Initialize database in main process
+  const dbFilePath = path.join(userDataPath, 'stocka.db')
+  try {
+    const db = await initDb(dbFilePath)
+    global._stockaSqlJs = getSql()
+    createTables(db)
+    runMigrations(db)
+    saveDb()
+    registerDomainIpc(ipcMain, userDataPath)
+    logger.info('✅ Database ready')
+  } catch (err) {
+    logger.error('❌ Database init failed: ' + err.message)
+    dialog.showErrorBox('Stocka - Database Error', 'Failed to initialize database: ' + err.message)
+    app.quit()
+    return
+  }
+
   createWindow()
   // Delay updater 10 s so startup is not slowed down
   setTimeout(setupAutoUpdater, 10000)
@@ -99,6 +129,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   logger.info('🚪 All windows closed')
+  closeDb()
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -114,51 +145,43 @@ process.on('unhandledRejection', (reason, promise) => {
 })
 
 // ══════════════════════════════════════════════════════════
-// PRINTER IPC HANDLERS - Using Windows Print API
+// PRINTER IPC HANDLERS - Using @plick/electron-pos-printer
 // ══════════════════════════════════════════════════════════
 
-/**
- * NEW: Clean single-path printer handler
- * Print receipt to Windows printer by name (not COM port)
- */
+const { printReceipt: rawPrintReceipt } = require('./printer-raw')
+
 ipcMain.handle('printer:print-by-name', async (event, printerName, receiptData, shopInfo, isDuplicate = false) => {
-  try {
-    if (!printerName || typeof printerName !== 'string') {
-      return { success: false, error: 'No printer name provided. Go to Settings → Printer, scan, and save a printer.' }
-    }
-
-    const escposCommands = generateReceiptCommands(receiptData, shopInfo || {}, isDuplicate)
-    logger.info(`🖨️ [PRINT-BY-NAME] Printing to "${printerName}", buffer: ${escposCommands.length} bytes`)
-
-    return await sendToWindowsPrinter(printerName, escposCommands)
-  } catch (error) {
-    logger.error('❌ [PRINT-BY-NAME] ' + error.message)
-    return { success: false, error: error.message }
+  if (!printerName || typeof printerName !== 'string') {
+    return { success: false, error: 'No printer configured. Go to Settings → Printer, scan and save a printer.' }
   }
+  logger.info(`🖨️ [PRINT-BY-NAME] Printing to "${printerName}"`)
+  const result = rawPrintReceipt(printerName, receiptData, shopInfo, isDuplicate)
+  if (result.success) logger.info('✅ [PRINT-BY-NAME] Success')
+  else logger.error('❌ [PRINT-BY-NAME] ' + result.error)
+  return result
 })
 
-/**
- * NEW: Test print by printer name
- */
 ipcMain.handle('printer:test-by-name', async (event, printerName) => {
   if (!printerName) return { success: false, error: 'No printer name provided' }
-
   const testReceipt = {
     receipt_number: 'TEST-001',
     created_at: new Date().toISOString(),
-    cashier: 'Test',
+    cashier: 'Test Cashier',
     items: [
       { product_name: 'Test Item 1', quantity: 1, selling_price: 5.00, subtotal: 5.00 },
-      { product_name: 'Test Item 2', quantity: 2, selling_price: 10.00, subtotal: 20.00 }
+      { product_name: 'Test Item 2', quantity: 2, selling_price: 10.00, subtotal: 20.00 },
     ],
-    total: 25.00,
-    payment_method: 'Test Print',
+    total: 25.00, subtotal: 25.00,
+    payment_method: 'Cash',
     cash_tendered: 30.00,
-    change_given: 5.00
+    change_given: 5.00,
   }
-  const testShop = { name: 'Test Shop', address: 'Test Address', phone: '000-000-0000' }
-
-  return await sendToWindowsPrinter(printerName, generateReceiptCommands(testReceipt, testShop, false))
+  const testShop = { name: 'Test Shop', address: '123 Test St', phone: '+263 000 000 000', currency: 'USD' }
+  logger.info(`🖨️ [TEST-PRINT] Sending test receipt to "${printerName}"`)
+  const result = rawPrintReceipt(printerName, testReceipt, testShop, false)
+  if (result.success) logger.info('✅ [TEST-PRINT] Success')
+  else logger.error('❌ [TEST-PRINT] ' + result.error)
+  return result
 })
 
 /**
@@ -168,7 +191,8 @@ ipcMain.handle('printer:test-by-name', async (event, printerName) => {
 // Windows virtual/software printers that are never physical receipt printers
 const VIRTUAL_PRINTER_PATTERNS = [
   /microsoft print to pdf/i,
-  /microsoft xps/i,
+  /microsoft xps document writer/i,
+  /xps/i,
   /fax/i,
   /onenote/i,
   /send to onenote/i,
@@ -182,7 +206,15 @@ const VIRTUAL_PRINTER_PATTERNS = [
   /nitro pdf/i,
   /pdf24/i,
   /primopdf/i,
-  /\\\\.*\\\\/,  // UNC network printer paths
+  /snagit/i,
+  /camtasia/i,
+  /docuware/i,
+  /imagewriter/i,
+  /generic.*text/i,
+  /print to file/i,
+  /wps pdf/i,
+  /sumatra/i,
+  /\\\\[^\\]+\\\\/,  // UNC network printer \\server\printer
 ]
 
 function isVirtualPrinter(name) {
@@ -236,38 +268,28 @@ function tagPrinters(names, extraProps, srcList) {
 
 ipcMain.handle('printer:scan', async () => {
   try {
-    logger.info('🖨️ Scanning for available printers via node-printer')
+    logger.info('🖨️ Scanning for available printers via Electron getPrintersAsync')
+    if (!mainWindow) return { success: false, error: 'App window not ready', printers: [], count: 0 }
 
-    let printerList = []
-    try {
-      printerList = nodePrinter.getPrinters()
-      logger.info(`✅ node-printer found ${printerList.length} printer(s) total`)
-    } catch (err) {
-      logger.warn('⚠️ node-printer.getPrinters() failed, falling back to PowerShell: ' + err.message)
-    }
+    const list = await mainWindow.webContents.getPrintersAsync()
+    logger.info(`✅ Electron found ${list.length} printer(s): ${list.map(p => p.name).join(', ')}`)
 
-    if (printerList.length > 0) {
-      const all = tagPrinters(printerList.map(p => p.name), p => ({ isDefault: !!p.isDefault }), printerList)
-      return { success: true, printers: all, count: all.length }
-    }
-
-    // Fallback: PowerShell WMI
-    const { execFile } = require('child_process')
-    return new Promise((resolve) => {
-      const psScript = `Get-WmiObject Win32_Printer | Select-Object Name | ForEach-Object { Write-Host $_.Name }`
-      execFile('powershell.exe', ['-NoProfile', '-Command', psScript], { timeout: 5000 }, (error, stdout) => {
-        if (error || !stdout.trim()) {
-          logger.warn('⚠️ PowerShell fallback also failed — no printers detected')
-          resolve({ success: true, printers: [], count: 0, message: 'No printers found. Ensure your Bluetooth printer is paired in Windows Settings → Bluetooth, then added in Devices & Printers.' })
-          return
-        }
-
-        const names = stdout.split('\n').map(l => l.trim()).filter(Boolean)
-        const all = tagPrinters(names, () => ({}), null)
-        logger.info(`✅ PowerShell fallback found ${all.length} printer(s)`)
-        resolve({ success: true, printers: all, count: all.length })
-      })
+    const all = list.map(p => ({
+      name: p.name,
+      port: p.name,
+      type: 'windows_printer',
+      isDefault: p.isDefault || false,
+      isVirtual: isVirtualPrinter(p.name),
+      isDuplicate: isDuplicatePrinter(p.name),
+      status: p.status,
+    })).sort((a, b) => {
+      if (a.isVirtual !== b.isVirtual) return a.isVirtual ? 1 : -1
+      if (a.isDuplicate !== b.isDuplicate) return a.isDuplicate ? 1 : -1
+      if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
+      return 0
     })
+
+    return { success: true, printers: all, count: all.length }
   } catch (error) {
     logger.error('❌ Printer scan fatal error: ' + error.message)
     return { success: false, error: error.message, printers: [], count: 0 }
@@ -520,6 +542,7 @@ async function sendToWindowsPrinter(printerName, escposCommands) {
           const errorLine   = lines.find(l => l.startsWith('ERROR:'))
 
           if (portLine) logger.info(`🖨️ [PRINTER] Port: ${portLine.replace('INFO:port:', '')}`)
+          lines.filter(l => l.startsWith('INFO:')).forEach(l => logger.info(`🖨️ [PRINTER] ${l}`))
           logger.info(`🖨️ [PRINTER] stdout lines: ${JSON.stringify(lines)}`)
           if (se) logger.warn(`⚠️ [PRINTER] stderr: ${se}`)
 
@@ -536,10 +559,11 @@ async function sendToWindowsPrinter(printerName, escposCommands) {
               msg = `Printer "${printerName}" not found. Check the name in Settings matches exactly what appears in Devices & Printers.`
             } else if (kind === 'com') {
               msg = `COM port error: ${rest}. The printer may be off, out of Bluetooth range, or the port is in use by another app.`
+            } else if (kind === 'winspool') {
+              msg = `Raw print failed for "${printerName}": ${rest}`
             } else if (kind === 'notcom') {
               msg = `Printer "${printerName}" uses port "${rest}", not a COM port. ` +
-                'Bluetooth printers must be paired via Bluetooth & devices and show a COM port. ' +
-                'Check printer properties in Devices & Printers to see which port it uses.'
+                'Bluetooth printers must be paired and show a COM port in Devices & Printers.'
             }
             logger.error(`❌ [PRINTER] ${errorLine}`)
             return resolve({ success: false, error: msg })
@@ -908,41 +932,16 @@ ipcMain.handle('license:get-info', async () => {
 })
 
 // ══════════════════════════════════════════════════════════
-// DATABASE IPC HANDLERS - File-based persistence
+// DATABASE FILE OPERATIONS (backup/restore handled here)
 // ══════════════════════════════════════════════════════════
 
-const fs = require('fs')
 const fsPromises = require('fs').promises
 
 const dbFilePath = path.join(userDataPath, 'stocka.db')
-const dbTmpPath  = path.join(userDataPath, 'stocka.db.tmp')
 const backupsDirPath = path.join(userDataPath, 'backups')
 const metaFilePath = path.join(userDataPath, 'stocka_meta.json')
 
 const ensureBackupsDir = () => fsPromises.mkdir(backupsDirPath, { recursive: true }).catch(() => {})
-
-ipcMain.handle('db:load', async () => {
-  try {
-    const data = await fsPromises.readFile(dbFilePath)
-    return { success: true, data: data.toString('base64') }
-  } catch (err) {
-    if (err.code === 'ENOENT') return { success: true, data: null }
-    logger.warn('db:load error: ' + err.message)
-    return { success: true, data: null }
-  }
-})
-
-ipcMain.handle('db:save', async (event, base64) => {
-  try {
-    const buf = Buffer.from(base64, 'base64')
-    await fsPromises.writeFile(dbTmpPath, buf)
-    await fsPromises.rename(dbTmpPath, dbFilePath)
-    return { success: true }
-  } catch (err) {
-    logger.error('db:save error: ' + err.message)
-    return { success: false, error: err.message }
-  }
-})
 
 ipcMain.handle('db:backup', async () => {
   try {
@@ -995,7 +994,10 @@ ipcMain.handle('db:restore', async (event, filename) => {
     if (!/^[\w\-\.]+\.db$/.test(filename)) return { success: false, error: 'Invalid backup filename' }
     const srcPath = path.join(backupsDirPath, filename)
     await fsPromises.access(srcPath)
+    closeDb()
     await fsPromises.copyFile(srcPath, dbFilePath)
+    const { reopenDb } = require('./database/index')
+    reopenDb()
     return { success: true }
   } catch (err) {
     logger.error('db:restore error: ' + err.message)
@@ -1019,23 +1021,6 @@ ipcMain.handle('db:export-file', async (event, destPath) => {
   }
 })
 
-ipcMain.handle('db:migrate-from-localstorage', async (event, base64) => {
-  try {
-    // Only write if stocka.db does not already exist
-    try {
-      await fsPromises.access(dbFilePath)
-      return { success: true, migrated: false, reason: 'db file already exists' }
-    } catch (_) {}
-    const buf = Buffer.from(base64, 'base64')
-    await fsPromises.writeFile(dbTmpPath, buf)
-    await fsPromises.rename(dbTmpPath, dbFilePath)
-    return { success: true, migrated: true }
-  } catch (err) {
-    logger.error('db:migrate-from-localstorage error: ' + err.message)
-    return { success: false, error: err.message }
-  }
-})
-
 ipcMain.handle('db:get-meta', async () => {
   try {
     const data = await fsPromises.readFile(metaFilePath, 'utf8')
@@ -1054,14 +1039,164 @@ ipcMain.handle('db:set-meta', async (event, meta) => {
   }
 })
 
-ipcMain.handle('db:load-backup', async (event, filename) => {
+// ══════════════════════════════════════════════════════════
+// BLUETOOTH SERIAL PRINTER — cross-platform via serialport
+// ══════════════════════════════════════════════════════════
+
+ipcMain.handle('bt:scan', async () => {
   try {
-    if (!/^[\w\-\.]+\.db$/.test(filename)) return { success: false, error: 'Invalid filename' }
-    const filePath = path.join(backupsDirPath, filename)
-    const data = await fsPromises.readFile(filePath)
-    return { success: true, data: data.toString('base64') }
+    const ports = await btPrinter.scanPrinters()
+    logger.info(`🔵 [BT] Found ${ports.length} port(s): ${ports.map(p => p.path).join(', ')}`)
+    return { success: true, ports }
   } catch (err) {
-    logger.error('db:load-backup error: ' + err.message)
+    logger.error('🔵 [BT] Scan error: ' + err.message)
+    return { success: false, error: err.message, ports: [] }
+  }
+})
+
+ipcMain.handle('bt:print-test', async (event, portPath, shopName) => {
+  if (!portPath || typeof portPath !== 'string' || portPath.length > 100) {
+    return { success: false, error: 'Invalid port path.' }
+  }
+  try {
+    const data = btPrinter.buildTestPage(portPath, shopName || '')
+    logger.info(`🔵 [BT] Test print → ${portPath} (${data.length} bytes)`)
+    await btPrinter.printRaw(portPath, data)
+    logger.info('🔵 [BT] Test print succeeded')
+    return { success: true }
+  } catch (err) {
+    logger.error(`🔵 [BT] Test print failed: ${err.message}`)
     return { success: false, error: err.message }
   }
 })
+
+ipcMain.handle('bt:print-receipt', async (event, portPath, receiptData, shopInfo, isDuplicate) => {
+  if (!portPath || typeof portPath !== 'string' || portPath.length > 100) {
+    return { success: false, error: 'No serial port configured. Go to Settings → Printer.' }
+  }
+  if (!receiptData || typeof receiptData !== 'object') {
+    return { success: false, error: 'Invalid receipt data.' }
+  }
+  try {
+    const data = generateReceiptCommands(receiptData, shopInfo || {}, isDuplicate || false)
+    logger.info(`🔵 [BT] Receipt print → ${portPath} (${data.length} bytes)`)
+    await btPrinter.printRaw(portPath, data)
+    logger.info('🔵 [BT] Receipt print succeeded')
+    return { success: true }
+  } catch (err) {
+    logger.error(`🔵 [BT] Receipt print failed: ${err.message}`)
+    return { success: false, error: err.message }
+  }
+})
+
+// ══════════════════════════════════════════════════════════
+// CLOUD IPC HANDLERS — safeStorage token management + OAuth
+// ══════════════════════════════════════════════════════════
+
+const TOKEN_PATH = path.join(userDataPath, 'cloud_token.dat')
+
+ipcMain.handle('cloud:save-token', (event, payload) => {
+  try {
+    const json = JSON.stringify(payload)
+    if (safeStorage.isEncryptionAvailable()) {
+      const encrypted = safeStorage.encryptString(json)
+      fs.writeFileSync(TOKEN_PATH, encrypted)
+    } else {
+      // Fallback: plain JSON (dev machines without keychain)
+      fs.writeFileSync(TOKEN_PATH, json, 'utf8')
+    }
+    return { success: true }
+  } catch (err) {
+    logger.error('cloud:save-token failed: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('cloud:load-token', () => {
+  try {
+    if (!fs.existsSync(TOKEN_PATH)) return null
+    const raw = fs.readFileSync(TOKEN_PATH)
+    const json = safeStorage.isEncryptionAvailable()
+      ? safeStorage.decryptString(raw)
+      : raw.toString('utf8')
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('cloud:clear-token', () => {
+  try {
+    if (fs.existsSync(TOKEN_PATH)) fs.unlinkSync(TOKEN_PATH)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// Open a popup BrowserWindow for Google OAuth.
+// The API redirects back to stocka://auth?access_token=...&refresh_token=...
+// which triggers the open-url event below and sends the token to the renderer.
+ipcMain.handle('cloud:open-google-auth', async () => {
+  const API_URL = process.env.STOCKA_API_URL || 'http://localhost:3001'
+  const authWin = new BrowserWindow({
+    width: 500,
+    height: 650,
+    parent: mainWindow,
+    modal: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    title: 'Sign in with Google',
+  })
+
+  authWin.loadURL(`${API_URL}/auth/google-start`)
+  authWin.once('closed', () => {
+    if (mainWindow) mainWindow.webContents.send('cloud:auth-cancelled')
+  })
+})
+
+// On Windows, the stocka:// redirect comes in as a second instance.
+// Extract the token from the URL and send it to the renderer.
+const handleStockaUrl = (url) => {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname === 'auth') {
+      const access_token   = parsed.searchParams.get('access_token')
+      const refresh_token  = parsed.searchParams.get('refresh_token')
+      const error          = parsed.searchParams.get('error')
+      if (mainWindow) {
+        if (error) {
+          mainWindow.webContents.send('cloud:auth-error', error)
+        } else {
+          mainWindow.webContents.send('cloud:auth-complete', { access_token, refresh_token })
+        }
+        // Close the OAuth popup if it's still open
+        BrowserWindow.getAllWindows()
+          .filter(w => w !== mainWindow && w.getTitle() === 'Sign in with Google')
+          .forEach(w => w.destroy())
+      }
+    }
+  } catch (err) {
+    logger.error('handleStockaUrl error: ' + err.message)
+  }
+}
+
+// macOS / Linux: the URL is delivered to the running instance via open-url
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleStockaUrl(url)
+})
+
+// Windows: the URL is delivered as a CLI arg to a second instance
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (event, argv) => {
+    const url = argv.find(arg => arg.startsWith('stocka://'))
+    if (url) handleStockaUrl(url)
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}

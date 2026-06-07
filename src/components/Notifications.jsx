@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { getProducts, getActiveNotifications, markNotificationAsRead, createNotification, clearNotificationsForProduct } from '../database/db'
+import { useAuthStore } from '../store/useAuthStore'
 import './Notifications.css'
 import { FiBell, FiX, FiCheck, FiAlertOctagon, FiAlertTriangle } from 'react-icons/fi'
 
-function Notifications({ user }) {
+function Notifications() {
+  const { user } = useAuthStore()
   const [notifications, setNotifications] = useState([])
   const [showPanel, setShowPanel] = useState(false)
   const [loading, setLoading] = useState(false)

@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { FiCheckCircle, FiInfo } from 'react-icons/fi'
 import { initializeShop, addProduct, loginUser } from '../database/db'
 import { validateEmail } from '../utils/validation'
+import { useAuthStore } from '../store/useAuthStore'
 import iconPng from '../assets/icon.png'
 import fullLogo from '../assets/full_logo.png'
 import './ShopSetup.css'
@@ -168,7 +169,7 @@ function ShopSetup({ onSetupComplete }) {
           name: productName.trim(),
           selling_price: parseFloat(productPrice) || 0,
           current_quantity: parseInt(productQty) || 0,
-          category: '',
+          category: 'Food',
           unit: 'each',
           reorder_level: 5,
         })
@@ -177,7 +178,7 @@ function ShopSetup({ onSetupComplete }) {
       // Auto-login as owner
       const user = await loginUser(ownerName.trim(), pin)
       if (user) {
-        localStorage.setItem('stocka_user', JSON.stringify(user))
+        useAuthStore.getState().setUser(user)
       }
 
       setDone(true)

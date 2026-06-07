@@ -6,19 +6,14 @@ export default defineConfig({
   base: process.env.BUILD_TARGET === 'desktop' ? './' : '/',
   server: {
     port: 5173,
+    strictPort: true,
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp'
     }
   },
-  optimizeDeps: {
-    exclude: ['sql.js']
-  },
   build: {
     outDir: 'dist',
-    chunkSizeWarningLimit: 1000,
-    rollupOptions: {
-      external: ['sql.js']
-    }
+    chunkSizeWarningLimit: 1000
   }
 })

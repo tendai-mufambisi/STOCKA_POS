@@ -1,0 +1,16 @@
+const w = window.stocka.sales
+
+export const addSale = (sale, saleItems) => w.add(sale, saleItems)
+export const getSales = () => w.getAll()
+export const getSaleById = (id) => w.getById(id)
+export const getSaleItems = (saleId) => w.getItems(saleId)
+export const holdSale = (saleId, heldName) => w.hold(saleId, heldName)
+export const getHeldSales = () => w.getHeld()
+export const recallHeldSale = (saleId) => w.recall(saleId)
+export const discardHeldSale = (saleId) => w.discard(saleId)
+export const voidSale = (saleId, reason, by) => w.void(saleId, reason, by)
+export const completeHeldSale = (saleId, cashTendered, changeGiven, shiftId) => w.complete(saleId, cashTendered, changeGiven, shiftId)
+export const getVoidedSales = () => w.getVoided()
+export const getLastReceiptNumber = () => w.getLastReceipt()
+export const getReceiptBySaleId = (id) => w.getReceipt(id)
+export const updateSaleReceiptNumber = (id, num) => w.updateReceipt(id, num)

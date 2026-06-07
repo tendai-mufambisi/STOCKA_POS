@@ -3,9 +3,11 @@ import { useState, useEffect } from 'react'
 import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser, getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile } from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
+import { useAuthStore } from '../store/useAuthStore'
 import './Settings.css'
 
-function Settings({ user }) {
+function Settings() {
+  const { user } = useAuthStore()
   const isCashier = user?.role === 'Cashier'
   const [activeTab, setActiveTab] = useState(isCashier ? 'password' : 'shop')
   const [loading, setLoading] = useState(true)
@@ -707,157 +709,77 @@ function Settings({ user }) {
           <div className="settings-section">
             <h3>🖨️ Printer Settings</h3>
 
-            <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: '#f0f7ff', borderRadius: '8px', border: '1px solid #cfe8ff' }}>
-              <h4 style={{ marginTop: 0 }}>How it works</h4>
-              <p style={{ fontSize: '14px', color: '#555', margin: 0 }}>
-                Your Bluetooth printer must be <strong>paired</strong> in Windows Bluetooth settings and
-                <strong> installed as a Windows printer</strong> (it will show in Devices & Printers).
-                Scan below to find it, select it, then save. Stocka prints directly to it by name.
-              </p>
-            </div>
-
-            {/* Printer Selection */}
-            <div style={{ marginBottom: '24px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
-              <h4 style={{ marginTop: 0 }}>Select Printer</h4>
-
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
-                <div className="form-group" style={{ flex: '1', minWidth: '200px' }}>
-                  <label>Printer Name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. BT-58L or POS-58"
-                    value={formData.printer_name || ''}
-                    onChange={(e) => setFormData({ ...formData, printer_name: e.target.value })}
-                  />
-                  <small style={{ color: '#888', fontSize: '12px' }}>
-                    Type manually or scan to auto-detect
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleScanPrinters}
-                  disabled={scanningPrinters}
-                >
-                  {scanningPrinters ? '🔍 Scanning...' : '🔍 Scan for Printers'}
+            {/* Scan + Select */}
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px' }}>
+                <input
+                  type="text"
+                  placeholder="Printer name"
+                  value={formData.printer_name || ''}
+                  onChange={(e) => setFormData({ ...formData, printer_name: e.target.value })}
+                  style={{ flex: 1, padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
+                />
+                <button type="button" className="btn btn-primary" onClick={handleScanPrinters} disabled={scanningPrinters}>
+                  {scanningPrinters ? 'Scanning...' : '🔍 Scan'}
                 </button>
               </div>
 
-              {availablePrinters.length > 0 && (() => {
-                const primary   = availablePrinters.filter(p => !p.isVirtual && !p.isDuplicate)
-                const dupes     = availablePrinters.filter(p => !p.isVirtual && p.isDuplicate)
-                const virtual_  = availablePrinters.filter(p => p.isVirtual)
-
-                const renderBtn = (printer) => (
-                  <button
-                    key={printer.name}
-                    type="button"
-                    onClick={() => setFormData({ ...formData, printer_name: printer.name })}
-                    style={{
-                      padding: '10px 14px',
-                      border: `2px solid ${formData.printer_name === printer.name ? '#1976d2' : '#ddd'}`,
-                      borderRadius: '6px',
-                      backgroundColor: formData.printer_name === printer.name ? '#e3f2fd' : '#fff',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      fontWeight: formData.printer_name === printer.name ? '600' : 'normal',
-                      opacity: (printer.isVirtual || printer.isDuplicate) ? 0.55 : 1
-                    }}
-                  >
-                    🖨️ {printer.name}
-                    {printer.isDefault && <span style={{ marginLeft: 6, fontSize: 11, color: '#1976d2' }}>(default)</span>}
-                    {formData.printer_name === printer.name && ' ✓ Selected'}
-                  </button>
-                )
-
-                return (
-                  <div>
-                    {primary.length > 0 && (
-                      <>
-                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
-                          Physical Printers — click to select:
-                        </label>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: 12 }}>
-                          {primary.map(renderBtn)}
-                        </div>
-                      </>
-                    )}
-                    {dupes.length > 0 && (
-                      <details style={{ marginBottom: 8 }}>
-                        <summary style={{ cursor: 'pointer', fontSize: 13, color: '#e65100', userSelect: 'none' }}>
-                          ⚠️ {dupes.length} duplicate installation{dupes.length > 1 ? 's' : ''} detected — open Devices &amp; Printers and delete these
-                        </summary>
-                        <div style={{ marginTop: 6, padding: '10px 12px', backgroundColor: '#fff3e0', borderRadius: 6, fontSize: 13, color: '#555', marginBottom: 8 }}>
-                          These are leftover copies from multiple installs of the same printer.
-                          To clean up: press <strong>Win+R</strong>, type <code>control printers</code>, right-click each duplicate and choose <strong>Remove device</strong>.
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          {dupes.map(renderBtn)}
-                        </div>
-                      </details>
-                    )}
-                    {virtual_.length > 0 && (
-                      <details style={{ marginTop: 4 }}>
-                        <summary style={{ cursor: 'pointer', fontSize: 13, color: '#888', userSelect: 'none' }}>
-                          {virtual_.length} virtual/software printer{virtual_.length > 1 ? 's' : ''} (PDF, Fax, etc.)
-                        </summary>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: 8 }}>
-                          {virtual_.map(renderBtn)}
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                )
-              })()}
-            </div>
-
-            {/* Test Print */}
-            <div style={{ marginBottom: '24px', padding: '20px', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
-              <h4 style={{ marginTop: 0 }}>Test Your Printer</h4>
-              <p style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
-                Currently selected: <strong>{formData.printer_name || 'None'}</strong>
-              </p>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleTestPrint}
-                disabled={testingPrinter || !formData.printer_name}
-              >
-                {testingPrinter ? '🖨️ Printing...' : '🖨️ Send Test Receipt'}
-              </button>
-              {printStatus && (
-                <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '14px' }}>
-                  {printStatus}
+              {availablePrinters.filter(p => !p.isVirtual).length > 0 && (
+                <div style={{ border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden' }}>
+                  {availablePrinters.filter(p => !p.isVirtual).map(printer => (
+                    <div
+                      key={printer.name}
+                      onClick={() => setFormData({ ...formData, printer_name: printer.name })}
+                      style={{
+                        padding: '10px 14px', cursor: 'pointer',
+                        borderBottom: '1px solid #f0f0f0',
+                        background: formData.printer_name === printer.name ? '#e3f2fd' : 'white',
+                        borderLeft: formData.printer_name === printer.name ? '4px solid #1976d2' : '4px solid transparent',
+                        display: 'flex', alignItems: 'center', gap: '8px'
+                      }}
+                    >
+                      <span>🖨️</span>
+                      <span style={{ fontWeight: formData.printer_name === printer.name ? 600 : 400 }}>
+                        {printer.name}
+                      </span>
+                      {formData.printer_name === printer.name && <span style={{ marginLeft: 'auto', color: '#1976d2', fontSize: 13 }}>✓ Selected</span>}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-            {/* Auto-print settings form */}
+            {printStatus && (
+              <div style={{ marginBottom: '12px', padding: '10px 14px', background: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '13px' }}>
+                {printStatus}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={handleTestPrint}
+                disabled={testingPrinter || !formData.printer_name}>
+                {testingPrinter ? 'Printing...' : '🖨️ Test Print'}
+              </button>
+            </div>
+
+            {/* Auto-print form */}
             <form onSubmit={handleSaveShop}>
-              <div style={{ padding: '20px', backgroundColor: '#fff9f0', borderRadius: '8px', marginBottom: '20px' }}>
-                <h4 style={{ marginTop: 0 }}>Auto-Print Settings</h4>
-                <div className="form-group" style={{ marginBottom: '20px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
-                    <input
-                      type="checkbox"
-                      checked={formData.auto_print === 1}
-                      onChange={(e) => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })}
-                      style={{ width: '20px', height: '20px' }}
-                    />
-                    Auto-print receipts after every sale
-                  </label>
-                </div>
-                <div className="form-group">
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
-                    <input
-                      type="checkbox"
-                      checked={formData.print_duplicate === 1}
-                      onChange={(e) => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })}
-                      style={{ width: '20px', height: '20px' }}
-                    />
-                    Print duplicate receipts (2 copies)
-                  </label>
-                </div>
+              <div className="form-group" style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
+                  <input type="checkbox" checked={formData.auto_print === 1}
+                    onChange={(e) => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })}
+                    style={{ width: '18px', height: '18px' }} />
+                  Auto-print receipts after every sale
+                </label>
+              </div>
+              <div className="form-group" style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
+                  <input type="checkbox" checked={formData.print_duplicate === 1}
+                    onChange={(e) => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })}
+                    style={{ width: '18px', height: '18px' }} />
+                  Print duplicate receipts (2 copies)
+                </label>
               </div>
               <button type="submit" className="btn btn-primary">💾 Save Printer Settings</button>
             </form>

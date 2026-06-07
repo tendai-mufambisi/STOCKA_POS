@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory } from '../database/db'
+import { useAuthStore } from '../store/useAuthStore'
 import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX } from 'react-icons/fi'
 import './StockControl.css'
 
@@ -135,7 +136,7 @@ function StockControl() {
   const [showForm, setShowForm] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
-  const user = JSON.parse(localStorage.getItem('stocka_user') || '{}')
+  const { user } = useAuthStore()
 
   const [purchaseType, setPurchaseType] = useState('supplier')
 

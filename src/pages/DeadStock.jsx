@@ -3,7 +3,7 @@ import { getDeadStockProducts } from '../database/db'
 import './DeadStock.css'
 import { FiTrendingDown, FiCalendar } from 'react-icons/fi'
 
-function DeadStock({ user }) {
+function DeadStock() {
   const [deadStockProducts, setDeadStockProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

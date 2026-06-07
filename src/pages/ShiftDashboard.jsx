@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { getAllShifts, getShiftSummary, closeShift, getCurrentShift } from '../database/db'
+import { useAuthStore } from '../store/useAuthStore'
 import './ShiftDashboard.css'
 import { FiClock, FiCheckCircle, FiAlertCircle, FiEye, FiX } from 'react-icons/fi'
 
-function ShiftDashboard({ user }) {
+function ShiftDashboard() {
+  const { user } = useAuthStore()
   const [allShifts, setAllShifts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

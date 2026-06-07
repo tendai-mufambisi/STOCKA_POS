@@ -7,27 +7,38 @@ import Activation from './pages/Activation'
 import ErrorBoundary from './components/ErrorBoundary'
 import { getShop } from './database/db'
 import iconPng from './assets/icon.png'
+import { useAuthStore } from './store/useAuthStore'
 
 function App() {
   const [setupComplete, setSetupComplete] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadingError, setLoadingError] = useState(false)
   const [licenseValid, setLicenseValid] = useState(null)
-  const isLoggedIn = localStorage.getItem('stocka_user')
+  const user = useAuthStore(state => state.user)
 
   useEffect(() => {
     const init = async () => {
       try {
-        // License check — Electron only, skip in dev/web mode
-        if (window.stocka?.license) {
-          const lic = await window.stocka.license.check()
-          if (!lic?.valid) {
-            setLicenseValid(false)
-            setLoading(false)
-            return
+        if (window.stocka) {
+          // Cloud mode: valid token stored → skip license key check entirely
+          const cloudToken = await window.stocka.cloud?.loadToken()
+          if (cloudToken?.access_token) {
+            setLicenseValid(true)
+          } else {
+            // Offline mode: validate the HMAC license key
+            if (window.stocka.license) {
+              const lic = await window.stocka.license.check()
+              if (!lic?.valid) {
+                setLicenseValid(false)
+                setLoading(false)
+                return
+              }
+            }
+            setLicenseValid(true)
           }
+        } else {
+          setLicenseValid(true)
         }
-        setLicenseValid(true)
 
         // Database / setup check
         const timeoutPromise = new Promise((_, reject) =>
@@ -116,10 +127,10 @@ function App() {
       <HashRouter>
         <Routes>
           <Route path="/" element={
-            setupComplete === null || setupComplete === false ? <Navigate to="/setup" /> : isLoggedIn ? <Navigate to="/dashboard" /> : <Navigate to="/login" />
+            setupComplete === null || setupComplete === false ? <Navigate to="/setup" /> : user ? <Navigate to="/dashboard" /> : <Navigate to="/login" />
           } />
           <Route path="/setup" element={setupComplete ? <Navigate to="/login" /> : <ShopSetup onSetupComplete={() => setSetupComplete(true)} />} />
-          <Route path="/login" element={isLoggedIn ? <Navigate to="/dashboard" /> : <Login />} />
+          <Route path="/login" element={user ? <Navigate to="/dashboard" /> : <Login />} />
           <Route path="/dashboard" element={<Dashboard />} />
         </Routes>
       </HashRouter>

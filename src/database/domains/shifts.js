@@ -1,0 +1,12 @@
+const w = window.stocka.shifts
+
+export const startShift = (userData, openingFloat, branchId = null) => w.start(userData, openingFloat, branchId)
+export const updateShiftSalesForPaymentMethod = (shiftId, paymentMethod, amount) => w.updateSales(shiftId, paymentMethod, amount)
+export const closeShift = (shiftId, closingFloat, notes = '') => w.close(shiftId, closingFloat, notes)
+export const getShiftById = (shiftId) => w.getById(shiftId)
+export const getCurrentShift = (username) => w.getCurrent(username)
+export const getExistingOpenShift = (username) => w.getExistingOpen(username)
+export const getShiftsByCashier = (username, status = null) => w.getByCashier(username, status)
+export const getAllShifts = (status = null, fromDate = null, toDate = null) => w.getAll(status, fromDate, toDate)
+export const getActiveShifts = () => w.getActive()
+export const getShiftSummary = (shiftId) => w.getSummary(shiftId)

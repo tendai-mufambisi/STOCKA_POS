@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuthStore } from '../store/useAuthStore'
+import { useShiftStore } from '../store/useShiftStore'
 import './Dashboard.css'
 import fullLogo from '../assets/full_logo.png'
 import Products from './Products'
@@ -45,7 +47,8 @@ import {
 
 function Dashboard() {
   const navigate = useNavigate()
-  const user = JSON.parse(localStorage.getItem('stocka_user') || '{}')
+  const { user, logout } = useAuthStore()
+  const { currentShift, setCurrentShift, clearShift } = useShiftStore()
   const [activePage, setActivePage] = useState('dashboard')
   const [dashboardStats, setDashboardStats] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -82,8 +85,7 @@ function Dashboard() {
     return () => window.removeEventListener('online', handleOnline)
   }, [updateInfo, updateReady])
 
-  // Shift state (for Cashier role)
-  const [currentShift, setCurrentShift] = useState(null)
+  // Shift UI state
   const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
   const [isClosingShift, setIsClosingShift] = useState(false)
   const [showOpeningFloatModal, setShowOpeningFloatModal] = useState(false)
@@ -127,9 +129,9 @@ function Dashboard() {
     try {
       await closeShift(currentShift.id, closingFloat, notes)
       setShowClosingFloatModal(false)
-      setCurrentShift(null)
+      clearShift()
       setTimeout(() => {
-        localStorage.removeItem('stocka_user')
+        logout()
         window.location.href = '/'
       }, 2000)
     } catch (err) {
@@ -166,7 +168,8 @@ function Dashboard() {
     }
     
     // Clear all authentication and session data
-    localStorage.removeItem('stocka_user')
+    logout()
+    clearShift()
     localStorage.removeItem('stocka_db_init')
     sessionStorage.clear()
 
@@ -409,31 +412,31 @@ function Dashboard() {
       case 'inventory':
         return <CurrentInventory onNavigateToAddStock={setActivePage} />
       case 'reconciliation':
-        return <InventoryReconciliation user={user} />
+        return <InventoryReconciliation />
       case 'stock':
         return <StockControl />
       case 'suppliers':
         return <Suppliers />
       case 'sales':
-        return <Sales user={user} currentShift={currentShift} />
+        return <Sales />
       case 'expenses':
         return <Expenses />
       case 'reports':
-        return <Reports user={user} />
+        return <Reports />
       case 'cashier-sessions':
         return <CashierSessions />
       case 'endofday':
-        return <EndOfDay user={user} />
+        return <EndOfDay />
       case 'shifts':
-        return <ShiftDashboard user={user} />
+        return <ShiftDashboard />
       case 'restock':
-        return <RestockNeeded user={user} />
+        return <RestockNeeded />
       case 'deadstock':
-        return <DeadStock user={user} />
+        return <DeadStock />
       case 'expiry':
-        return <ExpiryTracking user={user} />
+        return <ExpiryTracking />
       case 'settings':
-        return <Settings user={user} />
+        return <Settings />
       default:
         return <ComingSoon page={activePage} />
     }
@@ -525,7 +528,7 @@ function Dashboard() {
       <main className="main-content" style={{ marginLeft: sidebarOpen ? '240px' : '0', padding: isFullScreenPage ? '0' : '32px' }}>
         {!isFullScreenPage && <div className="main-header">
           <div className="header-right">
-            {user.role !== 'Cashier' && <Notifications user={user} />}
+            {user.role !== 'Cashier' && <Notifications />}
           </div>
         </div>}
 
@@ -787,7 +790,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
   return (
     <>
       <div className="page-header">
-        <h1>Muve Nezuva Rakanaka, {user.username}!</h1>
+        <h1>Hello, {user.username}!</h1>
         <p>{today}</p>
       </div>
 

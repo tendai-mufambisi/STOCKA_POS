@@ -61,16 +61,35 @@ export const useReceiptPrinter = () => {
   const printReceipt = useCallback(async (receiptData, shopInfo = {}, options = {}) => {
     const { isDuplicate = false, printerName, portPath } = options
 
-    // Resolve printer name - printerName takes priority, portPath is legacy fallback
-    const resolvedPrinter = (printerName || portPath || '').trim()
-
-    if (!resolvedPrinter) {
-      _setError('No printer configured. Go to Settings → Printer Settings, scan for printers, select yours, and save.')
+    if (!receiptData || receiptData.total === undefined) {
+      _setError('Invalid receipt data')
       return false
     }
 
-    if (!receiptData || receiptData.total === undefined) {
-      _setError('Invalid receipt data')
+    const name = (printerName || '').trim()
+    const port = (portPath || '').trim()
+
+    // Bluetooth serial direct path: port set but no Windows printer name
+    if (!name && port && window?.stocka?.btPrinter?.print) {
+      try {
+        setIsPrinting(true)
+        setPrintError(null)
+        setPrintSuccess(false)
+        const result = await window.stocka.btPrinter.print(port, receiptData, shopInfo || {}, isDuplicate)
+        if (!result?.success) throw new Error(result?.error || 'Bluetooth print failed')
+        _setSuccess()
+        return true
+      } catch (error) {
+        _setError(error.message || 'Bluetooth print failed')
+        return false
+      } finally {
+        setIsPrinting(false)
+      }
+    }
+
+    // Windows printer by name (WinSpool) path
+    if (!name) {
+      _setError('No printer configured. Go to Settings → Printer Settings, scan for printers, select yours, and save.')
       return false
     }
 
@@ -84,12 +103,7 @@ export const useReceiptPrinter = () => {
       setPrintError(null)
       setPrintSuccess(false)
 
-      const result = await window.stocka.printer.printByName(
-        resolvedPrinter,
-        receiptData,
-        shopInfo || {},
-        isDuplicate
-      )
+      const result = await window.stocka.printer.printByName(name, receiptData, shopInfo || {}, isDuplicate)
 
       if (!result?.success) {
         throw new Error(result?.error || 'Print failed with no error message')

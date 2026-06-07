@@ -3,7 +3,7 @@ import { getRestockNeeded, getProductSalesVelocity, getProductById } from '../da
 import './RestockNeeded.css'
 import { FiTrendingUp, FiAlertCircle, FiCheckCircle } from 'react-icons/fi'
 
-function RestockNeeded({ user }) {
+function RestockNeeded() {
   const [restockProducts, setRestockProducts] = useState([])
   const [velocityData, setVelocityData] = useState({})
   const [loading, setLoading] = useState(true)

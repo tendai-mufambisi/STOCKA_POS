@@ -18,4 +18,17 @@ module.exports = {
       config: {},
     },
   ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'tendai-mufambski',
+          name: 'STOCKA_POS'
+        },
+        draft: false,
+        prerelease: false
+      }
+    }
+  ],
 };

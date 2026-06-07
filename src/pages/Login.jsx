@@ -3,6 +3,7 @@ import { FiDelete, FiCheckCircle } from 'react-icons/fi'
 import { getUsers, getShop, loginUser, resetOwnerPin } from '../database/db'
 import iconPng from '../assets/icon.png'
 import fullLogo from '../assets/full_logo.png'
+import { useAuthStore } from '../store/useAuthStore'
 
 // ── PIN display (4 dots) ─────────────────────────────────────────────────────
 function PinDots({ value, shake }) {
@@ -334,12 +335,7 @@ function DevLogin() {
   }, [])
 
   const loginAs = (user) => {
-    localStorage.setItem('stocka_user', JSON.stringify({
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      is_active: user.is_active,
-    }))
+    useAuthStore.getState().setUser({ id: user.id, username: user.username, role: user.role, is_active: user.is_active })
     window.location.hash = '#/dashboard'
   }
 
@@ -481,7 +477,7 @@ function Login() {
     try {
       const user = await loginUser(selectedUser.username, enteredPin)
       if (user) {
-        localStorage.setItem('stocka_user', JSON.stringify(user))
+        useAuthStore.getState().setUser(user)
         window.location.hash = '#/dashboard'
       } else {
         triggerError('Wrong PIN. Try again.')

@@ -3,9 +3,11 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, L
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import * as XLSX from 'xlsx'
+import { useAuthStore } from '../store/useAuthStore'
 import './Reports.css'
 
-function Reports({ user }) {
+function Reports() {
+  const { user } = useAuthStore()
   const [reportType, setReportType] = useState('daily-sales')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

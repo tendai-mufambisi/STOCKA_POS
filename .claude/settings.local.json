@@ -14,7 +14,8 @@
       "Bash(node -e \"const lic=require\\('./electron/license'\\); console.log\\('license.js loads OK, exports:', Object.keys\\(lic\\).join\\(', '\\)\\)\")",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(xargs wc -l)"
     ]
   }
 }

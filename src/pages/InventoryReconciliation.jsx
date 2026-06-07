@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import { getProducts, logAuditAction } from '../database/db'
 import { validateNonNegativeNumber } from '../utils/validation'
+import { useAuthStore } from '../store/useAuthStore'
 import './InventoryReconciliation.css'
 import { FiCheck, FiX, FiRefreshCw, FiAlertCircle, FiDownload } from 'react-icons/fi'
 
-function InventoryReconciliation({ user }) {
+function InventoryReconciliation() {
+  const { user } = useAuthStore()
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [reconciliationData, setReconciliationData] = useState({})

@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
-import { addExpense, getExpenses, updateExpense, deleteExpense, getCurrentShift } from '../database/db'
+import { addExpense, getExpenses, updateExpense, deleteExpense } from '../database/db'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
+import { useAuthStore } from '../store/useAuthStore'
+import { useShiftStore } from '../store/useShiftStore'
 import './Expenses.css'
 
-function Expenses({ user }) {
+function Expenses() {
+  const { user } = useAuthStore()
+  const { currentShift } = useShiftStore()
   const [expenses, setExpenses] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -11,7 +15,6 @@ function Expenses({ user }) {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('All')
   const [error, setError] = useState('')
-  const [currentShift, setCurrentShift] = useState(null)
   const [formData, setFormData] = useState({
     description: '',
     amount: '',
@@ -24,19 +27,7 @@ function Expenses({ user }) {
 
   useEffect(() => {
     loadData()
-    loadCurrentShift()
   }, [])
-
-  const loadCurrentShift = async () => {
-    try {
-      if (user?.id) {
-        const shift = await getCurrentShift(user.id)
-        setCurrentShift(shift)
-      }
-    } catch (err) {
-      console.error('Failed to load current shift:', err)
-    }
-  }
 
   const loadData = async () => {
     try {

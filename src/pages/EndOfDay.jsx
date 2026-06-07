@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { getSales, getExpenses, addEndOfDay, getEndOfDayRecords, getAllShifts, getShiftSummary } from '../database/db'
+import { useAuthStore } from '../store/useAuthStore'
 import './EndOfDay.css'
 import { FiCheckCircle, FiAlertCircle } from 'react-icons/fi'
 
-function EndOfDay({ user }) {
+function EndOfDay() {
+  const { user } = useAuthStore()
   const [records, setRecords] = useState([])
   const [todaysSales, setTodaysSales] = useState([])
   const [todaysExpenses, setTodaysExpenses] = useState([])

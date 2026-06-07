@@ -4,12 +4,16 @@ import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
+import { useAuthStore } from '../store/useAuthStore'
+import { useShiftStore } from '../store/useShiftStore'
 import './Sales.css'
 import {
   FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2
 } from 'react-icons/fi'
 
-function Sales({ user, currentShift }) {
+function Sales() {
+  const { user } = useAuthStore()
+  const { currentShift } = useShiftStore()
   // Product & Cart State
   const [products, setProducts] = useState([])
   const [mostSoldProducts, setMostSoldProducts] = useState([])
@@ -75,15 +79,17 @@ function Sales({ user, currentShift }) {
         setShopInfo(null)
         setPrinterSettings({
           printer_name: '',
+          printer_port: '',
           auto_print: 0,
           print_duplicate: 0
         })
         return
       }
-      
+
       setShopInfo(shop)
       const settings = {
         printer_name: shop?.printer_name || '',
+        printer_port: shop?.printer_port || '',
         auto_print: shop?.auto_print ?? 1,
         print_duplicate: shop?.print_duplicate ?? 0
       }
@@ -454,21 +460,21 @@ function Sales({ user, currentShift }) {
               // Use the new printReceipt function to format and print
               const success = await printReceipt(receiptData, shopInfo, {
                 isDuplicate: false,
-                printerName: printerSettings?.printer_name || ''
+                printerName: printerSettings?.printer_name || '',
+                portPath: printerSettings?.printer_port || ''
               })
 
               if (!success) {
-                // Show error - sale was still recorded successfully
                 setError('Printer error: Sale was recorded but printing failed')
                 setTimeout(() => setError(''), 5000)
               }
 
-              // If print_duplicate is enabled, print again
               if (success && printerSettings?.print_duplicate === 1) {
                 try {
                   await printReceipt(receiptData, shopInfo, {
                     isDuplicate: true,
-                    printerName: printerSettings?.printer_name || ''
+                    printerName: printerSettings?.printer_name || '',
+                    portPath: printerSettings?.printer_port || ''
                   })
                 } catch (err) {
                   // Silently fail duplicate print

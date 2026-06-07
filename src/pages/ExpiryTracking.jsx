@@ -3,7 +3,7 @@ import { getExpiringProducts, getExpiredProducts, getExpiryReport } from '../dat
 import './ExpiryTracking.css'
 import { FiCalendar, FiAlertTriangle } from 'react-icons/fi'
 
-function ExpiryTracking({ user }) {
+function ExpiryTracking() {
   const [expiryReport, setExpiryReport] = useState({})
   const [expiringProducts, setExpiringProducts] = useState([])
   const [expiredProducts, setExpiredProducts] = useState([])
