@@ -1,16 +1,11 @@
-const { getDb, saveDb } = require('../index')
-const { extractResults } = require('../utils')
+const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
 
 function addExpense(expense) {
   const db = getDb()
-  db.run(
-    `INSERT INTO expenses (description, amount, category, date, recorded_by, shift_id) VALUES (?, ?, ?, ?, ?, ?)`,
-    [expense.description, expense.amount, expense.category, expense.date, expense.recorded_by, expense.shift_id || null]
-  )
-  const rows = extractResults(db.exec('SELECT last_insert_rowid() as id'))
-  const expenseId = rows[0].id
-  saveDb()
+  const { lastInsertRowid: expenseId } = db.prepare(
+    `INSERT INTO expenses (description, amount, category, date, recorded_by, shift_id) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(expense.description, expense.amount, expense.category, expense.date, expense.recorded_by, expense.shift_id || null)
   try {
     logAuditAction(expense.recorded_by, 'CREATE_EXPENSE', 'EXPENSE', String(expenseId),
       `${expense.category} expense: ${expense.description} | Amount: $${expense.amount}`)
@@ -18,25 +13,21 @@ function addExpense(expense) {
 }
 
 function getExpenses() {
-  return extractResults(getDb().exec('SELECT * FROM expenses ORDER BY date DESC'))
+  return getDb().prepare('SELECT * FROM expenses ORDER BY date DESC').all()
 }
 
 function getExpenseById(id) {
-  const rows = extractResults(getDb().exec('SELECT * FROM expenses WHERE id = ?', [id]))
-  return rows[0] || null
+  return getDb().prepare('SELECT * FROM expenses WHERE id = ?').get(id) || null
 }
 
 function updateExpense(id, expense) {
-  getDb().run(
-    `UPDATE expenses SET description = ?, amount = ?, category = ?, date = ? WHERE id = ?`,
-    [expense.description, expense.amount, expense.category, expense.date, id]
-  )
-  saveDb()
+  getDb().prepare(
+    `UPDATE expenses SET description = ?, amount = ?, category = ?, date = ? WHERE id = ?`
+  ).run(expense.description, expense.amount, expense.category, expense.date, id)
 }
 
 function deleteExpense(id) {
-  getDb().run('DELETE FROM expenses WHERE id = ?', [id])
-  saveDb()
+  getDb().prepare('DELETE FROM expenses WHERE id = ?').run(id)
 }
 
 module.exports = { addExpense, getExpenses, getExpenseById, updateExpense, deleteExpense }

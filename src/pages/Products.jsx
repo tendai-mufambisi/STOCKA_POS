@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
-import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems } from '../database/db'
+import { useState, useEffect, useRef } from 'react'
+import { FiPackage, FiEdit2, FiTrash2, FiDownload, FiUpload, FiPlus, FiX, FiGrid, FiList, FiImage } from 'react-icons/fi'
+import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop } from '../database/db'
 import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
-import { utils, writeFile } from 'xlsx'
+import { utils, writeFile, read } from 'xlsx'
 import './Products.css'
 
 function Products() {
@@ -28,9 +29,15 @@ function Products() {
   const [error, setError] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(25)
+  const [defaultReorderLevel, setDefaultReorderLevel] = useState(5)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importPreview, setImportPreview] = useState({ valid: [], skipped: 0 })
+  const [importError, setImportError] = useState('')
+  const [importing, setImporting] = useState(false)
 
   const units = ['each', 'pack']
   const categories = ['Food', 'Non-Food', 'Drinks', 'Other']
+  const importFileRef = useRef(null)
 
   useEffect(() => {
     loadData()
@@ -39,12 +46,16 @@ function Products() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const [productsData, suppliersData] = await Promise.all([
+      const [productsData, suppliersData, shop] = await Promise.all([
         getProducts(),
-        getSuppliers()
+        getSuppliers(),
+        getShop()
       ])
       setProducts(productsData)
       setSuppliers(suppliersData)
+      const level = shop?.default_reorder_level ?? 5
+      setDefaultReorderLevel(level)
+      setFormData(prev => ({ ...prev, reorder_level: level }))
     } catch (err) {
       setError('Failed to load products')
       console.error(err)
@@ -226,21 +237,111 @@ function Products() {
     writeFile(wb, `products_${new Date().toISOString().split('T')[0]}.xlsx`)
   }
 
+  const normalizeHeader = (h) => {
+    const s = String(h).toLowerCase().replace(/[\s_]+/g, '')
+    if (['name', 'productname', 'product'].includes(s)) return 'name'
+    if (['category', 'type'].includes(s)) return 'category'
+    if (s === 'unit') return 'unit'
+    if (['sellingprice', 'price', 'unitprice'].includes(s)) return 'selling_price'
+    if (['reorderlevel', 'reorder', 'minstock', 'minimumstock'].includes(s)) return 'reorder_level'
+    if (['currentquantity', 'quantity', 'qty', 'stock', 'currentstock'].includes(s)) return 'current_quantity'
+    if (['description', 'desc'].includes(s)) return 'description'
+    if (['supplier', 'suppliername'].includes(s)) return 'supplier'
+    return null
+  }
+
+  const downloadTemplate = () => {
+    const templateData = [
+      { 'Product Name': 'Bread', Category: 'Food', Unit: 'each', 'Selling Price': 1.50, 'Reorder Level': 10, 'Current Quantity': 50, Description: 'White bread', Supplier: '' },
+      { 'Product Name': 'Cooking Oil 2L', Category: 'Food', Unit: 'each', 'Selling Price': 4.00, 'Reorder Level': 5, 'Current Quantity': 20, Description: '', Supplier: '' },
+    ]
+    const ws = utils.json_to_sheet(templateData)
+    const wb = utils.book_new()
+    utils.book_append_sheet(wb, ws, 'Products')
+    writeFile(wb, 'products_import_template.xlsx')
+  }
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const wb = read(evt.target.result, { type: 'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rawRows = utils.sheet_to_json(ws, { defval: '' })
+        if (rawRows.length === 0) {
+          setImportError('The spreadsheet appears to be empty.')
+          setShowImportModal(true)
+          return
+        }
+        const normalized = rawRows.map(row => {
+          const out = {}
+          for (const [key, val] of Object.entries(row)) {
+            const mapped = normalizeHeader(key)
+            if (mapped) out[mapped] = val
+          }
+          return out
+        })
+        if (!normalized.some(r => r.name !== undefined)) {
+          setImportError('Could not find a "Name" or "Product Name" column. Please check your spreadsheet headers match the template.')
+          setShowImportModal(true)
+          return
+        }
+        const valid = []
+        let skipped = 0
+        for (const row of normalized) {
+          const name = String(row.name ?? '').trim()
+          if (!name) { skipped++; continue }
+          const rawUnit = String(row.unit ?? '').toLowerCase().trim()
+          valid.push({
+            name,
+            category: String(row.category ?? '').trim(),
+            unit: ['each', 'pack'].includes(rawUnit) ? rawUnit : 'each',
+            selling_price: parseFloat(row.selling_price) || 0,
+            reorder_level: parseInt(row.reorder_level) || 5,
+            current_quantity: parseInt(row.current_quantity) || 0,
+            description: String(row.description ?? '').trim(),
+            supplier: String(row.supplier ?? '').trim(),
+          })
+        }
+        setImportPreview({ valid, skipped })
+        setImportError('')
+        setShowImportModal(true)
+      } catch {
+        setImportError('Failed to read the file. Please make sure it is a valid Excel (.xlsx) file.')
+        setShowImportModal(true)
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const handleConfirmImport = async () => {
+    if (importPreview.valid.length === 0) return
+    setImporting(true)
+    try {
+      await window.stocka.products.importBatch(importPreview.valid)
+      setShowImportModal(false)
+      setImportPreview({ valid: [], skipped: 0 })
+      await loadData()
+    } catch (err) {
+      setImportError('Import failed: ' + err.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   if (loading) {
     return <div className="products-page"><div className="loading">Loading products...</div></div>
   }
 
   return (
     <div className="products-page">
-      <div className="page-header">
-        <h1>Products</h1>
-        <p>Manage your product catalog</p>
-      </div>
-
       {/* Metrics Cards */}
       <div className="metrics-section">
         <div className="metric-card">
-          <div className="metric-icon">📦</div>
+          <div className="metric-icon"><FiPackage size={20} /></div>
           <div className="metric-details">
             <div className="metric-label">Total Products</div>
             <div className="metric-value">{products.length}</div>
@@ -268,11 +369,21 @@ function Products() {
               })
             }
           }}>
-            {showForm ? '✕ Cancel' : '✚ Add Product'}
+            {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Add Product</>}
           </button>
           <button className="btn btn-secondary" onClick={handleExport}>
-            ⇩ Export to Excel
+            <FiDownload size={14} /> Export
           </button>
+          <button className="btn btn-secondary" onClick={() => importFileRef.current.click()}>
+            <FiUpload size={14} /> Import
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".xlsx"
+            className="input-hidden"
+            onChange={handleImportFile}
+          />
         </div>
 
         <div className="toolbar-filters">
@@ -303,22 +414,99 @@ function Products() {
               onClick={() => setViewMode('list')}
               title="List View"
             >
-              ≡ List
+              <FiList size={13} /> List
             </button>
             <button
               className={`view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
               onClick={() => setViewMode('grid')}
               title="Grid View"
             >
-              ⊞ Grid
+              <FiGrid size={13} /> Grid
             </button>
           </div>
         </div>
       </div>
 
+      {showImportModal && (
+        <div className="form-overlay" onClick={() => !importing && setShowImportModal(false)}>
+          <div className="product-form import-modal" onClick={e => e.stopPropagation()}>
+            <div className="form-header">
+              <h2>Import Products from Sheet</h2>
+              <button className="close-btn" onClick={() => !importing && setShowImportModal(false)}><FiX size={14} /></button>
+            </div>
+
+            {importError ? (
+              <>
+                <div className="error-banner">{importError}</div>
+                <p className="import-template-hint">
+                  Download the <button className="link-btn" onClick={downloadTemplate}>template file</button> to see the required column format.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="import-summary">
+                  <p className="import-count-valid">✓ <strong>{importPreview.valid.length}</strong> products ready to import</p>
+                  {importPreview.skipped > 0 && (
+                    <p className="import-count-skipped">✗ {importPreview.skipped} row{importPreview.skipped !== 1 ? 's' : ''} skipped — missing product name</p>
+                  )}
+                </div>
+
+                {importPreview.valid.length > 0 && (
+                  <div className="import-preview-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Category</th>
+                          <th>Unit</th>
+                          <th>Price</th>
+                          <th>Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.valid.slice(0, 6).map((row, i) => (
+                          <tr key={i}>
+                            <td>{row.name}</td>
+                            <td>{row.category || '—'}</td>
+                            <td>{row.unit}</td>
+                            <td>${row.selling_price.toFixed(2)}</td>
+                            <td>{row.current_quantity}</td>
+                          </tr>
+                        ))}
+                        {importPreview.valid.length > 6 && (
+                          <tr className="import-more-row">
+                            <td colSpan="5">... and {importPreview.valid.length - 6} more products</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="form-actions import-modal-actions">
+              <button className="link-btn" onClick={downloadTemplate} disabled={importing}>
+                ⇩ Download Template
+              </button>
+              <div className="modal-btn-row">
+                <button className="btn btn-secondary" onClick={() => setShowImportModal(false)} disabled={importing}>
+                  Cancel
+                </button>
+                {!importError && importPreview.valid.length > 0 && (
+                  <button className="btn btn-primary" onClick={handleConfirmImport} disabled={importing}>
+                    {importing ? 'Importing...' : `Import ${importPreview.valid.length} Products`}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showForm && (
         <div className="form-card">
-          <h3>{editingId ? '✎ Edit Product' : '✚ Add New Product'}</h3>
+          <h3>{editingId ? <><FiEdit2 size={14} /> Edit Product</> : <><FiPlus size={14} /> Add New Product</>}</h3>
           <form onSubmit={handleSubmit}>
             <div className="form-row">
               <div className="form-group">
@@ -395,7 +583,7 @@ function Products() {
                   className="image-file-input"
                 />
                 <label htmlFor="image-input" className="image-input-label">
-                  {formData.image_data ? '📸 Change Image' : '📸 Select Image'}
+                  <FiImage size={14} /> {formData.image_data ? 'Change Image' : 'Select Image'}
                 </label>
                 {formData.image_data && (
                   <div className="image-preview">
@@ -458,10 +646,10 @@ function Products() {
 
                     <div className="list-item-actions">
                       <button className="btn-icon" onClick={() => handleEdit(product)} title="Edit">
-                        ✎
+                        <FiEdit2 size={14} />
                       </button>
                       <button className="btn-icon delete" onClick={() => handleDelete(product.id)} title="Delete">
-                        ✘
+                        <FiTrash2 size={14} />
                       </button>
                     </div>
                   </div>

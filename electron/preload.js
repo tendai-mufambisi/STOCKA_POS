@@ -8,8 +8,10 @@ const invoke = (channel, ...args) =>
   })
 
 contextBridge.exposeInMainWorld('stocka', {
-  version: '1.0.0',
+  version: ipcRenderer.sendSync('app:get-version'),
   platform: process.platform,
+  electronVersion: process.versions.electron,
+  nodeVersion: process.versions.node,
 
   // ── PRINTER ──────────────────────────────────────────────
   printer: {
@@ -73,6 +75,7 @@ contextBridge.exposeInMainWorld('stocka', {
     getLatestPrice:  (id)            => invoke('domain:products:getLatestPrice', id),
     getAllCostPrices: ()              => invoke('domain:products:getAllCostPrices'),
     getMostSold:     (limit)         => invoke('domain:products:getMostSold', limit),
+    importBatch:     (rows)          => invoke('domain:products:importBatch', rows),
   },
 
   // ── SUPPLIERS ─────────────────────────────────────────────
@@ -213,6 +216,19 @@ contextBridge.exposeInMainWorld('stocka', {
   backup: {
     exportAsFile:   (filename)   => invoke('domain:backup:exportAsFile', filename),
     importFromFile: (jsonString) => invoke('domain:backup:importFromFile', jsonString),
+  },
+
+  // ── LAN SYNC ─────────────────────────────────────────────
+  lan: {
+    getStatus:      ()       => ipcRenderer.invoke('lan:get-status'),
+    getConfig:      ()       => ipcRenderer.invoke('lan:get-config'),
+    saveConfig:     (cfg)    => ipcRenderer.invoke('lan:save-config', cfg),
+    discover:       ()       => ipcRenderer.invoke('lan:discover'),
+    getClients:     ()       => ipcRenderer.invoke('lan:get-clients'),
+    stop:           ()       => ipcRenderer.invoke('lan:stop'),
+    syncNow:        ()       => ipcRenderer.invoke('lan:sync-now'),
+    onStatusChange: (cb)     => { const l = (_, s) => cb(s); ipcRenderer.on('lan:status-changed', l); return () => ipcRenderer.removeListener('lan:status-changed', l) },
+    onSyncFailures: (cb)     => { const l = (_, f) => cb(f); ipcRenderer.on('lan:sync-failures', l);  return () => ipcRenderer.removeListener('lan:sync-failures', l) },
   },
 
   // ── BLUETOOTH SERIAL PRINTER ──────────────────────────────

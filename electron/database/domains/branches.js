@@ -1,34 +1,27 @@
-const { getDb, saveDb } = require('../index')
-const { extractResults } = require('../utils')
+const { getDb } = require('../index')
 
 function getBranches() {
-  return extractResults(getDb().exec('SELECT * FROM branches ORDER BY name ASC'))
+  return getDb().prepare('SELECT * FROM branches ORDER BY name ASC').all()
 }
 
 function getBranchById(id) {
-  const rows = extractResults(getDb().exec('SELECT * FROM branches WHERE id = ?', [id]))
-  return rows[0] || null
+  return getDb().prepare('SELECT * FROM branches WHERE id = ?').get(id) || null
 }
 
 function addBranch(branch) {
-  getDb().run(
-    `INSERT INTO branches (name, address, phone, manager_name) VALUES (?, ?, ?, ?)`,
-    [branch.name, branch.address || '', branch.phone || '', branch.manager_name || '']
-  )
-  saveDb()
+  getDb().prepare(
+    `INSERT INTO branches (name, address, phone, manager_name) VALUES (?, ?, ?, ?)`
+  ).run(branch.name, branch.address || '', branch.phone || '', branch.manager_name || '')
 }
 
 function updateBranch(id, branch) {
-  getDb().run(
-    `UPDATE branches SET name = ?, address = ?, phone = ?, manager_name = ? WHERE id = ?`,
-    [branch.name, branch.address || '', branch.phone || '', branch.manager_name || '', id]
-  )
-  saveDb()
+  getDb().prepare(
+    `UPDATE branches SET name = ?, address = ?, phone = ?, manager_name = ? WHERE id = ?`
+  ).run(branch.name, branch.address || '', branch.phone || '', branch.manager_name || '', id)
 }
 
 function deleteBranch(id) {
-  getDb().run('DELETE FROM branches WHERE id = ?', [id])
-  saveDb()
+  getDb().prepare('DELETE FROM branches WHERE id = ?').run(id)
 }
 
 module.exports = { getBranches, getBranchById, addBranch, updateBranch, deleteBranch }

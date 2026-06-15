@@ -3,7 +3,11 @@
     "allow": [
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\)\")",
       "Bash(\"c:/My_Projects/stocka/node_modules/electron/dist/electron.exe\" \"c:/My_Projects/stocka/_etest.js\")",
-      "Bash(grep \"^electron$\\\\|^sql.js$\\\\|^node-printer$\\\\|^bcryptjs$\")"
+      "Bash(grep \"^electron$\\\\|^sql.js$\\\\|^node-printer$\\\\|^bcryptjs$\")",
+      "Read(//c/My_Projects/stocka-mobile/**)"
+    ],
+    "additionalDirectories": [
+      "c:\\My_Projects\\stocka-mobile"
     ]
   }
 }

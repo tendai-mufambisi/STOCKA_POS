@@ -1,17 +1,15 @@
 const bcrypt = require('bcryptjs')
-const { getDb, saveDb } = require('../index')
-const { extractResults, getScalar } = require('../utils')
+const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
 
 function getUsers() {
-  return extractResults(getDb().exec(
+  return getDb().prepare(
     'SELECT id, username, role, is_active, created_by, last_login, created_at FROM users ORDER BY created_at DESC'
-  ))
+  ).all()
 }
 
 function getUserByUsername(username) {
-  const rows = extractResults(getDb().exec('SELECT * FROM users WHERE username = ?', [username]))
-  return rows[0] || null
+  return getDb().prepare('SELECT * FROM users WHERE username = ?').get(username) || null
 }
 
 function loginUser(username, password) {
@@ -32,8 +30,7 @@ function loginUser(username, password) {
     return null
   }
 
-  getDb().run(`UPDATE users SET last_login = ? WHERE id = ?`, [new Date().toISOString(), user.id])
-  saveDb()
+  getDb().prepare(`UPDATE users SET last_login = ? WHERE id = ?`).run(new Date().toISOString(), user.id)
   try { logAuditAction(username, 'LOGIN', 'USER', String(user.id), `${user.role} user ${username} logged in`) } catch (_) {}
 
   return { id: user.id, username: user.username, role: user.role, is_active: user.is_active }
@@ -45,7 +42,6 @@ function validateUserPassword(user, password) {
     try { return bcrypt.compareSync(password, user.password_hash) } catch (_) { return false }
   }
   if (user.password && user.password === password) {
-    // Auto-migrate to hashed
     try { addUser({ username: user.username, password, role: user.role, created_by: 'migration' }) } catch (_) {}
     return true
   }
@@ -54,11 +50,9 @@ function validateUserPassword(user, password) {
 
 function addUser(user) {
   const hash = bcrypt.hashSync(user.password, 10)
-  getDb().run(
-    `INSERT INTO users (username, password, password_hash, role, is_active, created_by) VALUES (?, ?, ?, ?, 1, ?)`,
-    [user.username, '', hash, user.role, user.created_by || 'admin']
-  )
-  saveDb()
+  getDb().prepare(
+    `INSERT INTO users (username, password, password_hash, role, is_active, created_by) VALUES (?, ?, ?, ?, 1, ?)`
+  ).run(user.username, '', hash, user.role, user.created_by || 'admin')
 }
 
 function updateUser(id, user) {
@@ -77,17 +71,15 @@ function updateUser(id, user) {
 
   if (!fields.length) return
   values.push(id)
-  db.run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values)
-  saveDb()
+  db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values)
 }
 
 function deactivateUser(id) {
-  getDb().run('UPDATE users SET is_active = 0 WHERE id = ?', [id])
-  saveDb()
+  getDb().prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(id)
 }
 
 function getActiveAdminCount() {
-  return getScalar(getDb().exec("SELECT COUNT(*) FROM users WHERE role = 'Admin' AND is_active = 1"), 0)
+  return getDb().prepare("SELECT COUNT(*) FROM users WHERE role = 'Admin' AND is_active = 1").pluck().get() || 0
 }
 
 module.exports = { getUsers, getUserByUsername, loginUser, validateUserPassword, addUser, updateUser, deactivateUser, getActiveAdminCount }

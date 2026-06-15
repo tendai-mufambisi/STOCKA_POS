@@ -14,8 +14,13 @@ module.exports = {
   },
   makers: [
     {
-      name: '@electron-forge/maker-squirrel',
-      config: {},
+      name: '@electron-forge/maker-nsis',
+      config: {
+        installerIcon: 'src/assets/icon.ico',
+        uninstallerIcon: 'src/assets/icon.ico',
+        installerHeader: 'src/assets/icon.ico',
+        installerHeaderIcon: 'src/assets/icon.ico',
+      },
     },
   ],
   publishers: [
@@ -23,7 +28,7 @@ module.exports = {
       name: '@electron-forge/publisher-github',
       config: {
         repository: {
-          owner: 'tendai-mufambski',
+          owner: 'tendai-mufambisi',
           name: 'STOCKA_POS'
         },
         draft: false,

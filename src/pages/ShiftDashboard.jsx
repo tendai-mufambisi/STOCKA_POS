@@ -141,7 +141,7 @@ function ShiftDashboard() {
       {error && (
         <div className={`message ${error.includes('✓') ? 'success' : 'error'}`}>
           {error}
-          <button onClick={() => setError('')}>×</button>
+          <button onClick={() => setError('')}><FiX size={14} /></button>
         </div>
       )}
 
@@ -342,7 +342,7 @@ function ShiftDashboard() {
                   </div>
                   {shiftDetail.is_balanced && (
                     <div className="balanced-indicator">
-                      <FiCheckCircle size={18} /> Cash Balanced ✓
+                      <FiCheckCircle size={18} /> Cash Balanced
                     </div>
                   )}
                 </>

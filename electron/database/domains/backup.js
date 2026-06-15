@@ -1,7 +1,7 @@
 const fs = require('fs')
 const path = require('path')
-const { getDb, saveDb } = require('../index')
-const { extractResults } = require('../utils')
+const Database = require('better-sqlite3')
+const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
 
 const ALLOWED_TABLES = new Set([
@@ -10,17 +10,11 @@ const ALLOWED_TABLES = new Set([
   'end_of_day', 'notifications', 'branches', 'transaction_audit_log'
 ])
 
-// Export a backup .db file to JSON string (opens backup with sql.js, dumps all tables)
 function exportBackupAsFile(backupsDir, filename) {
   const filePath = path.join(backupsDir, filename)
   if (!fs.existsSync(filePath)) throw new Error(`Backup not found: ${filename}`)
 
-  const data = fs.readFileSync(filePath)
-  const SQL = global._stockaSqlJs
-  let backupDb = null
-  if (!SQL) throw new Error('SQL.js not initialized')
-  backupDb = new SQL.Database(data)
-
+  const backupDb = new Database(filePath, { readonly: true })
   const tables = ['shops', 'users', 'products', 'suppliers', 'stock_receivings',
     'stock_movements', 'sales', 'sale_items', 'expenses', 'notifications',
     'end_of_day', 'branches', 'shifts', 'sale_holds', 'transaction_audit_log']
@@ -34,7 +28,7 @@ function exportBackupAsFile(backupsDir, filename) {
 
   for (const tableName of tables) {
     try {
-      exportData.tables[tableName] = extractResults(backupDb.exec(`SELECT * FROM ${tableName}`))
+      exportData.tables[tableName] = backupDb.prepare(`SELECT * FROM ${tableName}`).all()
     } catch (_) {}
   }
 
@@ -42,28 +36,28 @@ function exportBackupAsFile(backupsDir, filename) {
   return JSON.stringify(exportData, null, 2)
 }
 
-// Import from JSON backup string into the live database
 function importBackupFromFile(jsonString) {
   const backup = JSON.parse(jsonString)
   if (!backup.tables || !backup.created_at) throw new Error('Invalid backup file format')
 
   const db = getDb()
   for (const tableName of Object.keys(backup.tables).filter(t => ALLOWED_TABLES.has(t))) {
-    try { db.run(`DELETE FROM ${tableName}`) } catch (_) {}
+    try { db.prepare(`DELETE FROM ${tableName}`).run() } catch (_) {}
   }
   for (const [tableName, rows] of Object.entries(backup.tables)) {
     if (!ALLOWED_TABLES.has(tableName) || !Array.isArray(rows) || !rows.length) continue
     try {
       const columns = Object.keys(rows[0])
       const placeholders = columns.map(() => '?').join(', ')
-      for (const row of rows) {
-        db.run(`INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`, columns.map(c => row[c]))
-      }
+      const stmt = db.prepare(`INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`)
+      const insertMany = db.transaction((rowsToInsert) => {
+        for (const row of rowsToInsert) stmt.run(columns.map(c => row[c]))
+      })
+      insertMany(rows)
     } catch (err) {
       console.warn(`Failed to restore table ${tableName}:`, err.message)
     }
   }
-  saveDb()
   const key = `imported_${new Date().toISOString().replace(/[:.]/g, '-')}`
   try { logAuditAction('system', 'RESTORE_DATABASE', 'BACKUP', key, `Database restored from JSON backup`) } catch (_) {}
   return key

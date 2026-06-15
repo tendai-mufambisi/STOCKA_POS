@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getRestockNeeded, getProductSalesVelocity, getProductById } from '../database/db'
 import './RestockNeeded.css'
-import { FiTrendingUp, FiAlertCircle, FiCheckCircle } from 'react-icons/fi'
+import { FiTrendingUp, FiAlertCircle, FiCheckCircle, FiX, FiPackage } from 'react-icons/fi'
 
 function RestockNeeded() {
   const [restockProducts, setRestockProducts] = useState([])
@@ -79,9 +79,9 @@ function RestockNeeded() {
     const velPerDay = velocity?.velocity_per_day || 0
     const daysUntilStockout = velocity?.current_quantity / (velPerDay || 1)
     
-    if (daysUntilStockout < 3) return '⚠️ Critical'
-    if (daysUntilStockout < 7) return '⚡ High'
-    return '📊 Medium'
+    if (daysUntilStockout < 3) return 'Critical'
+    if (daysUntilStockout < 7) return 'High'
+    return 'Medium'
   }
 
   if (loading) return <div className="restock-page"><div className="loading">Loading...</div></div>
@@ -95,11 +95,6 @@ function RestockNeeded() {
 
   return (
     <div className="restock-page">
-      <div className="page-header">
-        <h1>Restock Recommendations</h1>
-        <p>Products below reorder level - manage inventory efficiently</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
 
       {/* Overview Cards */}
@@ -236,7 +231,7 @@ function RestockNeeded() {
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h2>{selectedProduct.name}</h2>
-              <button className="close-btn" onClick={() => setSelectedProduct(null)}>✕</button>
+              <button className="close-btn" onClick={() => setSelectedProduct(null)}><FiX size={14} /></button>
             </div>
 
             <div className="modal-body">
@@ -273,7 +268,7 @@ function RestockNeeded() {
               </div>
 
               <div className="recommendation">
-                <h4>📦 Recommendation</h4>
+                <h4><FiPackage size={13} /> Recommendation</h4>
                 {velocityData[selectedProduct.id] && (
                   <p>Based on 30-day sales velocity of {velocityData[selectedProduct.id].velocity_per_day}/day,
                      we recommend ordering at least <strong>{(selectedProduct.shortfall * 1.5).toFixed(0)} units</strong> to

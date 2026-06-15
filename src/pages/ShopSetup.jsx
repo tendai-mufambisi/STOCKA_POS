@@ -41,7 +41,7 @@ function PinBoxes({ value, onChange, id, disabled }) {
   }
 
   return (
-    <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+    <div className="pin-boxes">
       {[0, 1, 2, 3].map((i) => (
         <input
           key={i}
@@ -55,18 +55,7 @@ function PinBoxes({ value, onChange, id, disabled }) {
           onPaste={handlePaste}
           disabled={disabled}
           autoComplete="off"
-          style={{
-            width: '56px',
-            height: '56px',
-            fontSize: '20px',
-            textAlign: 'center',
-            border: `2px solid ${digits[i] ? '#2e7d32' : '#ddd'}`,
-            borderRadius: '10px',
-            outline: 'none',
-            background: '#fff',
-            transition: 'border-color 0.15s',
-            cursor: disabled ? 'not-allowed' : 'text',
-          }}
+          className={`pin-input${digits[i] ? ' filled' : ''}`}
         />
       ))}
     </div>
@@ -76,17 +65,11 @@ function PinBoxes({ value, onChange, id, disabled }) {
 // ── Step indicator ──────────────────────────────────────────────────────────
 function StepDots({ current, total }) {
   return (
-    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '28px' }}>
+    <div className="step-dots">
       {Array.from({ length: total }, (_, i) => (
         <div
           key={i}
-          style={{
-            width: i === current - 1 ? '24px' : '8px',
-            height: '8px',
-            borderRadius: '4px',
-            background: i < current ? '#2e7d32' : '#ddd',
-            transition: 'all 0.2s',
-          }}
+          className={`step-dot${i === current - 1 ? ' active' : i < current ? ' past' : ''}`}
         />
       ))}
     </div>
@@ -196,11 +179,11 @@ function ShopSetup({ onSetupComplete }) {
   if (done) {
     return (
       <div className="shop-setup-page">
-        <div className="setup-container" style={{ maxWidth: '440px', textAlign: 'center' }}>
-          <img src={iconPng} alt="Stocka" style={{ width: '72px', height: '72px', borderRadius: '18px', display: 'block', margin: '0 auto 16px' }} />
-          <h1 style={{ margin: '0 0 8px', fontSize: '26px', color: '#2e7d32' }}>You're all set!</h1>
-          <p style={{ color: '#666', margin: '0 0 4px' }}>Welcome, {ownerName}.</p>
-          <p style={{ color: '#999', fontSize: '13px', margin: 0 }}>Opening your dashboard...</p>
+        <div className="setup-container setup-container--centered">
+          <img className="setup-success-icon" src={iconPng} alt="Stocka" />
+          <h1 className="setup-success-title">You're all set!</h1>
+          <p className="setup-success-sub">Welcome, {ownerName}.</p>
+          <p className="setup-success-sub faded">Opening your dashboard...</p>
         </div>
       </div>
     )
@@ -208,18 +191,18 @@ function ShopSetup({ onSetupComplete }) {
 
   return (
     <div className="shop-setup-page">
-      <div className="setup-container" style={{ maxWidth: step === 4 ? '520px' : '480px' }}>
+      <div className={`setup-container${step === 4 ? ' setup-container--wide' : ''}`}>
 
         {/* Header */}
-        <div className="setup-header" style={{ marginBottom: '8px' }}>
-          <img src={fullLogo} alt="Stocka" style={{ height: '48px', objectFit: 'contain', display: 'block', margin: '0 auto 16px' }} />
-          <h1 style={{ fontSize: '22px' }}>
+        <div className="setup-header">
+          <img className="setup-header-logo" src={fullLogo} alt="Stocka" />
+          <h1 className="setup-header-title">
             {step === 1 && 'Tell us about your shop'}
             {step === 2 && 'How does your shop handle money?'}
             {step === 3 && 'Set up your owner PIN'}
             {step === 4 && 'Add your first product'}
           </h1>
-          <p style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>
+          <p className="setup-header-sub">
             {step === 1 && 'This information will appear on every receipt your customers receive.'}
             {step === 2 && 'You can change this later in Settings.'}
             {step === 3 && 'This PIN unlocks Stocka every time you open it.'}
@@ -247,60 +230,31 @@ function ShopSetup({ onSetupComplete }) {
             <div className="form-group">
               <label>Address *</label>
               <textarea
+                className="setup-textarea"
                 placeholder="e.g. 42 Robert Mugabe Rd, Harare"
                 value={address}
                 onChange={e => { setAddress(e.target.value); setError('') }}
                 maxLength={200}
                 rows={2}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid #ddd',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  resize: 'vertical',
-                  fontFamily: 'inherit',
-                  boxSizing: 'border-box',
-                }}
               />
             </div>
 
             <div className="form-group">
               <label>Phone Number</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0' }}>
-                <span style={{
-                  padding: '10px 12px',
-                  background: '#f5f5f5',
-                  border: '1px solid #ddd',
-                  borderRight: 'none',
-                  borderRadius: '6px 0 0 6px',
-                  fontSize: '14px',
-                  color: '#555',
-                  whiteSpace: 'nowrap',
-                }}>
-                  +263
-                </span>
+              <div className="phone-input-group">
+                <span className="phone-prefix">+263</span>
                 <input
                   type="tel"
                   placeholder="77 123 4567"
                   value={phoneSuffix}
                   onChange={e => setPhoneSuffix(e.target.value.replace(/\D/g, ''))}
                   maxLength={12}
-                  style={{
-                    flex: 1,
-                    padding: '10px 12px',
-                    border: '1px solid #ddd',
-                    borderRadius: '0 6px 6px 0',
-                    fontSize: '14px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
                 />
               </div>
             </div>
 
             <div className="form-group">
-              <label>Email <span style={{ fontWeight: 400, color: '#aaa' }}>(Optional)</span></label>
+              <label>Email <span className="label-optional">(Optional)</span></label>
               <input
                 type="email"
                 placeholder="shop@example.com"
@@ -327,7 +281,6 @@ function ShopSetup({ onSetupComplete }) {
               <select
                 value={currency}
                 onChange={e => setCurrency(e.target.value)}
-                style={{ fontSize: '15px', padding: '12px' }}
               >
                 <option value="USD">USD — US Dollar ($)</option>
                 <option value="ZWL">ZWL — Zimbabwe Gold (ZiG)</option>
@@ -361,28 +314,19 @@ function ShopSetup({ onSetupComplete }) {
               <small className="form-hint">This name appears on reports and receipts.</small>
             </div>
 
-            <div className="form-group" style={{ textAlign: 'center' }}>
-              <label style={{ display: 'block', marginBottom: '14px' }}>Create your PIN</label>
+            <div className="form-group form-group--center">
+              <label>Create your PIN</label>
               <PinBoxes value={pin} onChange={(v) => { setPin(v); setError('') }} id="pin" />
             </div>
 
-            <div className="form-group" style={{ textAlign: 'center' }}>
-              <label style={{ display: 'block', marginBottom: '14px' }}>Confirm PIN</label>
+            <div className="form-group form-group--center">
+              <label>Confirm PIN</label>
               <PinBoxes value={confirmPin} onChange={(v) => { setConfirmPin(v); setError('') }} id="confirm" />
             </div>
 
-            {/* Info box */}
-            <div style={{
-              display: 'flex',
-              gap: '10px',
-              background: '#e8f5e9',
-              border: '1px solid #a5d6a7',
-              borderRadius: '8px',
-              padding: '14px 16px',
-              marginBottom: '16px',
-            }}>
+            <div className="setup-info-box">
               <FiInfo size={18} color="#2e7d32" style={{ flexShrink: 0, marginTop: '1px' }} />
-              <p style={{ margin: 0, fontSize: '13px', color: '#1b5e20', lineHeight: 1.5 }}>
+              <p>
                 <strong>Important:</strong> If you forget this PIN, you'll need your Stocka activation key to reset it.
                 Write your activation key down somewhere safe — not on this computer.
               </p>
@@ -439,7 +383,7 @@ function ShopSetup({ onSetupComplete }) {
 
             {error && <div className="error-msg">{error}</div>}
 
-            <div className="setup-button-group" style={{ flexDirection: 'column', gap: '10px' }}>
+            <div className="setup-button-group setup-button-group--col">
               <button
                 className="setup-submit-btn"
                 disabled={loading || !productName.trim()}
@@ -448,27 +392,12 @@ function ShopSetup({ onSetupComplete }) {
               >
                 {loading ? 'Saving…' : 'Add Product & Open Stocka'}
               </button>
-              <button
-                onClick={() => finishSetup(false)}
-                disabled={loading}
-                style={{
-                  padding: '11px',
-                  background: 'none',
-                  border: '1px solid #ddd',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  color: '#888',
-                  cursor: loading ? 'not-allowed' : 'pointer',
-                }}
-              >
+              <button className="setup-skip-btn" onClick={() => finishSetup(false)} disabled={loading}>
                 Skip for now — I'll add products later
               </button>
             </div>
 
-            <p className="setup-note" style={{ marginTop: '16px' }}>← <button
-              onClick={() => go(3)}
-              style={{ background: 'none', border: 'none', color: '#2e7d32', cursor: 'pointer', fontSize: '13px' }}
-            >Back to PIN setup</button></p>
+            <p className="setup-note">← <button className="setup-back-link" onClick={() => go(3)}>Back to PIN setup</button></p>
           </div>
         )}
 

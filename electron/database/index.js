@@ -1,24 +1,15 @@
-const fs = require('fs')
+const Database = require('better-sqlite3')
 const logger = require('../logger')
 
 let db = null
-let SQL = null
 let dbFilePath = null
 
-async function initDb(filePath) {
+function initDb(filePath) {
   dbFilePath = filePath
-  const initSqlJs = require('sql.js')
-  SQL = await initSqlJs()
-
-  if (fs.existsSync(filePath)) {
-    const data = fs.readFileSync(filePath)
-    db = new SQL.Database(data)
-    logger.info(`Database loaded: ${filePath}`)
-  } else {
-    db = new SQL.Database()
-    logger.info(`New database created: ${filePath}`)
-  }
-
+  db = new Database(filePath)
+  db.pragma('journal_mode = WAL')
+  db.pragma('foreign_keys = ON')
+  logger.info(`Database opened: ${filePath}`)
   return db
 }
 
@@ -27,21 +18,11 @@ function getDb() {
   return db
 }
 
-function saveDb() {
-  if (!db || !dbFilePath) return
-  try {
-    const data = db.export()
-    const tmpPath = dbFilePath + '.tmp'
-    fs.writeFileSync(tmpPath, Buffer.from(data))
-    fs.renameSync(tmpPath, dbFilePath)
-  } catch (err) {
-    logger.error('Failed to save database: ' + err.message)
-  }
-}
+// No-op: better-sqlite3 writes directly to disk on every statement
+function saveDb() {}
 
 function closeDb() {
   if (db) {
-    saveDb()
     db.close()
     db = null
     logger.info('Database closed')
@@ -50,19 +31,12 @@ function closeDb() {
 
 function reopenDb() {
   if (!dbFilePath) throw new Error('No database path set')
-  if (fs.existsSync(dbFilePath)) {
-    const data = fs.readFileSync(dbFilePath)
-    db = new SQL.Database(data)
-  } else {
-    db = new SQL.Database()
-  }
+  if (db) { db.close(); db = null }
+  db = new Database(dbFilePath)
+  db.pragma('journal_mode = WAL')
+  db.pragma('foreign_keys = ON')
   logger.info(`Database reopened: ${dbFilePath}`)
   return db
 }
 
-function getSql() {
-  if (!SQL) throw new Error('SQL.js not initialized')
-  return SQL
-}
-
-module.exports = { initDb, getDb, getSql, saveDb, closeDb, reopenDb }
+module.exports = { initDb, getDb, saveDb, closeDb, reopenDb }

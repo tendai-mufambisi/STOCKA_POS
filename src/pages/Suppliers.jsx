@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getSuppliers, addSupplier, updateSupplier, deleteSupplier, getStockReceivings } from '../database/db'
 import { validateRequired, validateEmail, validatePhone } from '../utils/validation'
+import { FiPlus, FiX, FiEdit2, FiTrash2, FiPhone, FiMail, FiMapPin, FiUser, FiUsers } from 'react-icons/fi'
 import './Suppliers.css'
 
 function Suppliers() {
@@ -135,11 +136,6 @@ function Suppliers() {
 
   return (
     <div className="suppliers-page">
-      <div className="page-header">
-        <h1>Suppliers</h1>
-        <p>Manage your supplier contacts and information</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
 
       <div className="toolbar">
@@ -157,7 +153,7 @@ function Suppliers() {
             })
           }
         }}>
-          {showForm ? '✕ Cancel' : '✚ Add Supplier'}
+          {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Add Supplier</>}
         </button>
         <input
           type="text"
@@ -170,7 +166,7 @@ function Suppliers() {
 
       {showForm && (
         <div className="form-card">
-          <h3>{editingId ? '✎ Edit Supplier' : '✚ Add New Supplier'}</h3>
+          <h3>{editingId ? <><FiEdit2 size={14} /> Edit Supplier</> : <><FiPlus size={14} /> Add New Supplier</>}</h3>
           <form onSubmit={handleSubmit}>
             <div className="form-row">
               <div className="form-group">
@@ -250,7 +246,9 @@ function Suppliers() {
       <div className="suppliers-list">
         {filteredSuppliers.length === 0 ? (
           <div className="empty-state">
-            <p>No suppliers found</p>
+            <FiUsers size={40} />
+            <h3>No suppliers yet</h3>
+            <p>Add your first supplier to start tracking stock sources</p>
           </div>
         ) : (
           <div className="suppliers-grid">
@@ -261,33 +259,33 @@ function Suppliers() {
                   <div className="supplier-header">
                     <h4>{supplier.name}</h4>
                     <div className="actions">
-                      <button className="btn-icon" onClick={() => handleEdit(supplier)}>✎</button>
-                      <button className="btn-icon delete" onClick={() => handleDelete(supplier.id)}>✘</button>
+                      <button className="btn-icon" onClick={() => handleEdit(supplier)} title="Edit"><FiEdit2 size={14} /></button>
+                      <button className="btn-icon delete" onClick={() => handleDelete(supplier.id)} title="Delete"><FiTrash2 size={14} /></button>
                     </div>
                   </div>
 
                   <div className="supplier-details">
                     {supplier.contact_person && (
                       <div className="detail">
-                        <span className="label">Contact:</span>
+                        <span className="label"><FiUser size={13} /></span>
                         <span className="value">{supplier.contact_person}</span>
                       </div>
                     )}
                     {supplier.phone && (
                       <div className="detail">
-                        <span className="label">Phone:</span>
+                        <span className="label"><FiPhone size={13} /></span>
                         <span className="value">{supplier.phone}</span>
                       </div>
                     )}
                     {supplier.email && (
                       <div className="detail">
-                        <span className="label">Email:</span>
+                        <span className="label"><FiMail size={13} /></span>
                         <span className="value">{supplier.email}</span>
                       </div>
                     )}
                     {supplier.address && (
                       <div className="detail">
-                        <span className="label">Address:</span>
+                        <span className="label"><FiMapPin size={13} /></span>
                         <span className="value">{supplier.address}</span>
                       </div>
                     )}

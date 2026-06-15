@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stocka – User Guide</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --accent: #f59e0b;
+      --danger: #ef4444;
+      --success: #22c55e;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --code-bg: #f1f5f9;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 15px;
+    }
+
+    /* ── COVER PAGE ─────────────────────────────────────── */
+    .cover {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 60%, #0ea5e9 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 60px 40px;
+      color: #fff;
+    }
+    .cover .logo-box {
+      width: 80px; height: 80px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 20px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(4px);
+      border: 2px solid rgba(255,255,255,0.25);
+    }
+    .cover h1 { font-size: 56px; font-weight: 800; letter-spacing: -1px; }
+    .cover .tagline { font-size: 20px; opacity: 0.85; margin-top: 10px; }
+    .cover .version-badge {
+      margin-top: 28px;
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 30px;
+      padding: 6px 20px;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+    }
+    .cover .cover-meta {
+      margin-top: 60px;
+      font-size: 13px;
+      opacity: 0.65;
+    }
+
+    /* ── LAYOUT ─────────────────────────────────────────── */
+    .layout { display: flex; min-height: 100vh; }
+
+    nav {
+      width: 260px;
+      min-width: 260px;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 24px 0;
+    }
+    nav .nav-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      padding: 0 20px 12px;
+    }
+    nav .nav-section {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      padding: 16px 20px 6px;
+    }
+    nav a {
+      display: block;
+      padding: 7px 20px 7px 28px;
+      font-size: 13.5px;
+      color: var(--text);
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: all 0.15s;
+    }
+    nav a:hover {
+      background: var(--bg);
+      color: var(--primary);
+      border-left-color: var(--primary);
+    }
+
+    main {
+      flex: 1;
+      max-width: 860px;
+      padding: 56px 64px;
+    }
+
+    /* ── SECTIONS ───────────────────────────────────────── */
+    section { margin-bottom: 72px; }
+
+    h2 {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 8px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid var(--border);
+    }
+    h2 .section-icon {
+      margin-right: 10px;
+      font-style: normal;
+    }
+    h3 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 28px 0 10px;
+      color: var(--text);
+    }
+    p { margin-bottom: 14px; color: #334155; }
+
+    /* ── CARDS ──────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 16px;
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .card-grid .card { margin-bottom: 0; }
+    .card h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+    .card p { font-size: 13.5px; margin-bottom: 0; color: var(--muted); }
+
+    /* ── STEPS ──────────────────────────────────────────── */
+    .steps { list-style: none; counter-reset: step; margin: 16px 0 20px; }
+    .steps li {
+      counter-increment: step;
+      display: flex;
+      gap: 14px;
+      margin-bottom: 14px;
+      align-items: flex-start;
+    }
+    .steps li::before {
+      content: counter(step);
+      min-width: 28px; height: 28px;
+      background: var(--primary);
+      color: #fff;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .steps li span { padding-top: 3px; font-size: 14px; color: #334155; }
+
+    /* ── TIPS / WARNINGS ────────────────────────────────── */
+    .tip, .warn, .note {
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .tip   { background: #f0fdf4; border-left: 4px solid var(--success); color: #166534; }
+    .warn  { background: #fffbeb; border-left: 4px solid var(--accent);  color: #92400e; }
+    .note  { background: #eff6ff; border-left: 4px solid var(--primary); color: #1e40af; }
+    .tip strong, .warn strong, .note strong { font-weight: 700; }
+
+    /* ── BADGES ─────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      vertical-align: middle;
+    }
+    .badge-admin   { background: #fef3c7; color: #92400e; }
+    .badge-manager { background: #dbeafe; color: #1e40af; }
+    .badge-cashier { background: #dcfce7; color: #166534; }
+    .badge-all     { background: #f1f5f9; color: #475569; }
+
+    /* ── TABLE ──────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    th {
+      background: var(--bg);
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      border-bottom: 2px solid var(--border);
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      color: #334155;
+    }
+    tr:last-child td { border-bottom: none; }
+
+    /* ── KEYBOARD ───────────────────────────────────────── */
+    kbd {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      padding: 2px 7px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+
+    /* ── PRINT ──────────────────────────────────────────── */
+    @media print {
+      nav { display: none; }
+      main { padding: 20px; max-width: 100%; }
+      .cover { min-height: auto; padding: 40px; page-break-after: always; }
+      section { page-break-inside: avoid; }
+    }
+
+    @media (max-width: 768px) {
+      nav { display: none; }
+      main { padding: 28px 20px; }
+      .card-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════
+     COVER
+════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="logo-box">📦</div>
+  <h1>Stocka</h1>
+  <p class="tagline">Point-of-Sale &amp; Inventory Management — User Guide</p>
+  <div class="version-badge">Version 1.1.6 &nbsp;·&nbsp; June 2026</div>
+  <p class="cover-meta">Designed for small retail shops in Zimbabwe<br>Works fully offline · No internet required</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     BODY
+════════════════════════════════════════════════════════ -->
+<div class="layout">
+
+  <!-- SIDEBAR NAV -->
+  <nav>
+    <div class="nav-title">Stocka Guide</div>
+
+    <div class="nav-section">Getting Started</div>
+    <a href="#activation">Activation</a>
+    <a href="#setup">Shop Setup</a>
+    <a href="#login">Logging In</a>
+
+    <div class="nav-section">Daily Operations</div>
+    <a href="#dashboard">Dashboard</a>
+    <a href="#sales">Making a Sale</a>
+    <a href="#end-of-day">End of Day</a>
+    <a href="#expenses">Expenses</a>
+
+    <div class="nav-section">Inventory</div>
+    <a href="#products">Products</a>
+    <a href="#stock-control">Receiving Stock</a>
+    <a href="#current-inventory">Current Inventory</a>
+    <a href="#restock">Restock Needed</a>
+    <a href="#dead-stock">Dead Stock</a>
+    <a href="#expiry">Expiry Tracking</a>
+    <a href="#reconciliation">Reconciliation</a>
+
+    <div class="nav-section">Management</div>
+    <a href="#suppliers">Suppliers</a>
+    <a href="#reports">Reports</a>
+    <a href="#shifts">Shifts &amp; Cashiers</a>
+
+    <div class="nav-section">Setup &amp; Config</div>
+    <a href="#settings">Settings</a>
+    <a href="#lan">LAN / Multi-Computer</a>
+    <a href="#users">Users &amp; Roles</a>
+    <a href="#backup">Backups</a>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <main>
+
+    <!-- ── GETTING STARTED ─────────────────────────────── -->
+    <section id="activation">
+      <h2><i class="section-icon">🔑</i>Activation</h2>
+      <p>When you first launch Stocka you will be prompted to enter a licence key before the app opens. Your key looks like this:</p>
+      <div class="card" style="font-family:monospace; font-size:18px; text-align:center; letter-spacing:3px; color:var(--primary);">
+        XXXX-XXXX-XXXX-XXXX-XXX
+      </div>
+      <ul class="steps">
+        <li><span>Enter your licence key in the activation screen. Dashes are added automatically as you type.</span></li>
+        <li><span>Click <strong>Activate</strong>. The key is verified locally — no internet is needed.</span></li>
+        <li><span>Once accepted, the app proceeds to the Shop Setup wizard (first time) or the login screen.</span></li>
+      </ul>
+      <div class="warn">
+        <strong>Keep your key safe.</strong> You will need it if you reinstall the application or move to a new computer.
+      </div>
+    </section>
+
+    <section id="setup">
+      <h2><i class="section-icon">🏪</i>Shop Setup</h2>
+      <p>The first time Stocka starts after activation, a four-step wizard walks you through the initial configuration.</p>
+      <div class="card-grid">
+        <div class="card">
+          <h4>Step 1 — Shop Details</h4>
+          <p>Enter your shop name, address, and contact number. These appear on receipts.</p>
+        </div>
+        <div class="card">
+          <h4>Step 2 — Currency</h4>
+          <p>Choose your trading currency (e.g. USD, ZWG). This is used throughout the app.</p>
+        </div>
+        <div class="card">
+          <h4>Step 3 — Owner PIN</h4>
+          <p>Set a 4-digit PIN for the owner account. This is the Admin account — keep it private.</p>
+        </div>
+        <div class="card">
+          <h4>Step 4 — First Product (optional)</h4>
+          <p>Add your first product to get started, or skip and add products later.</p>
+        </div>
+      </div>
+      <div class="tip">
+        <strong>Tip:</strong> You can change all of these settings later in <strong>Settings → Shop Details</strong>.
+      </div>
+    </section>
+
+    <section id="login">
+      <h2><i class="section-icon">🔐</i>Logging In</h2>
+      <p>After setup, every session begins at the PIN login screen.</p>
+      <ul class="steps">
+        <li><span>Select your name from the user list on screen.</span></li>
+        <li><span>Enter your 4-digit PIN on the keypad.</span></li>
+        <li><span>The app opens at the Dashboard.</span></li>
+      </ul>
+      <div class="note">
+        <strong>Forgot your PIN?</strong> An Admin or Manager can reset it in <strong>Settings → Users</strong>.
+      </div>
+    </section>
+
+    <!-- ── DAILY OPERATIONS ────────────────────────────── -->
+    <section id="dashboard">
+      <h2><i class="section-icon">📊</i>Dashboard</h2>
+      <p>The Dashboard is your home screen. It gives you a live snapshot of today's business at a glance.</p>
+
+      <h3>What you can see</h3>
+      <div class="card-grid">
+        <div class="card">
+          <h4>Today's Sales</h4>
+          <p>Total revenue and number of transactions made today.</p>
+        </div>
+        <div class="card">
+          <h4>Low-Stock Alerts</h4>
+          <p>Products that have fallen below their reorder level.</p>
+        </div>
+        <div class="card">
+          <h4>Expense Summary</h4>
+          <p>Total expenses logged today vs. this week/month.</p>
+        </div>
+        <div class="card">
+          <h4>Active Cashier</h4>
+          <p>Manager/Admin view: see which cashiers have open shifts right now.</p>
+        </div>
+      </div>
+
+      <h3>Quick Actions</h3>
+      <p>The Dashboard contains shortcut buttons to the most common tasks — making a sale, receiving stock, and logging an expense — so you don't have to navigate through menus every time.</p>
+      <div class="tip">
+        <strong>New to Stocka?</strong> An onboarding checklist appears on the Dashboard until you complete the key setup steps (add products, add a cashier, do your first sale).
+      </div>
+    </section>
+
+    <section id="sales">
+      <h2><i class="section-icon">🛒</i>Making a Sale</h2>
+      <p>The Sales screen is your point-of-sale register. Any logged-in user can process sales.</p>
+
+      <h3>Processing a transaction</h3>
+      <ul class="steps">
+        <li><span>Search for a product by name or scan its barcode into the search box.</span></li>
+        <li><span>Click the product to add it to the cart. Adjust quantity as needed.</span></li>
+        <li><span>Repeat for all items the customer is buying.</span></li>
+        <li><span>Click <strong>Charge</strong> and enter the cash the customer hands over.</span></li>
+        <li><span>The app calculates change. Click <strong>Confirm</strong> to complete the sale.</span></li>
+        <li><span>A receipt is printed automatically if a printer is connected.</span></li>
+      </ul>
+
+      <h3>Held Sales</h3>
+      <p>If a customer needs to step away mid-transaction, use the <strong>Hold</strong> button to park the current cart. Retrieve held sales from the hold queue and continue later.</p>
+
+      <div class="warn">
+        <strong>Important:</strong> Held sales do not reserve stock. Another cashier can sell the same items while a sale is on hold.
+      </div>
+
+      <h3>Reprinting a receipt</h3>
+      <p>Go to <strong>Reports → Daily Sales</strong>, find the transaction, and click the print icon next to it.</p>
+    </section>
+
+    <section id="end-of-day">
+      <h2><i class="section-icon">🌙</i>End of Day</h2>
+      <p>The End of Day process reconciles your cash drawer at the end of each trading day. <span class="badge badge-manager">Manager</span> <span class="badge badge-admin">Admin</span></p>
+
+      <ul class="steps">
+        <li><span>Navigate to <strong>End of Day</strong> from the sidebar.</span></li>
+        <li><span>Count the physical cash in your drawer.</span></li>
+        <li><span>Enter the counted amount into the <strong>Actual Cash</strong> field.</span></li>
+        <li><span>Stocka compares this against expected cash (opening float + sales − expenses).</span></li>
+        <li><span>Review any variance. A green status means balanced; red means there is a discrepancy.</span></li>
+        <li><span>Click <strong>Close Day</strong> to finalise the session.</span></li>
+      </ul>
+
+      <p>When multiple cashiers work in the same day, End of Day shows a per-cashier breakdown so you can see where any variance occurred.</p>
+
+      <div class="tip">
+        <strong>Best practice:</strong> Do End of Day every trading day before closing. Skipping days makes reconciliation harder.
+      </div>
+    </section>
+
+    <section id="expenses">
+      <h2><i class="section-icon">💸</i>Expenses</h2>
+      <p>Log any money spent running the business — rent, salaries, electricity, delivery costs, etc.</p>
+
+      <h3>Adding an expense</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Expenses</strong> in the sidebar.</span></li>
+        <li><span>Click <strong>Add Expense</strong>.</span></li>
+        <li><span>Select a category, enter the amount, date, and an optional note.</span></li>
+        <li><span>Click <strong>Save</strong>.</span></li>
+      </ul>
+
+      <p>Expenses are deducted in the End of Day cash reconciliation, so record them on the day they are paid.</p>
+
+      <h3>Viewing expense history</h3>
+      <p>Use the day / week / month tabs and the search bar to filter past expenses. The summary card at the top shows totals for the selected period.</p>
+    </section>
+
+    <!-- ── INVENTORY ────────────────────────────────────── -->
+    <section id="products">
+      <h2><i class="section-icon">📦</i>Products</h2>
+      <p>Products are the items you sell. Everything in Stocka — sales, stock levels, reorder alerts — is built around your product list.</p>
+
+      <h3>Adding a product</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Products</strong> in the sidebar.</span></li>
+        <li><span>Click <strong>Add Product</strong>.</span></li>
+        <li><span>Fill in the product name, selling price, cost price, category, and reorder level.</span></li>
+        <li><span>Optionally assign a supplier and add a product image.</span></li>
+        <li><span>Click <strong>Save</strong>.</span></li>
+      </ul>
+
+      <h3>Key fields explained</h3>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Cost Price</strong></td><td>What you paid per unit. Used to calculate profit in reports.</td></tr>
+          <tr><td><strong>Selling Price</strong></td><td>What the customer pays.</td></tr>
+          <tr><td><strong>Reorder Level</strong></td><td>When stock falls to this number, Stocka alerts you in the Dashboard and Restock Needed page.</td></tr>
+          <tr><td><strong>Category</strong></td><td>Groups products for filtering and reporting.</td></tr>
+          <tr><td><strong>Supplier</strong></td><td>Who supplies this product. Links to the Suppliers page.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Editing &amp; deleting</h3>
+      <p>Click any product row to open its edit form. To delete a product, open it and click <strong>Delete</strong>. Products with sales history are archived rather than permanently deleted.</p>
+
+      <h3>Exporting the product list</h3>
+      <p>Click <strong>Export to Excel</strong> at the top of the Products page to download a spreadsheet of your full product catalogue.</p>
+    </section>
+
+    <section id="stock-control">
+      <h2><i class="section-icon">📥</i>Receiving Stock</h2>
+      <p>Whenever new stock arrives — from a supplier or a direct purchase — record it here so inventory levels stay accurate.</p>
+
+      <ul class="steps">
+        <li><span>Go to <strong>Stock Control</strong> in the sidebar.</span></li>
+        <li><span>Click <strong>Receive Stock</strong>.</span></li>
+        <li><span>Select the product, enter the quantity received, cost per unit, and date.</span></li>
+        <li><span>Optionally select the supplier this stock came from.</span></li>
+        <li><span>Click <strong>Save</strong>. The product's stock level updates immediately.</span></li>
+      </ul>
+
+      <p>The <strong>Purchase History</strong> tab below shows all past stock receives, searchable by product or supplier.</p>
+
+      <div class="tip">
+        <strong>Tip:</strong> Recording cost per unit each time you receive stock lets Stocka track your actual cost basis even when supplier prices change.
+      </div>
+    </section>
+
+    <section id="current-inventory">
+      <h2><i class="section-icon">📋</i>Current Inventory</h2>
+      <p>A real-time snapshot of every product's current stock quantity and total value.</p>
+      <p>Use the column headers to sort by name, quantity, or value. Use the search bar to find a specific product quickly. Products below their reorder level are highlighted in red.</p>
+      <p>Click <strong>Export CSV</strong> to download the inventory list — useful for stocktake records or sharing with an accountant.</p>
+    </section>
+
+    <section id="restock">
+      <h2><i class="section-icon">⚠️</i>Restock Needed</h2>
+      <p>This page lists every product that has fallen below its reorder level, ranked by urgency.</p>
+
+      <table>
+        <thead>
+          <tr><th>Urgency</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong style="color:#ef4444">Critical</strong></td><td>Stock is at zero or will run out within a day or two based on sales velocity.</td></tr>
+          <tr><td><strong style="color:#f59e0b">High</strong></td><td>Less than a week of stock remaining at the current sales rate.</td></tr>
+          <tr><td><strong style="color:#2563eb">Medium</strong></td><td>Below reorder level but not immediately urgent.</td></tr>
+        </tbody>
+      </table>
+
+      <p>Each row shows current stock, the reorder shortfall, average daily sales (last 30 days), and estimated days until stockout. Use this page to prioritise what to order first.</p>
+    </section>
+
+    <section id="dead-stock">
+      <h2><i class="section-icon">💀</i>Dead Stock Analysis</h2>
+      <p>Dead stock is inventory that has not sold in a long time and is tying up your cash. This page surfaces those products.</p>
+      <p>Use the days filter (14 / 30 / 60 / 90 days) to adjust the definition of "not moving." The total value of dead stock is shown at the top so you can see how much cash is locked up.</p>
+      <p>Suggested actions include running a promotion, bundling with fast-moving items, returning to supplier, or discounting to clear.</p>
+    </section>
+
+    <section id="expiry">
+      <h2><i class="section-icon">📅</i>Expiry Tracking</h2>
+      <p>If you sell perishable goods, this page helps you stay on top of products approaching or past their expiry date.</p>
+
+      <h3>Status categories</h3>
+      <div class="card-grid">
+        <div class="card">
+          <h4>⚠️ Expiring Soon</h4>
+          <p>Expires within the next 7 days. Consider marking down for quick sale.</p>
+        </div>
+        <div class="card">
+          <h4>🔴 Expired</h4>
+          <p>Past expiry date. Should be discarded or returned to supplier immediately.</p>
+        </div>
+      </div>
+
+      <p>Use the action buttons on each row to mark a product as discounted, record a discard, or remove it from active inventory.</p>
+
+      <div class="warn">
+        <strong>Legal note:</strong> Selling expired products is illegal. Use this page regularly if you stock food, medicine, or any dated goods.
+      </div>
+    </section>
+
+    <section id="reconciliation">
+      <h2><i class="section-icon">🔄</i>Inventory Reconciliation</h2>
+      <p>A physical stocktake lets you compare what the system says you have versus what is actually on the shelf. Do this periodically to catch errors, theft, or unrecorded damage.</p>
+
+      <ul class="steps">
+        <li><span>Go to <strong>Inventory Reconciliation</strong> in the sidebar.</span></li>
+        <li><span>Physically count every product in your store.</span></li>
+        <li><span>Enter your counted quantities into the <strong>Counted</strong> column next to each product.</span></li>
+        <li><span>The app shows discrepancies (plus or minus) automatically.</span></li>
+        <li><span>Add notes to explain large variances (damaged goods, supplier short-delivery, etc.).</span></li>
+        <li><span>Click <strong>Finalise</strong> to update inventory levels to your counted figures.</span></li>
+      </ul>
+
+      <p>You can export the reconciliation report as CSV to keep a paper trail.</p>
+
+      <div class="tip">
+        <strong>Best practice:</strong> Do a full stocktake at least once a month. For high-value or high-theft items, consider weekly counts.
+      </div>
+    </section>
+
+    <!-- ── MANAGEMENT ───────────────────────────────────── -->
+    <section id="suppliers">
+      <h2><i class="section-icon">🚚</i>Suppliers</h2>
+      <p>Suppliers are the businesses or individuals you buy your products from. Linking products to suppliers makes reordering and tracking easier.</p>
+
+      <h3>Adding a supplier</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Suppliers</strong> in the sidebar.</span></li>
+        <li><span>Click <strong>Add Supplier</strong>.</span></li>
+        <li><span>Enter the supplier's name, phone number, email, and address.</span></li>
+        <li><span>Click <strong>Save</strong>.</span></li>
+      </ul>
+
+      <p>Each supplier card shows the total number of products they supply and the combined stock value of those products — useful for knowing your dependency on each supplier.</p>
+    </section>
+
+    <section id="reports">
+      <h2><i class="section-icon">📈</i>Reports</h2>
+      <p><span class="badge badge-manager">Manager</span> <span class="badge badge-admin">Admin</span> &nbsp;Reports give you the numbers to understand how your business is performing.</p>
+
+      <h3>Available reports</h3>
+      <table>
+        <thead>
+          <tr><th>Report</th><th>What it shows</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Daily Sales</strong></td><td>Every transaction today with totals and receipt reprint.</td></tr>
+          <tr><td><strong>Date-Range Sales</strong></td><td>Sales between any two dates — revenue, units, and profit.</td></tr>
+          <tr><td><strong>Cashier Performance</strong></td><td>Sales totals and transaction count per cashier.</td></tr>
+          <tr><td><strong>Best-Selling Products</strong></td><td>Top products by revenue and quantity sold.</td></tr>
+          <tr><td><strong>Profit &amp; Loss</strong></td><td>Revenue vs. cost of goods vs. expenses = net profit.</td></tr>
+          <tr><td><strong>Stock Report</strong></td><td>Current stock levels and total inventory value.</td></tr>
+        </tbody>
+      </table>
+
+      <p>Most reports can be exported. Use the date picker at the top of the Reports page to set the period.</p>
+    </section>
+
+    <section id="shifts">
+      <h2><i class="section-icon">👥</i>Shifts &amp; Cashier Sessions</h2>
+      <p><span class="badge badge-manager">Manager</span> <span class="badge badge-admin">Admin</span></p>
+
+      <p>Every time a cashier logs in, a new shift session is created. Their sales are tracked against that session, which makes cash reconciliation straightforward even when multiple cashiers work in a day.</p>
+
+      <h3>Shift Dashboard</h3>
+      <p>Shows all shifts — open and closed — with status, duration, total sales, and cash balance. Filter by open/closed or by date to find a specific shift. Click a shift to see its full detail and reconciliation status.</p>
+
+      <h3>Cashier Sessions</h3>
+      <p>The Cashier Sessions page is a live view: it shows currently active sessions (who is logged in right now) and allows you to view historical sessions with filters for cashier name, reconciliation status, and date range.</p>
+
+      <div class="note">
+        <strong>Auto-refresh:</strong> The live session view refreshes automatically so you always see the current state of the shop floor.
+      </div>
+    </section>
+
+    <!-- ── SETTINGS ─────────────────────────────────────── -->
+    <section id="settings">
+      <h2><i class="section-icon">⚙️</i>Settings</h2>
+      <p><span class="badge badge-admin">Admin</span> &nbsp;The Settings page is the control panel for the entire application.</p>
+
+      <h3>Shop Details</h3>
+      <p>Update your shop name, address, phone number, and currency. These details appear on printed receipts.</p>
+
+      <h3>Receipt Configuration</h3>
+      <p>Choose what to print on receipts — logo, tagline, footer message, and whether to show VAT. Test your layout with the <strong>Print Test Receipt</strong> button.</p>
+
+      <h3>Printer Setup</h3>
+      <p>Click <strong>Scan for Printers</strong> to detect connected thermal or desktop printers. Select your printer from the list and click <strong>Test Print</strong> to confirm it's working.</p>
+
+      <h3>Business Rules</h3>
+      <table>
+        <thead>
+          <tr><th>Setting</th><th>What it controls</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>VAT Rate</strong></td><td>If VAT applies, set the percentage here. It will be calculated and shown on receipts.</td></tr>
+          <tr><td><strong>Default Reorder Level</strong></td><td>The stock quantity that triggers a low-stock alert for new products.</td></tr>
+          <tr><td><strong>Variance Tolerance</strong></td><td>How much End-of-Day cash variance is acceptable before showing a red warning.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Database Backup</h3>
+      <p>See <a href="#backup">Backups</a> below for the full backup guide.</p>
+    </section>
+
+    <section id="lan">
+      <h2><i class="section-icon">🌐</i>LAN / Multi-Computer Setup</h2>
+      <p>Stocka can run across multiple computers on the same WiFi network — for example, one computer at the till and one at the manager's desk.</p>
+
+      <h3>Modes</h3>
+      <div class="card-grid">
+        <div class="card">
+          <h4>Standalone</h4>
+          <p>Default mode. The app runs on one computer only, with no network sync.</p>
+        </div>
+        <div class="card">
+          <h4>Server</h4>
+          <p>This computer holds the main database. All other computers sync to this one.</p>
+        </div>
+        <div class="card">
+          <h4>Client</h4>
+          <p>A satellite terminal (e.g. a cashier till). It connects to the Server computer over WiFi.</p>
+        </div>
+      </div>
+
+      <h3>Setting up a Server + Client pair</h3>
+      <ul class="steps">
+        <li><span>On the main computer: open <strong>LAN Settings</strong> and switch to <strong>Server</strong> mode. Note the IP address shown.</span></li>
+        <li><span>On the till computer: open <strong>LAN Settings</strong> and switch to <strong>Client</strong> mode.</span></li>
+        <li><span>Click <strong>Discover</strong> to find the server automatically, or enter the IP address manually.</span></li>
+        <li><span>Click <strong>Connect</strong>. The client will sync with the server database.</span></li>
+      </ul>
+
+      <div class="warn">
+        <strong>Both computers must be on the same WiFi network.</strong> This feature does not work over the internet.
+      </div>
+    </section>
+
+    <section id="users">
+      <h2><i class="section-icon">👤</i>Users &amp; Roles</h2>
+      <p><span class="badge badge-admin">Admin</span> &nbsp;Manage who can log in and what they can do in <strong>Settings → Users</strong>.</p>
+
+      <h3>Roles</h3>
+      <table>
+        <thead>
+          <tr><th>Role</th><th>Access Level</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-admin">Admin</span></td>
+            <td>Full access to everything including settings, user management, reports, and all financial data.</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-manager">Manager</span></td>
+            <td>Access to reports, shifts, End of Day, and day-to-day operations. Cannot change settings or manage users.</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-cashier">Cashier</span></td>
+            <td>Can process sales, log expenses, and receive stock. Cannot view reports or manage the shop.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Adding a user</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Settings → Users</strong>.</span></li>
+        <li><span>Click <strong>Add User</strong>.</span></li>
+        <li><span>Enter their name, choose a role, and set a 4-digit PIN.</span></li>
+        <li><span>Click <strong>Save</strong>. They can log in immediately.</span></li>
+      </ul>
+
+      <h3>Resetting a PIN</h3>
+      <p>Find the user in the list, click <strong>Edit</strong>, and enter a new PIN. The user will need to use the new PIN at their next login.</p>
+
+      <h3>Deactivating a user</h3>
+      <p>If a staff member leaves, deactivate their account rather than deleting it. Their historical sales data is preserved. Deactivated users cannot log in.</p>
+    </section>
+
+    <section id="backup">
+      <h2><i class="section-icon">💾</i>Backups</h2>
+      <p>Stocka stores all data locally on your computer. If the hard drive fails or the computer is lost, you lose all your data — unless you have a backup.</p>
+
+      <div class="warn">
+        <strong>Back up regularly.</strong> Stocka cannot recover data without a backup file.
+      </div>
+
+      <h3>Creating a backup</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Settings → Database Backup</strong>.</span></li>
+        <li><span>Click <strong>Create Backup</strong>.</span></li>
+        <li><span>Choose a save location — ideally a USB drive or a cloud-synced folder (Dropbox, Google Drive).</span></li>
+        <li><span>A <code>.db</code> backup file is saved to that location.</span></li>
+      </ul>
+
+      <h3>Restoring from a backup</h3>
+      <ul class="steps">
+        <li><span>Go to <strong>Settings → Database Backup</strong>.</span></li>
+        <li><span>Click <strong>Restore Backup</strong>.</span></li>
+        <li><span>Select your backup <code>.db</code> file.</span></li>
+        <li><span>The app will restart and load data from the backup.</span></li>
+      </ul>
+
+      <div class="tip">
+        <strong>Recommendation:</strong> Back up at the end of every working day. Copy the backup to a USB drive or upload it to Google Drive so it is stored off-site.
+      </div>
+    </section>
+
+  </main>
+</div>
+
+</body>
+</html>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { FiX, FiCheck, FiAlertCircle } from 'react-icons/fi'
 import './Modal.css'
 
-function ClosingFloatModal({ shift, onConfirm, onCancel, isLoading }) {
+function ClosingFloatModal({ shift, onConfirm, onCancel, isLoading, varianceTolerance = 0.01 }) {
   const [closing_cash, setClosingCash] = useState('')
   const [notes, setNotes] = useState('')
   const [step, setStep] = useState(1) // 1: input, 2: confirm
@@ -33,16 +33,16 @@ function ClosingFloatModal({ shift, onConfirm, onCancel, isLoading }) {
   const expected_cash = (shift.opening_cash || 0) + (shift.total_sales_value || 0)
   const variance = closingFloat.closing_cash - expected_cash
 
-  const isBalanced = Math.abs(variance) < 0.01
-  const isShort = variance < -0.01
-  const isOver = variance > 0.01
+  const isBalanced = Math.abs(variance) < varianceTolerance
+  const isShort = variance < -varianceTolerance
+  const isOver = variance > varianceTolerance
 
   const handleConfirm = () => {
     onConfirm(closingFloat, notes)
   }
 
   const VarianceRow = ({ label, expected, actual, variance }) => {
-    const isZero = Math.abs(variance) < 0.01
+    const isZero = Math.abs(variance) < varianceTolerance
     return (
       <tr>
         <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{label}</td>

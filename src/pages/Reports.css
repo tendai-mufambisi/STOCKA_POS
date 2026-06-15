@@ -1,263 +1,278 @@
+/* ─── Reports page ──────────────────────────────────────────────── */
 .reports-page {
-  padding: 2rem;
-  background: #f8f9fa;
-  min-height: 100vh;
+  background: #f4f6f9;
+  min-height: 100%;
+  padding: 0;
 }
 
-.page-header {
-  margin-bottom: 2rem;
-}
-
-.page-header h1 {
-  font-size: 2.5rem;
-  color: #333;
-  margin: 0;
-  font-weight: 700;
-}
-
-.page-header p {
-  color: #666;
-  margin: 0.5rem 0 0 0;
-}
-
+/* ── report controls bar ── */
 .report-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
-  margin-bottom: 2rem;
+  gap: 16px;
+  margin-bottom: 20px;
   background: white;
-  padding: 1.5rem;
-  border-radius: 12px;
-  border: 1px solid #e0e0e0;
+  padding: 16px 20px;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  align-items: flex-end;
 }
 
 .control-group {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 5px;
 }
 
 .control-group label {
-  font-weight: 600;
-  color: #333;
-  font-size: 0.9rem;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .control-group select,
 .control-group input {
-  padding: 0.5rem 0.75rem;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 0.95rem;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 13px;
   font-family: inherit;
+  color: #0f172a;
+  background: white;
+  outline: none;
   min-width: 150px;
+  transition: border-color 0.15s;
 }
 
 .control-group select:focus,
 .control-group input:focus {
-  outline: none;
   border-color: #2e7d32;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px rgba(46, 125, 50, 0.08);
 }
 
+/* ── summary cards ── */
 .summary-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
 }
 
 .summary-card {
   background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  padding: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-  text-align: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  text-align: left;
+  transition: box-shadow 0.15s;
 }
 
+.summary-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.07); }
+
 .card-label {
-  color: #666;
-  font-size: 0.85rem;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 0.75rem;
-  font-weight: 600;
+  letter-spacing: 0.7px;
+  color: #94a3b8;
+  margin-bottom: 6px;
 }
 
 .card-value {
-  font-size: 2rem;
+  font-size: 22px;
   font-weight: 700;
-  color: #2e7d32;
+  color: #0f172a;
+  line-height: 1.1;
 }
 
+.card-value.green { color: #15803d; }
+.card-value.red   { color: #dc2626; }
+
+/* ── chart container ── */
 .chart-container {
   background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  padding: 2rem;
-  margin-bottom: 2rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
 
 .chart-container h3 {
-  margin-top: 0;
-  color: #333;
-  margin-bottom: 1.5rem;
-  font-size: 1.2rem;
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
 }
 
+/* ── table container ── */
 .table-container {
   background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  padding: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  overflow: hidden;
+  margin-bottom: 20px;
 }
 
 .table-container h3 {
-  margin-top: 0;
-  color: #333;
-  margin-bottom: 1.5rem;
-  font-size: 1.2rem;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
 }
 
+/* ── report table ── */
 .report-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: 13px;
 }
 
+.report-table thead tr { background: #f8fafc; }
+
 .report-table th {
-  background: #f0f0f0;
-  padding: 0.75rem 1rem;
+  padding: 11px 20px;
   text-align: left;
-  font-weight: 600;
-  border-bottom: 2px solid #e0e0e0;
-  color: #333;
-  font-size: 0.85rem;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  border-bottom: 1px solid #e2e8f0;
 }
 
 .report-table td {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid #eee;
-  color: #333;
+  padding: 11px 20px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #0f172a;
 }
 
-.report-table tr:hover {
-  background: #f9f9f9;
-}
+.report-table tbody tr:hover { background: #fafcff; }
+.report-table tbody tr:last-child td { border-bottom: none; }
 
 .report-table .profit {
-  color: #2e7d32;
-  font-weight: 600;
+  color: #15803d;
+  font-weight: 700;
 }
 
+.report-table .loss { color: #dc2626; font-weight: 700; }
+
+/* ── no data ── */
 .no-data {
   text-align: center;
-  padding: 2rem;
-  color: #999;
-  font-size: 1rem;
+  padding: 40px 20px;
+  color: #94a3b8;
+  font-size: 14px;
 }
 
-.btn {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.3s;
-  white-space: nowrap;
-}
-
-.btn-primary {
-  background: linear-gradient(135deg, #2e7d32 0%, #1a5c2a 100%);
-  color: white;
-}
-
-.btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.3);
-}
-
-.error-banner {
-  background: #fee;
-  color: #c33;
-  padding: 1rem;
-  border-radius: 8px;
-  margin-bottom: 1.5rem;
-  border-left: 4px solid #c33;
-}
-
-.loading {
-  text-align: center;
-  padding: 2rem;
-  color: #666;
-}
-
+/* ── stock badges ── */
 .stock-badge {
   display: inline-block;
-  padding: 0.35rem 0.75rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
-.stock-badge.in-stock {
-  background: #d4edda;
-  color: #155724;
-}
+.stock-badge.in-stock  { background: #dcfce7; color: #15803d; }
+.stock-badge.low-stock { background: #fef3c7; color: #b45309; }
+.stock-badge.out-of-stock { background: #fee2e2; color: #dc2626; }
 
-.stock-badge.low-stock {
-  background: #fff3cd;
-  color: #856404;
-}
-
-.stock-badge.out-of-stock {
-  background: #f8d7da;
-  color: #721c24;
-}
-
+/* ── access denied ── */
 .access-denied {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 4rem 2rem;
+  padding: 60px 20px;
   background: white;
-  border-radius: 12px;
-  border: 1px solid #e0e0e0;
-  margin-top: 2rem;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
   min-height: 400px;
   text-align: center;
 }
 
 .denied-icon {
-  font-size: 4rem;
-  margin-bottom: 1.5rem;
-  opacity: 0.8;
+  font-size: 3rem;
+  margin-bottom: 16px;
+  opacity: 0.7;
 }
 
 .access-denied h2 {
-  font-size: 1.75rem;
-  color: #333;
-  margin: 0 0 1rem 0;
-  font-weight: 600;
+  font-size: 20px;
+  color: #0f172a;
+  margin: 0 0 10px 0;
+  font-weight: 700;
 }
 
 .access-denied p {
-  color: #666;
-  font-size: 1rem;
-  margin: 0.5rem 0;
-  max-width: 500px;
+  color: #64748b;
+  font-size: 14px;
+  margin: 4px 0;
+  max-width: 440px;
 }
 
 .denied-details {
-  color: #999;
-  font-size: 0.95rem;
+  color: #94a3b8;
+  font-size: 13px;
   font-style: italic;
-  margin-top: 1.5rem !important;
+  margin-top: 14px !important;
 }
+
+/* ── buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.btn-primary {
+  background: #2e7d32;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #1b5e20;
+  box-shadow: 0 2px 8px rgba(46, 125, 50, 0.25);
+}
+
+/* ── error / loading ── */
+.error-banner {
+  background: #fef2f2;
+  color: #dc2626;
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  border: 1px solid #fecaca;
+  border-left: 3px solid #dc2626;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+/* ── Utility additions ──────────────────────────────── */
+.btn-small { padding: 4px 8px; font-size: 12px; }

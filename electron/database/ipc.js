@@ -14,6 +14,12 @@ const eod          = require('./domains/eod')
 const branches     = require('./domains/branches')
 const holds        = require('./domains/holds')
 
+let _makeHandler = null
+
+function updateMakeHandler(mh) {
+  _makeHandler = mh
+}
+
 function wrap(fn) {
   return (event, ...args) => {
     try { return fn(...args) }
@@ -21,142 +27,151 @@ function wrap(fn) {
   }
 }
 
-function registerAll(ipcMain, userDataPath) {
+function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   const path = require('path')
   const backupsDir = path.join(userDataPath, 'backups')
 
+  _makeHandler = customMakeHandler
+
+  // h resolves _makeHandler at call time so mid-session mode switches take effect immediately
+  const h = (ch, fn) => (event, ...args) => {
+    const mh = _makeHandler
+    return mh ? mh(ch, fn)(event, ...args) : wrap(fn)(event, ...args)
+  }
+
   // ── SHOP ──
-  ipcMain.handle('domain:shop:get',        wrap(shop.getShop))
-  ipcMain.handle('domain:shop:init',       wrap(shop.initializeShop))
-  ipcMain.handle('domain:shop:update',     wrap(shop.updateShop))
-  ipcMain.handle('domain:shop:resetPin',   wrap(shop.resetOwnerPin))
+  ipcMain.handle('domain:shop:get',        h('domain:shop:get',        shop.getShop))
+  ipcMain.handle('domain:shop:init',       h('domain:shop:init',       shop.initializeShop))
+  ipcMain.handle('domain:shop:update',     h('domain:shop:update',     shop.updateShop))
+  ipcMain.handle('domain:shop:resetPin',   h('domain:shop:resetPin',   shop.resetOwnerPin))
 
   // ── PRODUCTS ──
-  ipcMain.handle('domain:products:getAll',          wrap(products.getProducts))
-  ipcMain.handle('domain:products:getById',         wrap(products.getProductById))
-  ipcMain.handle('domain:products:add',             wrap(products.addProduct))
-  ipcMain.handle('domain:products:update',          wrap(products.updateProduct))
-  ipcMain.handle('domain:products:delete',          wrap(products.deleteProduct))
-  ipcMain.handle('domain:products:updateQty',       wrap(products.updateProductQuantity))
-  ipcMain.handle('domain:products:updateImage',     wrap(products.updateProductImage))
-  ipcMain.handle('domain:products:updateLastSold',  wrap(products.updateProductLastSoldDate))
-  ipcMain.handle('domain:products:getLatestPrice',  wrap(products.getLatestProductPrice))
-  ipcMain.handle('domain:products:getAllCostPrices',wrap(products.getAllLatestCostPrices))
-  ipcMain.handle('domain:products:getMostSold',     wrap(products.getMostSoldProducts))
+  ipcMain.handle('domain:products:getAll',          h('domain:products:getAll',          products.getProducts))
+  ipcMain.handle('domain:products:getById',         h('domain:products:getById',         products.getProductById))
+  ipcMain.handle('domain:products:add',             h('domain:products:add',             products.addProduct))
+  ipcMain.handle('domain:products:update',          h('domain:products:update',          products.updateProduct))
+  ipcMain.handle('domain:products:delete',          h('domain:products:delete',          products.deleteProduct))
+  ipcMain.handle('domain:products:updateQty',       h('domain:products:updateQty',       products.updateProductQuantity))
+  ipcMain.handle('domain:products:updateImage',     h('domain:products:updateImage',     products.updateProductImage))
+  ipcMain.handle('domain:products:updateLastSold',  h('domain:products:updateLastSold',  products.updateProductLastSoldDate))
+  ipcMain.handle('domain:products:getLatestPrice',  h('domain:products:getLatestPrice',  products.getLatestProductPrice))
+  ipcMain.handle('domain:products:getAllCostPrices',h('domain:products:getAllCostPrices', products.getAllLatestCostPrices))
+  ipcMain.handle('domain:products:getMostSold',     h('domain:products:getMostSold',     products.getMostSoldProducts))
+  ipcMain.handle('domain:products:importBatch',     h('domain:products:importBatch',     products.addProductsBatch))
 
   // ── SUPPLIERS ──
-  ipcMain.handle('domain:suppliers:getAll',          wrap(suppliers.getSuppliers))
-  ipcMain.handle('domain:suppliers:getById',         wrap(suppliers.getSupplierById))
-  ipcMain.handle('domain:suppliers:add',             wrap(suppliers.addSupplier))
-  ipcMain.handle('domain:suppliers:update',          wrap(suppliers.updateSupplier))
-  ipcMain.handle('domain:suppliers:delete',          wrap(suppliers.deleteSupplier))
-  ipcMain.handle('domain:suppliers:getPurchaseHistory',  wrap(suppliers.getSupplierPurchaseHistory))
-  ipcMain.handle('domain:suppliers:getProductHistory',   wrap(suppliers.getProductPurchaseHistory))
+  ipcMain.handle('domain:suppliers:getAll',             h('domain:suppliers:getAll',             suppliers.getSuppliers))
+  ipcMain.handle('domain:suppliers:getById',            h('domain:suppliers:getById',            suppliers.getSupplierById))
+  ipcMain.handle('domain:suppliers:add',                h('domain:suppliers:add',                suppliers.addSupplier))
+  ipcMain.handle('domain:suppliers:update',             h('domain:suppliers:update',             suppliers.updateSupplier))
+  ipcMain.handle('domain:suppliers:delete',             h('domain:suppliers:delete',             suppliers.deleteSupplier))
+  ipcMain.handle('domain:suppliers:getPurchaseHistory', h('domain:suppliers:getPurchaseHistory', suppliers.getSupplierPurchaseHistory))
+  ipcMain.handle('domain:suppliers:getProductHistory',  h('domain:suppliers:getProductHistory',  suppliers.getProductPurchaseHistory))
 
   // ── STOCK ──
-  ipcMain.handle('domain:stock:addReceiving',      wrap(stock.addStockReceiving))
-  ipcMain.handle('domain:stock:getAll',            wrap(stock.getStockReceivings))
-  ipcMain.handle('domain:stock:getById',           wrap(stock.getStockReceivingById))
-  ipcMain.handle('domain:stock:getAllPurchases',   wrap(stock.getAllPurchaseHistory))
-  ipcMain.handle('domain:stock:recordDirect',      wrap(stock.recordDirectPurchase))
-  ipcMain.handle('domain:stock:getDeadStock',      wrap(stock.getDeadStockProducts))
-  ipcMain.handle('domain:stock:getRestock',        wrap(stock.getRestockNeeded))
-  ipcMain.handle('domain:stock:getVelocity',       wrap(stock.getProductSalesVelocity))
-  ipcMain.handle('domain:stock:getExpiring',       wrap(stock.getExpiringProducts))
-  ipcMain.handle('domain:stock:getExpired',        wrap(stock.getExpiredProducts))
-  ipcMain.handle('domain:stock:getExpiryReport',   wrap(stock.getExpiryReport))
+  ipcMain.handle('domain:stock:addReceiving',    h('domain:stock:addReceiving',    stock.addStockReceiving))
+  ipcMain.handle('domain:stock:getAll',          h('domain:stock:getAll',          stock.getStockReceivings))
+  ipcMain.handle('domain:stock:getById',         h('domain:stock:getById',         stock.getStockReceivingById))
+  ipcMain.handle('domain:stock:getAllPurchases',  h('domain:stock:getAllPurchases',  stock.getAllPurchaseHistory))
+  ipcMain.handle('domain:stock:recordDirect',    h('domain:stock:recordDirect',    stock.recordDirectPurchase))
+  ipcMain.handle('domain:stock:getDeadStock',    h('domain:stock:getDeadStock',    stock.getDeadStockProducts))
+  ipcMain.handle('domain:stock:getRestock',      h('domain:stock:getRestock',      stock.getRestockNeeded))
+  ipcMain.handle('domain:stock:getVelocity',     h('domain:stock:getVelocity',     stock.getProductSalesVelocity))
+  ipcMain.handle('domain:stock:getExpiring',     h('domain:stock:getExpiring',     stock.getExpiringProducts))
+  ipcMain.handle('domain:stock:getExpired',      h('domain:stock:getExpired',      stock.getExpiredProducts))
+  ipcMain.handle('domain:stock:getExpiryReport', h('domain:stock:getExpiryReport', stock.getExpiryReport))
 
   // ── SALES ──
-  ipcMain.handle('domain:sales:add',              wrap(sales.addSale))
-  ipcMain.handle('domain:sales:getAll',           wrap(sales.getSales))
-  ipcMain.handle('domain:sales:getById',          wrap(sales.getSaleById))
-  ipcMain.handle('domain:sales:getItems',         wrap(sales.getSaleItems))
-  ipcMain.handle('domain:sales:hold',             wrap(sales.holdSale))
-  ipcMain.handle('domain:sales:getHeld',          wrap(sales.getHeldSales))
-  ipcMain.handle('domain:sales:recall',           wrap(sales.recallHeldSale))
-  ipcMain.handle('domain:sales:discard',          wrap(sales.discardHeldSale))
-  ipcMain.handle('domain:sales:void',             wrap(sales.voidSale))
-  ipcMain.handle('domain:sales:complete',         wrap(sales.completeHeldSale))
-  ipcMain.handle('domain:sales:getVoided',        wrap(sales.getVoidedSales))
-  ipcMain.handle('domain:sales:getLastReceipt',   wrap(sales.getLastReceiptNumber))
-  ipcMain.handle('domain:sales:getReceipt',       wrap(sales.getReceiptBySaleId))
-  ipcMain.handle('domain:sales:updateReceipt',    wrap(sales.updateSaleReceiptNumber))
+  ipcMain.handle('domain:sales:add',           h('domain:sales:add',           sales.addSale))
+  ipcMain.handle('domain:sales:getAll',        h('domain:sales:getAll',        sales.getSales))
+  ipcMain.handle('domain:sales:getById',       h('domain:sales:getById',       sales.getSaleById))
+  ipcMain.handle('domain:sales:getItems',      h('domain:sales:getItems',      sales.getSaleItems))
+  ipcMain.handle('domain:sales:hold',          h('domain:sales:hold',          sales.holdSale))
+  ipcMain.handle('domain:sales:getHeld',       h('domain:sales:getHeld',       sales.getHeldSales))
+  ipcMain.handle('domain:sales:recall',        h('domain:sales:recall',        sales.recallHeldSale))
+  ipcMain.handle('domain:sales:discard',       h('domain:sales:discard',       sales.discardHeldSale))
+  ipcMain.handle('domain:sales:void',          h('domain:sales:void',          sales.voidSale))
+  ipcMain.handle('domain:sales:complete',      h('domain:sales:complete',      sales.completeHeldSale))
+  ipcMain.handle('domain:sales:getVoided',     h('domain:sales:getVoided',     sales.getVoidedSales))
+  ipcMain.handle('domain:sales:getLastReceipt',h('domain:sales:getLastReceipt',sales.getLastReceiptNumber))
+  ipcMain.handle('domain:sales:getReceipt',    h('domain:sales:getReceipt',    sales.getReceiptBySaleId))
+  ipcMain.handle('domain:sales:updateReceipt', h('domain:sales:updateReceipt', sales.updateSaleReceiptNumber))
 
   // ── EXPENSES ──
-  ipcMain.handle('domain:expenses:add',    wrap(expenses.addExpense))
-  ipcMain.handle('domain:expenses:getAll', wrap(expenses.getExpenses))
-  ipcMain.handle('domain:expenses:getById',wrap(expenses.getExpenseById))
-  ipcMain.handle('domain:expenses:update', wrap(expenses.updateExpense))
-  ipcMain.handle('domain:expenses:delete', wrap(expenses.deleteExpense))
+  ipcMain.handle('domain:expenses:add',    h('domain:expenses:add',    expenses.addExpense))
+  ipcMain.handle('domain:expenses:getAll', h('domain:expenses:getAll', expenses.getExpenses))
+  ipcMain.handle('domain:expenses:getById',h('domain:expenses:getById',expenses.getExpenseById))
+  ipcMain.handle('domain:expenses:update', h('domain:expenses:update', expenses.updateExpense))
+  ipcMain.handle('domain:expenses:delete', h('domain:expenses:delete', expenses.deleteExpense))
 
   // ── USERS ──
-  ipcMain.handle('domain:users:getAll',          wrap(users.getUsers))
-  ipcMain.handle('domain:users:getByUsername',   wrap(users.getUserByUsername))
-  ipcMain.handle('domain:users:login',           wrap(users.loginUser))
-  ipcMain.handle('domain:users:add',             wrap(users.addUser))
-  ipcMain.handle('domain:users:update',          wrap(users.updateUser))
-  ipcMain.handle('domain:users:deactivate',       wrap(users.deactivateUser))
-  ipcMain.handle('domain:users:getAdminCount',   wrap(users.getActiveAdminCount))
-  ipcMain.handle('domain:users:validatePassword', wrap(users.validateUserPassword))
+  ipcMain.handle('domain:users:getAll',           h('domain:users:getAll',           users.getUsers))
+  ipcMain.handle('domain:users:getByUsername',    h('domain:users:getByUsername',    users.getUserByUsername))
+  ipcMain.handle('domain:users:login',            h('domain:users:login',            users.loginUser))
+  ipcMain.handle('domain:users:add',              h('domain:users:add',              users.addUser))
+  ipcMain.handle('domain:users:update',           h('domain:users:update',           users.updateUser))
+  ipcMain.handle('domain:users:deactivate',       h('domain:users:deactivate',       users.deactivateUser))
+  ipcMain.handle('domain:users:getAdminCount',    h('domain:users:getAdminCount',    users.getActiveAdminCount))
+  ipcMain.handle('domain:users:validatePassword', h('domain:users:validatePassword', users.validateUserPassword))
 
   // ── SHIFTS ──
-  ipcMain.handle('domain:shifts:start',           wrap(shifts.startShift))
-  ipcMain.handle('domain:shifts:updateSales',     wrap(shifts.updateShiftSalesForPaymentMethod))
-  ipcMain.handle('domain:shifts:close',           wrap(shifts.closeShift))
-  ipcMain.handle('domain:shifts:getById',         wrap(shifts.getShiftById))
-  ipcMain.handle('domain:shifts:getCurrent',      wrap(shifts.getCurrentShift))
-  ipcMain.handle('domain:shifts:getExistingOpen', wrap(shifts.getExistingOpenShift))
-  ipcMain.handle('domain:shifts:getByCashier',    wrap(shifts.getShiftsByCashier))
-  ipcMain.handle('domain:shifts:getAll',          wrap(shifts.getAllShifts))
-  ipcMain.handle('domain:shifts:getActive',       wrap(shifts.getActiveShifts))
-  ipcMain.handle('domain:shifts:getSummary',      wrap(shifts.getShiftSummary))
+  ipcMain.handle('domain:shifts:start',           h('domain:shifts:start',           shifts.startShift))
+  ipcMain.handle('domain:shifts:updateSales',     h('domain:shifts:updateSales',     shifts.updateShiftSalesForPaymentMethod))
+  ipcMain.handle('domain:shifts:close',           h('domain:shifts:close',           shifts.closeShift))
+  ipcMain.handle('domain:shifts:getById',         h('domain:shifts:getById',         shifts.getShiftById))
+  ipcMain.handle('domain:shifts:getCurrent',      h('domain:shifts:getCurrent',      shifts.getCurrentShift))
+  ipcMain.handle('domain:shifts:getExistingOpen', h('domain:shifts:getExistingOpen', shifts.getExistingOpenShift))
+  ipcMain.handle('domain:shifts:getByCashier',    h('domain:shifts:getByCashier',    shifts.getShiftsByCashier))
+  ipcMain.handle('domain:shifts:getAll',          h('domain:shifts:getAll',          shifts.getAllShifts))
+  ipcMain.handle('domain:shifts:getActive',       h('domain:shifts:getActive',       shifts.getActiveShifts))
+  ipcMain.handle('domain:shifts:getSummary',      h('domain:shifts:getSummary',      shifts.getShiftSummary))
 
   // ── NOTIFICATIONS ──
-  ipcMain.handle('domain:notifications:create',          wrap(notifications.createNotification))
-  ipcMain.handle('domain:notifications:getActive',       wrap(notifications.getActiveNotifications))
-  ipcMain.handle('domain:notifications:getAll',          wrap(notifications.getAllNotifications))
-  ipcMain.handle('domain:notifications:clearForProduct', wrap(notifications.clearNotificationsForProduct))
-  ipcMain.handle('domain:notifications:markRead',        wrap(notifications.markNotificationAsRead))
+  ipcMain.handle('domain:notifications:create',          h('domain:notifications:create',          notifications.createNotification))
+  ipcMain.handle('domain:notifications:getActive',       h('domain:notifications:getActive',       notifications.getActiveNotifications))
+  ipcMain.handle('domain:notifications:getAll',          h('domain:notifications:getAll',          notifications.getAllNotifications))
+  ipcMain.handle('domain:notifications:clearForProduct', h('domain:notifications:clearForProduct', notifications.clearNotificationsForProduct))
+  ipcMain.handle('domain:notifications:markRead',        h('domain:notifications:markRead',        notifications.markNotificationAsRead))
 
   // ── REPORTS ──
-  ipcMain.handle('domain:reports:getDashboard',  wrap(reports.getDashboardStats))
-  ipcMain.handle('domain:reports:getSalesDay',   wrap(reports.getSalesForDay))
-  ipcMain.handle('domain:reports:getDailyRev',   wrap(reports.getDailyRevenue))
-  ipcMain.handle('domain:reports:getDailyCOGS',  wrap(reports.getDailyCOGS))
-  ipcMain.handle('domain:reports:getMonthly',    wrap(reports.getMonthlyData))
-  ipcMain.handle('domain:reports:getRecent',     wrap(reports.getRecentTransactions))
-  ipcMain.handle('domain:reports:getLowStock',   wrap(reports.getLowStockItems))
-  ipcMain.handle('domain:reports:getStockValue', wrap(reports.getStockValue))
-  ipcMain.handle('domain:reports:getManagerAnalytics', wrap(reports.getManagerAnalytics))
+  ipcMain.handle('domain:reports:getDashboard',        h('domain:reports:getDashboard',        reports.getDashboardStats))
+  ipcMain.handle('domain:reports:getSalesDay',         h('domain:reports:getSalesDay',         reports.getSalesForDay))
+  ipcMain.handle('domain:reports:getDailyRev',         h('domain:reports:getDailyRev',         reports.getDailyRevenue))
+  ipcMain.handle('domain:reports:getDailyCOGS',        h('domain:reports:getDailyCOGS',        reports.getDailyCOGS))
+  ipcMain.handle('domain:reports:getMonthly',          h('domain:reports:getMonthly',          reports.getMonthlyData))
+  ipcMain.handle('domain:reports:getRecent',           h('domain:reports:getRecent',           reports.getRecentTransactions))
+  ipcMain.handle('domain:reports:getLowStock',         h('domain:reports:getLowStock',         reports.getLowStockItems))
+  ipcMain.handle('domain:reports:getStockValue',       h('domain:reports:getStockValue',       reports.getStockValue))
+  ipcMain.handle('domain:reports:getManagerAnalytics', h('domain:reports:getManagerAnalytics', reports.getManagerAnalytics))
 
   // ── AUDIT ──
-  ipcMain.handle('domain:audit:log',         wrap(audit.logAuditAction))
-  ipcMain.handle('domain:audit:getLog',      wrap(audit.getAuditLog))
-  ipcMain.handle('domain:audit:getEntity',   wrap(audit.getEntityAuditTrail))
-  ipcMain.handle('domain:audit:getRecent',   wrap(audit.getRecentAuditActions))
-  ipcMain.handle('domain:audit:cleanup',     wrap(audit.cleanupOldAuditLogs))
+  ipcMain.handle('domain:audit:log',       h('domain:audit:log',       audit.logAuditAction))
+  ipcMain.handle('domain:audit:getLog',    h('domain:audit:getLog',    audit.getAuditLog))
+  ipcMain.handle('domain:audit:getEntity', h('domain:audit:getEntity', audit.getEntityAuditTrail))
+  ipcMain.handle('domain:audit:getRecent', h('domain:audit:getRecent', audit.getRecentAuditActions))
+  ipcMain.handle('domain:audit:cleanup',   h('domain:audit:cleanup',   audit.cleanupOldAuditLogs))
 
   // ── EOD ──
-  ipcMain.handle('domain:eod:add',      wrap(eod.addEndOfDay))
-  ipcMain.handle('domain:eod:getAll',   wrap(eod.getEndOfDayRecords))
-  ipcMain.handle('domain:eod:getByDate',wrap(eod.getEndOfDayByDate))
+  ipcMain.handle('domain:eod:add',       h('domain:eod:add',       eod.addEndOfDay))
+  ipcMain.handle('domain:eod:getAll',    h('domain:eod:getAll',    eod.getEndOfDayRecords))
+  ipcMain.handle('domain:eod:getByDate', h('domain:eod:getByDate', eod.getEndOfDayByDate))
 
   // ── BRANCHES ──
-  ipcMain.handle('domain:branches:getAll', wrap(branches.getBranches))
-  ipcMain.handle('domain:branches:getById',wrap(branches.getBranchById))
-  ipcMain.handle('domain:branches:add',    wrap(branches.addBranch))
-  ipcMain.handle('domain:branches:update', wrap(branches.updateBranch))
-  ipcMain.handle('domain:branches:delete', wrap(branches.deleteBranch))
+  ipcMain.handle('domain:branches:getAll',  h('domain:branches:getAll',  branches.getBranches))
+  ipcMain.handle('domain:branches:getById', h('domain:branches:getById', branches.getBranchById))
+  ipcMain.handle('domain:branches:add',     h('domain:branches:add',     branches.addBranch))
+  ipcMain.handle('domain:branches:update',  h('domain:branches:update',  branches.updateBranch))
+  ipcMain.handle('domain:branches:delete',  h('domain:branches:delete',  branches.deleteBranch))
 
   // ── HOLDS ──
-  ipcMain.handle('domain:holds:create',          wrap(holds.createHold))
-  ipcMain.handle('domain:holds:getByShift',      wrap(holds.getHoldsByShift))
-  ipcMain.handle('domain:holds:deleteOnLogout',  wrap(holds.deleteHoldsOnLogout))
-  ipcMain.handle('domain:holds:release',         wrap(holds.releaseHold))
+  ipcMain.handle('domain:holds:create',         h('domain:holds:create',         holds.createHold))
+  ipcMain.handle('domain:holds:getByShift',     h('domain:holds:getByShift',     holds.getHoldsByShift))
+  ipcMain.handle('domain:holds:deleteOnLogout', h('domain:holds:deleteOnLogout', holds.deleteHoldsOnLogout))
+  ipcMain.handle('domain:holds:release',        h('domain:holds:release',        holds.releaseHold))
 
-  // ── BACKUP (export/import JSON) ──
-  ipcMain.handle('domain:backup:exportAsFile',    (event, filename) => backup.exportBackupAsFile(backupsDir, filename))
-  ipcMain.handle('domain:backup:importFromFile',  wrap(backup.importBackupFromFile))
+  // ── BACKUP (always local — not routed through LAN) ──
+  ipcMain.handle('domain:backup:exportAsFile',   (event, filename) => backup.exportBackupAsFile(backupsDir, filename))
+  ipcMain.handle('domain:backup:importFromFile', wrap(backup.importBackupFromFile))
 }
 
-module.exports = { registerAll }
+module.exports = { registerAll, updateMakeHandler }

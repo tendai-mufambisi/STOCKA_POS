@@ -261,11 +261,6 @@ function InventoryReconciliation() {
 
   return (
     <div className="inventory-reconciliation">
-      <div className="header">
-        <h1>📊 Inventory Reconciliation</h1>
-        <p>Physical count vs. system records</p>
-      </div>
-
       {error && <div className="alert alert-error"><FiAlertCircle /> {error}</div>}
       {success && <div className="alert alert-success"><FiCheck /> {success}</div>}
 
@@ -276,11 +271,11 @@ function InventoryReconciliation() {
           <div className="stat-value">{summary.productsProcessed}/{summary.productsTotal}</div>
         </div>
         <div className="stat-box success">
-          <div className="stat-label">✓ Matched</div>
+          <div className="stat-label"><FiCheck size={11} /> Matched</div>
           <div className="stat-value">{summary.matchedCount}</div>
         </div>
         <div className="stat-box warning">
-          <div className="stat-label">⚠ Discrepancies</div>
+          <div className="stat-label"><FiAlertCircle size={11} /> Discrepancies</div>
           <div className="stat-value">{summary.discrepancyCount}</div>
         </div>
         <div className="stat-box">

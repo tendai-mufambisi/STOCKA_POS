@@ -1,109 +1,68 @@
-//Settings.jsx - Shop details, user management, printer configuration, and password changes
 import { useState, useEffect } from 'react'
-import { getShop, updateShop, getUsers, addUser, updateUser, deactivateUser, getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile } from '../database/db'
+import {
+  getShop, updateShop, getUsers, addUser, updateUser, deactivateUser,
+  getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile
+} from '../database/db'
 import { validatePasswordStrength } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
 import { useAuthStore } from '../store/useAuthStore'
+import LanSettings from './LanSettings'
 import './Settings.css'
+import {
+  FiShoppingBag, FiUsers, FiPrinter, FiShield, FiFileText,
+  FiSliders, FiMonitor, FiHardDrive, FiWifi, FiSave, FiRefreshCw,
+  FiZap, FiUserPlus, FiKey, FiUserX, FiDownload, FiUpload,
+  FiAlertCircle, FiCheckCircle, FiX, FiCheck, FiLock
+} from 'react-icons/fi'
 
 function Settings() {
   const { user } = useAuthStore()
   const isCashier = user?.role === 'Cashier'
+  const isAdmin   = user?.role === 'Admin'
+
   const [activeTab, setActiveTab] = useState(isCashier ? 'password' : 'shop')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const [users, setUsers] = useState([])
-  const [passwordForm, setPasswordForm] = useState({
-    currentPassword: '',
-    newPassword: '',
-    confirmPassword: ''
-  })
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState('')
+  const [success, setSuccess]   = useState('')
+
   const [formData, setFormData] = useState({
-    name: '',
-    address: '',
-    phone: '',
-    email: '',
-    currency: 'USD',
-    printer_name: '',
-    printer_port: 'COM3',
-    auto_print: 1,
-    print_duplicate: 0
-  })
-  const [showNewUserForm, setShowNewUserForm] = useState(false)
-  const [newUserForm, setNewUserForm] = useState({
-    username: '',
-    password: '',
-    confirmPassword: '',
-    role: 'Cashier'
-  })
-  const [resetPasswordUserId, setResetPasswordUserId] = useState(null)
-  const [resetPasswordForm, setResetPasswordForm] = useState({
-    newPassword: '',
-    confirmPassword: ''
+    name: '', address: '', phone: '', email: '', currency: 'USD',
+    printer_name: '', printer_port: 'COM3', auto_print: 1, print_duplicate: 0,
+    receipt_width_mm: 58, receipt_footer: 'Thank you for your business!',
+    vat_rate: 0, default_reorder_level: 5, variance_tolerance: 0.01
   })
 
-  // Printer states
+  const [users, setUsers]               = useState([])
+  const [showNewUserForm, setShowNewUserForm] = useState(false)
+  const [newUserForm, setNewUserForm]   = useState({ username: '', password: '', confirmPassword: '', role: 'Cashier' })
+  const [resetPasswordUserId, setResetPasswordUserId] = useState(null)
+  const [resetPasswordForm, setResetPasswordForm]     = useState({ newPassword: '', confirmPassword: '' })
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
+
   const [availablePrinters, setAvailablePrinters] = useState([])
-  const [availableComPorts, setAvailableComPorts] = useState([])
-  const [scanningPrinters, setScanningPrinters] = useState(false)
-  const [scanningComPorts, setScanningComPorts] = useState(false)
-  const [testingPrinter, setTestingPrinter] = useState(false)
-  const [printStatus, setPrintStatus] = useState('')
-  // Backup state
-  const [backups, setBackups] = useState([])
-  const [creatingBackup, setCreatingBackup] = useState(false)
+  const [scanningPrinters, setScanningPrinters]   = useState(false)
+  const [testingPrinter, setTestingPrinter]       = useState(false)
+  const [printStatus, setPrintStatus]             = useState('')
+
+  const [backups, setBackups]           = useState([])
+  const [creatingBackup, setCreatingBackup]   = useState(false)
   const [restoringBackup, setRestoringBackup] = useState(false)
 
-  const isAdmin = user?.role === 'Admin'
+  const [systemInfo, setSystemInfo]         = useState(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateStatus, setUpdateStatus]     = useState('')
 
+  // ── Load on mount ───────────────────────────────────
   useEffect(() => {
     loadSettings()
-    if (isAdmin) {
-      loadUsers()
-      loadBackups()
-    }
+    if (isAdmin) { loadUsers(); loadBackups() }
   }, [isAdmin])
 
-  const handleChangePassword = async (e) => {
-    e.preventDefault()
-    setError('')
-    setSuccess('')
+  useEffect(() => {
+    if (activeTab === 'system') loadSystemInfo()
+  }, [activeTab])
 
-    if (!passwordForm.currentPassword) {
-      setError('Current password is required')
-      return
-    }
-
-    if (!passwordForm.newPassword) {
-      setError('New password is required')
-      return
-    }
-
-    if (passwordForm.newPassword.length < 6) {
-      setError('New password must be at least 6 characters')
-      return
-    }
-
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      setError('New passwords do not match')
-      return
-    }
-
-    try {
-      await updateUser(user.id, {
-        password: passwordForm.newPassword,
-        currentPassword: passwordForm.currentPassword
-      })
-      setSuccess('Password changed successfully')
-      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to change password:', err)
-      setError('Failed to change password. Please verify your current password.')
-    }
-  }
-
+  // ── Loaders ──────────────────────────────────────────
   const loadSettings = async () => {
     try {
       const shop = await getShop()
@@ -118,543 +77,390 @@ function Settings() {
           printer_name: shop.printer_name || '',
           printer_port: (shop.printer_port && String(shop.printer_port).trim()) || 'COM3',
           auto_print: shop.auto_print !== undefined ? shop.auto_print : 1,
-          print_duplicate: shop.print_duplicate !== undefined ? shop.print_duplicate : 0
+          print_duplicate: shop.print_duplicate !== undefined ? shop.print_duplicate : 0,
+          receipt_width_mm: shop.receipt_width_mm || 58,
+          receipt_footer: shop.receipt_footer !== undefined ? shop.receipt_footer : 'Thank you for your business!',
+          vat_rate: shop.vat_rate !== undefined ? shop.vat_rate : 0,
+          default_reorder_level: shop.default_reorder_level || 5,
+          variance_tolerance: shop.variance_tolerance !== undefined ? shop.variance_tolerance : 0.01
         })
       }
       setLoading(false)
-    } catch (err) {
-      console.error('Failed to load settings:', err)
-      setError('Failed to load settings')
-      setLoading(false)
-    }
+    } catch { setError('Failed to load settings'); setLoading(false) }
   }
 
   const loadUsers = async () => {
-    try {
-      const allUsers = await getUsers()
-      setUsers(allUsers)
-    } catch (err) {
-      console.error('Failed to load users:', err)
-    }
+    try { setUsers(await getUsers()) } catch { /* silent */ }
   }
 
   const loadBackups = async () => {
-    try {
-      const backupHistory = await getBackupHistory()
-      setBackups(backupHistory)
-    } catch (err) {
-      console.error('Failed to load backups:', err)
-    }
+    try { setBackups(await getBackupHistory()) } catch { /* silent */ }
   }
 
-  const handleCreateBackup = async () => {
-    setCreatingBackup(true)
-    setError('')
-    setSuccess('')
-    try {
-      const backupKey = await createDatabaseBackup()
-      if (backupKey) {
-        setSuccess(`✅ Backup created successfully: ${backupKey}`)
-        await loadBackups()
-        setTimeout(() => setSuccess(''), 5000)
-      } else {
-        setError('Failed to create backup')
-      }
-    } catch (err) {
-      console.error('Failed to create backup:', err)
-      setError('Failed to create backup: ' + err.message)
-    } finally {
-      setCreatingBackup(false)
+  const loadSystemInfo = async () => {
+    const w = window.stocka
+    const info = {
+      version: w?.version || 'Unknown',
+      platform: { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[w?.platform] || w?.platform || 'Unknown',
+      electronVersion: w?.electronVersion || 'N/A',
+      nodeVersion: w?.nodeVersion || 'N/A',
+      dbPath: null,
     }
+    if (w?.db?.getPaths) {
+      try {
+        const paths = await w.db.getPaths()
+        if (paths?.success) info.dbPath = paths.dbPath
+      } catch { /* silent */ }
+    }
+    setSystemInfo(info)
   }
 
-  const handleRestoreBackup = async (backupKey) => {
-    if (!window.confirm('⚠️ WARNING: This will overwrite your current database. Continue?')) {
-      return
-    }
-    
-    setRestoringBackup(true)
-    setError('')
-    setSuccess('')
-    try {
-      const success = await restoreFromBackup(backupKey)
-      if (success) {
-        setSuccess('✅ Database restored successfully! Reloading app...')
-        setTimeout(() => window.location.reload(), 2000)
-      } else {
-        setError('Failed to restore backup')
-      }
-    } catch (err) {
-      console.error('Failed to restore backup:', err)
-      setError('Failed to restore backup: ' + err.message)
-    } finally {
-      setRestoringBackup(false)
-    }
+  // ── Helpers ───────────────────────────────────────────
+  const flash = (type, msg) => {
+    if (type === 'success') { setSuccess(msg); setError('') }
+    else { setError(msg); setSuccess('') }
+    setTimeout(() => type === 'success' ? setSuccess('') : setError(''), 5000)
   }
 
-  const handleExportBackup = async (backupKey) => {
-    try {
-      const jsonData = await exportBackupAsFile(backupKey)
-      const element = document.createElement('a')
-      element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(jsonData))
-      element.setAttribute('download', `stocka-backup-${backupKey}.json`)
-      element.style.display = 'none'
-      document.body.appendChild(element)
-      element.click()
-      document.body.removeChild(element)
-      setSuccess('✅ Backup exported successfully')
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to export backup:', err)
-      setError('Failed to export backup: ' + err.message)
-    }
-  }
-
-  const handleScanPrinters = async () => {
-    if (!canUseNativePrinter()) {
-      setError('Printer scanning is only available in desktop app mode.')
-      return
-    }
-    setScanningPrinters(true)
-    setError('')
-    setPrintStatus('')
-    try {
-      const result = await window.stocka.printer.scan()
-      if (result.success) {
-        setAvailablePrinters(result.printers)
-        if (result.printers.length === 0) {
-          let errorMsg = 'No printers detected on this computer.'
-          if (result.diagnosticMessage) {
-            errorMsg += '\n\n' + result.diagnosticMessage
-          }
-          errorMsg += '\n\nTroubleshooting steps:\n1. Check if printer is connected via USB or Bluetooth\n2. Power on the printer\n3. Go to Windows Settings → Printers & scanners\n4. Install printer drivers if needed'
-          setError(errorMsg)
-        } else {
-          setPrintStatus(`Found ${result.printers.length} printer(s)`)
-          setTimeout(() => setPrintStatus(''), 3000)
-        }
-      } else {
-        setError(result.error || 'Failed to scan for printers')
-      }
-    } catch (err) {
-      console.error('Printer scan error:', err)
-      setError('Failed to scan for printers: ' + err.message)
-    } finally {
-      setScanningPrinters(false)
-    }
-  }
-
-  const handleScanComPorts = async () => {
-    setScanningComPorts(true)
-    setError('')
-    setPrintStatus('')
-    try {
-      const scan = window.stocka?.printer?.scanCom || window.stocka?.printer?.scanComPorts
-      if (typeof scan !== 'function') {
-        setError('COM port scan is not available in this build.')
-        return
-      }
-      const result = await scan()
-      if (result.success && result.ports?.length) {
-        setAvailableComPorts(result.ports)
-        setPrintStatus(`Found ${result.ports.length} COM port(s)`)
-        setTimeout(() => setPrintStatus(''), 4000)
-      } else {
-        setError(result.error || 'No COM ports returned. Enter a port manually (e.g. COM3).')
-      }
-    } catch (err) {
-      console.error('COM scan error:', err)
-      setError('Failed to scan COM ports: ' + err.message)
-    } finally {
-      setScanningComPorts(false)
-    }
-  }
-
-  const handleTestPrint = async () => {
-    if (!canUseNativePrinter()) {
-      setError('Printer test is only available in desktop app mode.')
-      return
-    }
-    setError('')
-    setPrintStatus('')
-    
-    const printerName = formData.printer_name?.trim()
-    if (!printerName) {
-      setError('No printer selected. Click "Scan for Printers" first, select your printer, then test.')
-      return
-    }
-
-    setTestingPrinter(true)
-    try {
-      const result = await window.stocka.printer.testByName(printerName)
-      if (result.success) {
-        setPrintStatus(`✅ Test print sent to "${printerName}" successfully!`)
-        setTimeout(() => setPrintStatus(''), 6000)
-      } else {
-        setError(`Test print failed: ${result.error || 'Unknown error'}`)
-      }
-    } catch (err) {
-      console.error('Test print error:', err)
-      setError('Test print failed: ' + err.message)
-    } finally {
-      setTestingPrinter(false)
-    }
-  }
-
+  // ── Handlers ─────────────────────────────────────────
   const handleSaveShop = async (e) => {
     e.preventDefault()
-    setError('')
-    setSuccess('')
-
-    if (!formData.name.trim()) {
-      setError('Shop name is required')
-      return
-    }
-
+    if (!formData.name.trim()) { flash('error', 'Shop name is required'); return }
     try {
       await updateShop(formData.id, formData)
-      setSuccess('Settings saved successfully')
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to save settings:', err)
-      setError('Failed to save settings')
-    }
+      flash('success', 'Settings saved successfully')
+    } catch { flash('error', 'Failed to save settings') }
+  }
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault()
+    if (!passwordForm.currentPassword) { flash('error', 'Current password is required'); return }
+    if (passwordForm.newPassword.length < 6) { flash('error', 'New password must be at least 6 characters'); return }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
+    try {
+      await updateUser(user.id, { password: passwordForm.newPassword, currentPassword: passwordForm.currentPassword })
+      flash('success', 'Password updated successfully')
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
+    } catch { flash('error', 'Failed to change password — check your current password') }
   }
 
   const handleAddUser = async (e) => {
     e.preventDefault()
-    setError('')
-    setSuccess('')
-
-    if (!newUserForm.username.trim()) {
-      setError('Username is required')
-      return
-    }
-
-    if (!newUserForm.password) {
-      setError('Password is required')
-      return
-    }
-
-    if (newUserForm.password !== newUserForm.confirmPassword) {
-      setError('Passwords do not match')
-      return
-    }
-
-    // Validate password strength
-    const passwordValidation = validatePasswordStrength(newUserForm.password)
-    if (!passwordValidation.isValid) {
-      setError(`Password is too weak: ${passwordValidation.message}`)
-      return
-    }
-
+    if (!newUserForm.username.trim()) { flash('error', 'Username is required'); return }
+    if (newUserForm.password !== newUserForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
+    const pv = validatePasswordStrength(newUserForm.password)
+    if (!pv.isValid) { flash('error', `Weak password: ${pv.message}`); return }
     try {
-      await addUser({
-        username: newUserForm.username,
-        password: newUserForm.password,
-        role: newUserForm.role,
-        created_by: user.username
-      })
-
-      setSuccess('User added successfully')
+      await addUser({ username: newUserForm.username, password: newUserForm.password, role: newUserForm.role, created_by: user.username })
+      flash('success', `User "${newUserForm.username}" created`)
       setNewUserForm({ username: '', password: '', confirmPassword: '', role: 'Cashier' })
       setShowNewUserForm(false)
       loadUsers()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to add user:', err)
-      setError('Failed to add user. Username may already exist.')
-    }
+    } catch { flash('error', 'Failed to add user — username may already exist') }
   }
 
   const handleResetPassword = async (e) => {
     e.preventDefault()
-    setError('')
-    setSuccess('')
-
-    if (!resetPasswordForm.newPassword) {
-      setError('New password is required')
-      return
-    }
-
-    if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) {
-      setError('Passwords do not match')
-      return
-    }
-
-    // Validate password strength
-    const passwordValidation = validatePasswordStrength(resetPasswordForm.newPassword)
-    if (!passwordValidation.isValid) {
-      setError(`Password is too weak: ${passwordValidation.message}`)
-      return
-    }
-
+    if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
+    const pv = validatePasswordStrength(resetPasswordForm.newPassword)
+    if (!pv.isValid) { flash('error', `Weak password: ${pv.message}`); return }
     try {
-      await updateUser(resetPasswordUserId, {
-        password: resetPasswordForm.newPassword
-      })
-
-      setSuccess('Password reset successfully')
+      await updateUser(resetPasswordUserId, { password: resetPasswordForm.newPassword })
+      flash('success', 'Password reset successfully')
       setResetPasswordUserId(null)
       setResetPasswordForm({ newPassword: '', confirmPassword: '' })
       loadUsers()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to reset password:', err)
-      setError('Failed to reset password')
-    }
+    } catch { flash('error', 'Failed to reset password') }
   }
 
   const handleDeactivateUser = async (userId) => {
-    if (!confirm('Are you sure you want to deactivate this user? They will not be able to log in.')) {
-      return
-    }
-
+    if (!confirm('Deactivate this user? They will not be able to log in.')) return
     const activeAdmins = users.filter(u => u.role === 'Admin' && u.is_active === 1)
     if (activeAdmins.length === 1 && activeAdmins[0].id === userId) {
-      setError('Cannot deactivate the last active admin user')
-      return
+      flash('error', 'Cannot deactivate the last active admin'); return
     }
-
     try {
       await deactivateUser(userId)
-      setSuccess('User deactivated successfully')
+      flash('success', 'User deactivated')
       loadUsers()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      console.error('Failed to deactivate user:', err)
-      setError('Failed to deactivate user')
-    }
+    } catch { flash('error', 'Failed to deactivate user') }
   }
 
-  if (loading) return <div className="settings-page"><div className="loading">Loading...</div></div>
+  const handleScanPrinters = async () => {
+    if (!canUseNativePrinter()) { flash('error', 'Printer scanning only available in desktop app'); return }
+    setScanningPrinters(true)
+    setError(''); setPrintStatus('')
+    try {
+      const result = await window.stocka.printer.scan()
+      if (result.success) {
+        setAvailablePrinters(result.printers)
+        if (result.printers.length === 0) flash('error', 'No printers found. Check that your printer is connected and powered on.')
+        else setPrintStatus(`Found ${result.printers.length} printer(s)`)
+      } else flash('error', result.error || 'Failed to scan for printers')
+    } catch (err) { flash('error', 'Printer scan failed: ' + err.message) }
+    finally { setScanningPrinters(false) }
+  }
+
+  const handleTestPrint = async () => {
+    if (!canUseNativePrinter()) { flash('error', 'Printer test only available in desktop app'); return }
+    if (!formData.printer_name?.trim()) { flash('error', 'Select a printer first'); return }
+    setTestingPrinter(true); setPrintStatus('')
+    try {
+      const result = await window.stocka.printer.testByName(formData.printer_name)
+      if (result.success) setPrintStatus(`✓ Test page sent to "${formData.printer_name}"`)
+      else flash('error', `Test print failed: ${result.error || 'Unknown error'}`)
+    } catch (err) { flash('error', 'Test print failed: ' + err.message) }
+    finally { setTestingPrinter(false) }
+  }
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true)
+    try {
+      const key = await createDatabaseBackup()
+      if (key) { flash('success', `Backup created: ${key}`); loadBackups() }
+      else flash('error', 'Failed to create backup')
+    } catch (err) { flash('error', 'Backup failed: ' + err.message) }
+    finally { setCreatingBackup(false) }
+  }
+
+  const handleRestoreBackup = async (key) => {
+    if (!confirm('⚠️ This will overwrite your current database. Are you sure?')) return
+    setRestoringBackup(true)
+    try {
+      const ok = await restoreFromBackup(key)
+      if (ok) { flash('success', 'Database restored. Reloading…'); setTimeout(() => window.location.reload(), 2000) }
+      else flash('error', 'Restore failed')
+    } catch (err) { flash('error', 'Restore failed: ' + err.message) }
+    finally { setRestoringBackup(false) }
+  }
+
+  const handleExportBackup = async (key) => {
+    try {
+      const json = await exportBackupAsFile(key)
+      const a = document.createElement('a')
+      a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(json)
+      a.download = `stocka-backup-${key}.json`
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      flash('success', 'Backup exported')
+    } catch (err) { flash('error', 'Export failed: ' + err.message) }
+  }
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdate(true); setUpdateStatus('')
+    try {
+      await window.stocka?.updater?.checkNow()
+      setUpdateStatus('Checking for updates…')
+      setTimeout(() => setUpdateStatus(''), 5000)
+    } catch { setUpdateStatus('Could not check for updates') }
+    finally { setCheckingUpdate(false) }
+  }
+
+  // ── Nav items ─────────────────────────────────────────
+  const navItems = [
+    { id: 'shop',     label: 'Shop Details',   Icon: FiShoppingBag, group: 'STORE',      show: !isCashier },
+    { id: 'printer',  label: 'Printer',         Icon: FiPrinter,     group: 'STORE',      show: isAdmin || user?.role === 'Manager' },
+    { id: 'receipt',  label: 'Receipt',         Icon: FiFileText,    group: 'STORE',      show: !isCashier },
+    { id: 'users',    label: 'Team & Users',   Icon: FiUsers,        group: 'STAFF',      show: isAdmin },
+    { id: 'password', label: 'Security',        Icon: FiShield,      group: 'ACCOUNT',    show: true },
+    { id: 'business', label: 'Business Rules',  Icon: FiSliders,     group: 'OPERATIONS', show: isAdmin },
+    { id: 'system',   label: 'System',          Icon: FiMonitor,     group: 'SYSTEM',     show: !isCashier },
+    { id: 'backup',   label: 'Backups',         Icon: FiHardDrive,   group: 'SYSTEM',     show: isAdmin },
+    { id: 'network',  label: 'Network',         Icon: FiWifi,        group: 'SYSTEM',     show: isAdmin },
+  ].filter(i => i.show)
+
+  if (loading) {
+    return (
+      <div className="settings-page">
+        <div className="s-loading s-loading--page">Loading settings…</div>
+      </div>
+    )
+  }
 
   return (
     <div className="settings-page">
-      <div className="page-header">
-        <h1>Settings</h1>
-        <p>Configure your shop and system preferences</p>
+      {/* Header */}
+      <div className="settings-header">
+        <h1 className="settings-header-title">Settings</h1>
+        <p className="settings-header-sub">Manage your shop, team, and system preferences</p>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
-      {success && <div className="success-banner">{success}</div>}
+      {/* Notifications */}
+      {error && (
+        <div className="settings-alert error">
+          <FiAlertCircle size={15} />
+          <span>{error}</span>
+          <button className="settings-alert-close" onClick={() => setError('')}><FiX size={13} /></button>
+        </div>
+      )}
+      {success && (
+        <div className="settings-alert success">
+          <FiCheckCircle size={15} />
+          <span>{success}</span>
+        </div>
+      )}
 
-      <div className="settings-tabs">
-        {!isCashier && (
-          <button
-            className={`tab-btn ${activeTab === 'shop' ? 'active' : ''}`}
-            onClick={() => setActiveTab('shop')}
-          >
-            🏪 Shop Details
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            className={`tab-btn ${activeTab === 'users' ? 'active' : ''}`}
-            onClick={() => setActiveTab('users')}
-          >
-            👥 User Management
-          </button>
-        )}
-        {(isAdmin || user?.role === 'Manager') && (
-          <button
-            className={`tab-btn ${activeTab === 'printer' ? 'active' : ''}`}
-            onClick={() => setActiveTab('printer')}
-          >
-            🖨️ Printer Settings
-          </button>
-        )}
-        <button
-          className={`tab-btn ${activeTab === 'password' ? 'active' : ''}`}
-          onClick={() => setActiveTab('password')}
-        >
-          🔐 Change Password
-        </button>
-        {!isCashier && (
-          <button
-            className={`tab-btn ${activeTab === 'system' ? 'active' : ''}`}
-            onClick={() => setActiveTab('system')}
-          >
-            ⚙️ System
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            className={`tab-btn ${activeTab === 'backup' ? 'active' : ''}`}
-            onClick={() => setActiveTab('backup')}
-          >
-            💾 Backups
-          </button>
-        )}
-      </div>
-
-      <div className="settings-container">
-        {activeTab === 'shop' && (
-          <div className="settings-section">
-            <h3>🏪 Shop Details</h3>
-            <form onSubmit={handleSaveShop}>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Shop Name *</label>
-                  <input
-                    type="text"
-                    name="name"
-                    value={formData.name}
-                    onChange={(e) => setFormData({...formData, name: e.target.value})}
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Currency</label>
-                  <select
-                    name="currency"
-                    value={formData.currency}
-                    onChange={(e) => setFormData({...formData, currency: e.target.value})}
-                  >
-                    <option>USD</option>
-                    <option>ZWL</option>
-                    <option>EUR</option>
-                    <option>GBP</option>
-                  </select>
-                </div>
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Email</label>
-                  <input
-                    type="email"
-                    name="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Phone</label>
-                  <input
-                    type="tel"
-                    name="phone"
-                    value={formData.phone}
-                    onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                  />
-                </div>
-              </div>
-              <div className="form-group">
-                <label>Address</label>
-                <textarea
-                  name="address"
-                  value={formData.address}
-                  onChange={(e) => setFormData({...formData, address: e.target.value})}
-                  rows="3"
-                />
-              </div>
-              <button type="submit" className="btn btn-primary">💾 Save Changes</button>
-            </form>
-          </div>
-        )}
-
-        {activeTab === 'users' && isAdmin && (
-          <div className="settings-section">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h3>👥 User Management</h3>
+      <div className="settings-body">
+        {/* ── Left Nav ── */}
+        <nav className="settings-nav">
+          {navItems.reduce((acc, item, i) => {
+            const prevGroup = i > 0 ? navItems[i - 1].group : null
+            if (item.group !== prevGroup) {
+              acc.push(
+                <div key={`group-${item.group}`} className="settings-nav-group">{item.group}</div>
+              )
+            }
+            acc.push(
               <button
-                className="btn btn-primary"
-                onClick={() => setShowNewUserForm(!showNewUserForm)}
+                key={item.id}
+                className={`settings-nav-item ${activeTab === item.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(item.id)}
               >
-                {showNewUserForm ? '✕ Cancel' : '➕ Add New User'}
+                <span className="s-nav-icon"><item.Icon size={14} /></span>
+                {item.label}
               </button>
-            </div>
+            )
+            return acc
+          }, [])}
+        </nav>
 
-            {showNewUserForm && (
-              <div style={{ marginBottom: '30px', padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
-                <h4>Add New User</h4>
-                <form onSubmit={handleAddUser}>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>Username *</label>
-                      <input
-                        type="text"
-                        value={newUserForm.username}
-                        onChange={(e) => setNewUserForm({...newUserForm, username: e.target.value})}
-                        required
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Role *</label>
-                      <select
-                        value={newUserForm.role}
-                        onChange={(e) => setNewUserForm({...newUserForm, role: e.target.value})}
-                      >
-                        <option value="Admin">Admin</option>
-                        <option value="Manager">Manager</option>
-                        <option value="Cashier">Cashier</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>Password *</label>
-                      <input
-                        type="password"
-                        value={newUserForm.password}
-                        onChange={(e) => setNewUserForm({...newUserForm, password: e.target.value})}
-                        required
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Confirm Password *</label>
-                      <input
-                        type="password"
-                        value={newUserForm.confirmPassword}
-                        onChange={(e) => setNewUserForm({...newUserForm, confirmPassword: e.target.value})}
-                        required
-                      />
-                    </div>
-                  </div>
-                  <button type="submit" className="btn btn-primary">Add User</button>
-                </form>
+        {/* ── Content ── */}
+        <div className="settings-content">
+
+          {/* ── SHOP ── */}
+          {activeTab === 'shop' && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiShoppingBag size={17} /> Shop Details</h2>
+                  <p className="s-card-desc">Your business identity shown on receipts and reports</p>
+                </div>
               </div>
-            )}
+              <form onSubmit={handleSaveShop}>
+                <div className="s-grid-2">
+                  <div className="s-field">
+                    <label className="s-label">Shop Name <span className="s-req">*</span></label>
+                    <input className="s-input" type="text" value={formData.name}
+                      onChange={e => setFormData({ ...formData, name: e.target.value })}
+                      placeholder="e.g. Blessed Stores" required />
+                  </div>
+                  <div className="s-field">
+                    <label className="s-label">Currency</label>
+                    <select className="s-select" value={formData.currency}
+                      onChange={e => setFormData({ ...formData, currency: e.target.value })}>
+                      <option>USD</option><option>ZWL</option><option>EUR</option><option>GBP</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="s-grid-2">
+                  <div className="s-field">
+                    <label className="s-label">Email Address</label>
+                    <input className="s-input" type="email" value={formData.email}
+                      onChange={e => setFormData({ ...formData, email: e.target.value })}
+                      placeholder="shop@example.com" />
+                  </div>
+                  <div className="s-field">
+                    <label className="s-label">Phone Number</label>
+                    <input className="s-input" type="tel" value={formData.phone}
+                      onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                      placeholder="+263 77 123 4567" />
+                  </div>
+                </div>
+                <div className="s-field">
+                  <label className="s-label">Physical Address</label>
+                  <textarea className="s-textarea" value={formData.address}
+                    onChange={e => setFormData({ ...formData, address: e.target.value })}
+                    rows="2" placeholder="Street address, city, country" />
+                </div>
+                <div className="s-form-footer">
+                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Changes</button>
+                </div>
+              </form>
+            </div>
+          )}
 
-            <div className="users-table">
-              <table>
+          {/* ── USERS ── */}
+          {activeTab === 'users' && isAdmin && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiUsers size={17} /> Team & Users</h2>
+                  <p className="s-card-desc">Manage staff accounts and access levels</p>
+                </div>
+                <button className="s-btn-primary s-btn-sm" onClick={() => setShowNewUserForm(!showNewUserForm)}>
+                  {showNewUserForm ? <><FiX size={12} /> Cancel</> : <><FiUserPlus size={12} /> Add User</>}
+                </button>
+              </div>
+
+              {showNewUserForm && (
+                <div className="s-inline-form">
+                  <h4 className="s-inline-form-title"><FiUserPlus size={14} /> New Staff Account</h4>
+                  <form onSubmit={handleAddUser}>
+                    <div className="s-grid-2">
+                      <div className="s-field">
+                        <label className="s-label">Username</label>
+                        <input className="s-input" type="text" value={newUserForm.username}
+                          onChange={e => setNewUserForm({ ...newUserForm, username: e.target.value })}
+                          placeholder="e.g. john_cashier" required />
+                      </div>
+                      <div className="s-field">
+                        <label className="s-label">Role</label>
+                        <select className="s-select" value={newUserForm.role}
+                          onChange={e => setNewUserForm({ ...newUserForm, role: e.target.value })}>
+                          <option value="Admin">Admin</option>
+                          <option value="Manager">Manager</option>
+                          <option value="Cashier">Cashier</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="s-grid-2">
+                      <div className="s-field">
+                        <label className="s-label">Password</label>
+                        <input className="s-input" type="password" value={newUserForm.password}
+                          onChange={e => setNewUserForm({ ...newUserForm, password: e.target.value })} required />
+                      </div>
+                      <div className="s-field">
+                        <label className="s-label">Confirm Password</label>
+                        <input className="s-input" type="password" value={newUserForm.confirmPassword}
+                          onChange={e => setNewUserForm({ ...newUserForm, confirmPassword: e.target.value })} required />
+                      </div>
+                    </div>
+                    <div className="s-form-footer">
+                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Create Account</button>
+                      <button type="button" className="s-btn-secondary s-btn-sm" onClick={() => setShowNewUserForm(false)}>Cancel</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              <table className="s-table">
                 <thead>
                   <tr>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Actions</th>
+                    <th>Staff Member</th><th>Role</th><th>Status</th><th>Joined</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {users.map(u => (
                     <tr key={u.id}>
-                      <td>{u.username}</td>
-                      <td>{u.role}</td>
                       <td>
-                        <span className={`badge ${u.is_active ? 'active' : 'inactive'}`}>
-                          {u.is_active ? 'Active' : 'Inactive'}
-                        </span>
+                        <div className="s-user-chip">
+                          <div className="s-user-avatar">{u.username[0]?.toUpperCase()}</div>
+                          <span className="s-user-name">{u.username}</span>
+                        </div>
                       </td>
-                      <td>{u.created_at ? new Date(u.created_at).toLocaleDateString('en-ZW') : '-'}</td>
+                      <td><span className={`s-badge ${u.role.toLowerCase()}`}>{u.role}</span></td>
+                      <td><span className={`s-badge ${u.is_active ? 'active' : 'inactive'}`}>{u.is_active ? 'Active' : 'Inactive'}</span></td>
+                      <td className="s-table-date-cell">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
                       <td>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <button
-                            className="btn btn-small btn-secondary"
-                            onClick={() => {
-                              setResetPasswordUserId(u.id)
-                              setResetPasswordForm({ newPassword: '', confirmPassword: '' })
-                            }}
-                          >
-                            🔑 Reset
+                        <div className="s-btn-row">
+                          <button className="s-btn-secondary s-btn-sm"
+                            onClick={() => { setResetPasswordUserId(u.id); setResetPasswordForm({ newPassword: '', confirmPassword: '' }) }}>
+                            <FiKey size={11} /> Reset PIN
                           </button>
                           {u.is_active && (
-                            <button
-                              className="btn btn-small btn-danger"
+                            <button className="s-btn-danger s-btn-sm"
                               onClick={() => handleDeactivateUser(u.id)}
-                              disabled={u.role === 'Admin' && users.filter(x => x.role === 'Admin' && x.is_active === 1).length === 1}
-                            >
-                              🔒 Deactivate
+                              disabled={u.role === 'Admin' && users.filter(x => x.role === 'Admin' && x.is_active === 1).length === 1}>
+                              <FiUserX size={11} /> Deactivate
                             </button>
                           )}
                         </div>
@@ -663,262 +469,359 @@ function Settings() {
                   ))}
                 </tbody>
               </table>
+
+              {resetPasswordUserId && (
+                <div className="s-reset-panel">
+                  <h4 className="s-reset-panel-title">
+                    <FiKey size={13} /> Reset Password — {users.find(u => u.id === resetPasswordUserId)?.username}
+                  </h4>
+                  <form onSubmit={handleResetPassword}>
+                    <div className="s-grid-2">
+                      <div className="s-field">
+                        <label className="s-label">New Password</label>
+                        <input className="s-input" type="password" value={resetPasswordForm.newPassword}
+                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, newPassword: e.target.value })} required />
+                      </div>
+                      <div className="s-field">
+                        <label className="s-label">Confirm Password</label>
+                        <input className="s-input" type="password" value={resetPasswordForm.confirmPassword}
+                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, confirmPassword: e.target.value })} required />
+                      </div>
+                    </div>
+                    <div className="s-form-footer">
+                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Save Password</button>
+                      <button type="button" className="s-btn-secondary s-btn-sm" onClick={() => setResetPasswordUserId(null)}>Cancel</button>
+                    </div>
+                  </form>
+                </div>
+              )}
             </div>
+          )}
 
-            {resetPasswordUserId && (
-              <div style={{ marginTop: '30px', padding: '20px', border: '1px solid #ddd', borderRadius: '8px' }}>
-                <h4>Reset Password for {users.find(u => u.id === resetPasswordUserId)?.username}</h4>
-                <form onSubmit={handleResetPassword}>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>New Password *</label>
-                      <input
-                        type="password"
-                        value={resetPasswordForm.newPassword}
-                        onChange={(e) => setResetPasswordForm({...resetPasswordForm, newPassword: e.target.value})}
-                        required
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Confirm Password *</label>
-                      <input
-                        type="password"
-                        value={resetPasswordForm.confirmPassword}
-                        onChange={(e) => setResetPasswordForm({...resetPasswordForm, confirmPassword: e.target.value})}
-                        required
-                      />
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <button type="submit" className="btn btn-primary">Reset Password</button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setResetPasswordUserId(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </form>
+          {/* ── PRINTER ── */}
+          {activeTab === 'printer' && (isAdmin || user?.role === 'Manager') && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiPrinter size={17} /> Thermal Printer</h2>
+                  <p className="s-card-desc">Configure your receipt printer connection</p>
+                </div>
               </div>
-            )}
-          </div>
-        )}
 
-        {activeTab === 'printer' && (isAdmin || user?.role === 'Manager') && (
-          <div className="settings-section">
-            <h3>🖨️ Printer Settings</h3>
-
-            {/* Scan + Select */}
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px' }}>
-                <input
-                  type="text"
-                  placeholder="Printer name"
-                  value={formData.printer_name || ''}
-                  onChange={(e) => setFormData({ ...formData, printer_name: e.target.value })}
-                  style={{ flex: 1, padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
-                />
-                <button type="button" className="btn btn-primary" onClick={handleScanPrinters} disabled={scanningPrinters}>
-                  {scanningPrinters ? 'Scanning...' : '🔍 Scan'}
-                </button>
+              <div className="s-field">
+                <label className="s-label">Selected Printer</label>
+                <div className="s-printer-input-row">
+                  <input className="s-input" type="text"
+                    placeholder="Printer name — click Scan to detect"
+                    value={formData.printer_name || ''}
+                    onChange={e => setFormData({ ...formData, printer_name: e.target.value })} />
+                  <button type="button" className="s-btn-secondary" onClick={handleScanPrinters} disabled={scanningPrinters}>
+                    <FiRefreshCw size={13} className={scanningPrinters ? 'spin' : ''} />
+                    {scanningPrinters ? 'Scanning…' : 'Scan'}
+                  </button>
+                </div>
               </div>
 
               {availablePrinters.filter(p => !p.isVirtual).length > 0 && (
-                <div style={{ border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden' }}>
+                <div className="s-printer-list">
                   {availablePrinters.filter(p => !p.isVirtual).map(printer => (
-                    <div
-                      key={printer.name}
-                      onClick={() => setFormData({ ...formData, printer_name: printer.name })}
-                      style={{
-                        padding: '10px 14px', cursor: 'pointer',
-                        borderBottom: '1px solid #f0f0f0',
-                        background: formData.printer_name === printer.name ? '#e3f2fd' : 'white',
-                        borderLeft: formData.printer_name === printer.name ? '4px solid #1976d2' : '4px solid transparent',
-                        display: 'flex', alignItems: 'center', gap: '8px'
-                      }}
-                    >
-                      <span>🖨️</span>
-                      <span style={{ fontWeight: formData.printer_name === printer.name ? 600 : 400 }}>
-                        {printer.name}
-                      </span>
-                      {formData.printer_name === printer.name && <span style={{ marginLeft: 'auto', color: '#1976d2', fontSize: 13 }}>✓ Selected</span>}
+                    <div key={printer.name}
+                      className={`s-printer-item ${formData.printer_name === printer.name ? 'chosen' : ''}`}
+                      onClick={() => setFormData({ ...formData, printer_name: printer.name })}>
+                      <div className="s-printer-icon"><FiPrinter size={15} /></div>
+                      <span className="s-printer-name">{printer.name}</span>
+                      {formData.printer_name === printer.name && <span className="s-printer-check"><FiCheck size={15} /></span>}
                     </div>
                   ))}
                 </div>
               )}
+
+              {printStatus && <div className="s-print-status">{printStatus}</div>}
+
+              <div className="s-form-footer s-form-footer--mb">
+                <button type="button" className="s-btn-secondary"
+                  onClick={handleTestPrint} disabled={testingPrinter || !formData.printer_name}>
+                  <FiZap size={13} /> {testingPrinter ? 'Printing…' : 'Test Print'}
+                </button>
+              </div>
+
+              <hr className="s-divider" />
+
+              <form onSubmit={handleSaveShop}>
+                <div className="s-toggle-row"
+                  onClick={() => setFormData({ ...formData, auto_print: formData.auto_print === 1 ? 0 : 1 })}>
+                  <div className="s-toggle-info">
+                    <div className="s-toggle-label">Auto-print receipts</div>
+                    <div className="s-toggle-sub">Automatically print after every completed sale</div>
+                  </div>
+                  <label className="s-switch" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={formData.auto_print === 1}
+                      onChange={e => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })} />
+                    <span className="s-switch-track" />
+                  </label>
+                </div>
+
+                <div className="s-toggle-row"
+                  onClick={() => setFormData({ ...formData, print_duplicate: formData.print_duplicate === 1 ? 0 : 1 })}>
+                  <div className="s-toggle-info">
+                    <div className="s-toggle-label">Print duplicate receipts</div>
+                    <div className="s-toggle-sub">Print 2 copies — one for customer, one for your records</div>
+                  </div>
+                  <label className="s-switch" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={formData.print_duplicate === 1}
+                      onChange={e => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })} />
+                    <span className="s-switch-track" />
+                  </label>
+                </div>
+
+                <div className="s-form-footer s-form-footer--mt">
+                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Printer Settings</button>
+                </div>
+              </form>
             </div>
+          )}
 
-            {printStatus && (
-              <div style={{ marginBottom: '12px', padding: '10px 14px', background: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '13px' }}>
-                {printStatus}
+          {/* ── RECEIPT ── */}
+          {activeTab === 'receipt' && !isCashier && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiFileText size={17} /> Receipt Configuration</h2>
+                  <p className="s-card-desc">Customize what customers see on their printed receipts</p>
+                </div>
               </div>
-            )}
-
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-secondary" onClick={handleTestPrint}
-                disabled={testingPrinter || !formData.printer_name}>
-                {testingPrinter ? 'Printing...' : '🖨️ Test Print'}
-              </button>
-            </div>
-
-            {/* Auto-print form */}
-            <form onSubmit={handleSaveShop}>
-              <div className="form-group" style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
-                  <input type="checkbox" checked={formData.auto_print === 1}
-                    onChange={(e) => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })}
-                    style={{ width: '18px', height: '18px' }} />
-                  Auto-print receipts after every sale
-                </label>
-              </div>
-              <div className="form-group" style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: 'normal' }}>
-                  <input type="checkbox" checked={formData.print_duplicate === 1}
-                    onChange={(e) => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })}
-                    style={{ width: '18px', height: '18px' }} />
-                  Print duplicate receipts (2 copies)
-                </label>
-              </div>
-              <button type="submit" className="btn btn-primary">💾 Save Printer Settings</button>
-            </form>
-          </div>
-        )}
-
-        {activeTab === 'password' && (
-          <div className="settings-section">
-            <h3>🔐 Change Password</h3>
-            <form onSubmit={handleChangePassword} style={{ maxWidth: '400px' }}>
-              <div className="form-group">
-                <label>Current Password *</label>
-                <input
-                  type="password"
-                  name="currentPassword"
-                  value={passwordForm.currentPassword}
-                  onChange={(e) => setPasswordForm({...passwordForm, currentPassword: e.target.value})}
-                  required
-                  placeholder="Enter your current password"
-                />
-              </div>
-              <div className="form-group">
-                <label>New Password *</label>
-                <input
-                  type="password"
-                  name="newPassword"
-                  value={passwordForm.newPassword}
-                  onChange={(e) => setPasswordForm({...passwordForm, newPassword: e.target.value})}
-                  required
-                  placeholder="Enter new password (minimum 6 characters)"
-                />
-              </div>
-              <div className="form-group">
-                <label>Confirm New Password *</label>
-                <input
-                  type="password"
-                  name="confirmPassword"
-                  value={passwordForm.confirmPassword}
-                  onChange={(e) => setPasswordForm({...passwordForm, confirmPassword: e.target.value})}
-                  required
-                  placeholder="Confirm new password"
-                />
-              </div>
-              <button type="submit" className="btn btn-primary">Update Password</button>
-            </form>
-          </div>
-        )}
-
-        {activeTab === 'system' && !isCashier && (
-          <div className="settings-section">
-            <h3>⚙️ System Information</h3>
-            <div className="info-box">
-              <div className="info-row">
-                <span className="label">App Version:</span>
-                <span className="value">1.0.0</span>
-              </div>
-              <div className="info-row">
-                <span className="label">Database:</span>
-                <span className="value">SQL.js (Local)</span>
-              </div>
-              <div className="info-row">
-                <span className="label">Mode:</span>
-                <span className="value">Offline</span>
-              </div>
-              <div className="info-row">
-                <span className="label">Status:</span>
-                <span className="value online">🟢 Online</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'backup' && isAdmin && (
-          <div className="settings-section">
-            <h3>💾 Database Backups</h3>
-            <p style={{ marginBottom: '16px', color: '#666' }}>
-              Regular backups protect your data. Automatic backups are created daily. You can also create manual backups or restore from previous versions.
-            </p>
-            
-            <div className="button-group" style={{ marginBottom: '24px' }}>
-              <button 
-                type="button" 
-                className="btn btn-primary" 
-                disabled={creatingBackup}
-                onClick={handleCreateBackup}
-              >
-                {creatingBackup ? '⏳ Creating backup...' : '➕ Create Manual Backup'}
-              </button>
-            </div>
-
-            {backups.length > 0 ? (
-              <div className="backup-list">
-                <h4>Available Backups ({backups.length})</h4>
-                <table className="backup-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Time</th>
-                      <th>Size</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {backups.map((backup) => (
-                      <tr key={backup.key}>
-                        <td>{backup.date}</td>
-                        <td>{backup.time}</td>
-                        <td>{(backup.size / 1024).toFixed(1)} KB</td>
-                        <td className="backup-actions">
-                          <button 
-                            type="button" 
-                            className="btn-small"
-                            onClick={() => handleExportBackup(backup.key)}
-                            title="Download backup file"
-                          >
-                            💾 Export
-                          </button>
-                          <button 
-                            type="button" 
-                            className="btn-small btn-danger"
-                            disabled={restoringBackup}
-                            onClick={() => handleRestoreBackup(backup.key)}
-                            title="Restore database from this backup"
-                          >
-                            ↻ Restore
-                          </button>
-                        </td>
-                      </tr>
+              <form onSubmit={handleSaveShop}>
+                <div className="s-field">
+                  <label className="s-label">Paper Roll Width</label>
+                  <div className="s-radio-group s-radio-group--mt">
+                    {[
+                      { value: 58, title: '58mm', sub: 'Narrow roll · 32 chars wide' },
+                      { value: 80, title: '80mm', sub: 'Wide roll · 42 chars wide' },
+                    ].map(opt => (
+                      <label key={opt.value}
+                        className={`s-radio-option ${Number(formData.receipt_width_mm) === opt.value ? 'chosen' : ''}`}>
+                        <input type="radio" name="receipt_width_mm" value={opt.value}
+                          checked={Number(formData.receipt_width_mm) === opt.value}
+                          onChange={() => setFormData({ ...formData, receipt_width_mm: opt.value })} />
+                        <span>
+                          <div className="s-radio-title">{opt.title}</div>
+                          <div className="s-radio-sub">{opt.sub}</div>
+                        </span>
+                      </label>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                  <p className="s-hint">Match this to the paper roll in your printer. Wrong setting causes split lines on receipts.</p>
+                </div>
+
+                <div className="s-field">
+                  <label className="s-label">Footer Message</label>
+                  <textarea className="s-textarea" rows="3"
+                    value={formData.receipt_footer}
+                    onChange={e => setFormData({ ...formData, receipt_footer: e.target.value })}
+                    placeholder="e.g. Thank you! WhatsApp: +263 77 123 4567" />
+                  <p className="s-hint">Printed at the bottom of every receipt — great for your contact or a thank-you note.</p>
+                </div>
+
+                <div className="s-form-footer">
+                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Receipt Settings</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* ── SECURITY ── */}
+          {activeTab === 'password' && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiShield size={17} /> Security</h2>
+                  <p className="s-card-desc">Change your login password</p>
+                </div>
               </div>
-            ) : (
-              <div className="info-box">
-                <p>No backups available yet. Create one now to protect your data.</p>
+              <form onSubmit={handleChangePassword} className="s-password-form">
+                <div className="s-field">
+                  <label className="s-label">Current Password</label>
+                  <input className="s-input" type="password"
+                    value={passwordForm.currentPassword}
+                    onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
+                    placeholder="Enter your current password" required />
+                </div>
+                <div className="s-field">
+                  <label className="s-label">New Password</label>
+                  <input className="s-input" type="password"
+                    value={passwordForm.newPassword}
+                    onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
+                    placeholder="Minimum 6 characters" required />
+                </div>
+                <div className="s-field">
+                  <label className="s-label">Confirm New Password</label>
+                  <input className="s-input" type="password"
+                    value={passwordForm.confirmPassword}
+                    onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                    placeholder="Repeat new password" required />
+                </div>
+                <div className="s-form-footer">
+                  <button type="submit" className="s-btn-primary"><FiShield size={13} /> Update Password</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* ── BUSINESS RULES ── */}
+          {activeTab === 'business' && isAdmin && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiSliders size={17} /> Business Rules</h2>
+                  <p className="s-card-desc">Tax rates, inventory thresholds, and cash handling policies</p>
+                </div>
               </div>
-            )}
-          </div>
-        )}
+              <form onSubmit={handleSaveShop}>
+                <div className="s-grid-3">
+                  <div className="s-field">
+                    <label className="s-label">VAT / Tax Rate (%)</label>
+                    <input className="s-input" type="number" min="0" max="100" step="0.5"
+                      value={formData.vat_rate}
+                      onChange={e => setFormData({ ...formData, vat_rate: parseFloat(e.target.value) || 0 })} />
+                    <p className="s-hint">Set to 0 to disable. Zimbabwe VAT is 15%. Shown as a separate line on receipts.</p>
+                  </div>
+                  <div className="s-field">
+                    <label className="s-label">Default Reorder Level</label>
+                    <input className="s-input" type="number" min="1" step="1"
+                      value={formData.default_reorder_level}
+                      onChange={e => setFormData({ ...formData, default_reorder_level: parseInt(e.target.value) || 5 })} />
+                    <p className="s-hint">Low-stock alert threshold applied to new products. Each product can override individually.</p>
+                  </div>
+                  <div className="s-field">
+                    <label className="s-label">Shift Variance Tolerance ($)</label>
+                    <input className="s-input" type="number" min="0" step="0.01"
+                      value={formData.variance_tolerance}
+                      onChange={e => setFormData({ ...formData, variance_tolerance: parseFloat(e.target.value) || 0.01 })} />
+                    <p className="s-hint">Maximum acceptable cash difference before a shift is flagged short or over.</p>
+                  </div>
+                </div>
+                <div className="s-form-footer">
+                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Business Rules</button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* ── SYSTEM ── */}
+          {activeTab === 'system' && !isCashier && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiMonitor size={17} /> System Information</h2>
+                  <p className="s-card-desc">Application environment and runtime details</p>
+                </div>
+              </div>
+
+              {!systemInfo ? (
+                <div className="s-loading">Loading system info…</div>
+              ) : (
+                <>
+                  <div className="s-info-row">
+                    <span className="s-info-label">App Version</span>
+                    <span className="s-info-value"><code className="s-code">v{systemInfo.version}</code></span>
+                  </div>
+                  <div className="s-info-row">
+                    <span className="s-info-label">Platform</span>
+                    <span className="s-info-value">{systemInfo.platform}</span>
+                  </div>
+                  <div className="s-info-row">
+                    <span className="s-info-label">Electron</span>
+                    <span className="s-info-value"><code className="s-code">{systemInfo.electronVersion}</code></span>
+                  </div>
+                  <div className="s-info-row">
+                    <span className="s-info-label">Node.js</span>
+                    <span className="s-info-value"><code className="s-code">{systemInfo.nodeVersion}</code></span>
+                  </div>
+                  <div className="s-info-row">
+                    <span className="s-info-label">Storage Engine</span>
+                    <span className="s-info-value">SQLite · Local</span>
+                  </div>
+                  {systemInfo.dbPath && (
+                    <div className="s-info-row">
+                      <span className="s-info-label">Database File</span>
+                      <span className="s-info-value s-info-value--db">
+                        <code className="s-code">{systemInfo.dbPath}</code>
+                      </span>
+                    </div>
+                  )}
+                  <div className="s-info-row">
+                    <span className="s-info-label">Data Mode</span>
+                    <span className="s-info-value s-offline-badge"><FiLock size={12} /> Offline Only</span>
+                  </div>
+                </>
+              )}
+
+              {isAdmin && (
+                <div className="s-update-row">
+                  <button className="s-btn-secondary" onClick={handleCheckUpdates} disabled={checkingUpdate}>
+                    <FiRefreshCw size={13} className={checkingUpdate ? 'spin' : ''} />
+                    {checkingUpdate ? 'Checking…' : 'Check for Updates'}
+                  </button>
+                  {updateStatus && <span className="s-update-status">{updateStatus}</span>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── BACKUPS ── */}
+          {activeTab === 'backup' && isAdmin && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiHardDrive size={17} /> Database Backups</h2>
+                  <p className="s-card-desc">Protect your data. Automatic backups run daily — create a manual one anytime.</p>
+                </div>
+                <button className="s-btn-primary" onClick={handleCreateBackup} disabled={creatingBackup}>
+                  <FiDownload size={13} /> {creatingBackup ? 'Creating…' : 'Create Backup'}
+                </button>
+              </div>
+
+              {backups.length === 0 ? (
+                <div className="s-empty">
+                  <div className="s-empty-icon"><FiHardDrive size={30} /></div>
+                  <p>No backups yet. Create one now to protect your data.</p>
+                </div>
+              ) : (
+                backups.map(backup => (
+                  <div key={backup.key} className="s-backup-row">
+                    <div className="s-backup-icon"><FiHardDrive size={15} /></div>
+                    <div className="s-backup-info">
+                      <div className="s-backup-date">{backup.date} · {backup.time}</div>
+                      <div className="s-backup-size">{(backup.size / 1024).toFixed(1)} KB</div>
+                    </div>
+                    <div className="s-btn-row">
+                      <button className="s-btn-secondary s-btn-sm" onClick={() => handleExportBackup(backup.key)}>
+                        <FiDownload size={11} /> Export
+                      </button>
+                      <button className="s-btn-danger s-btn-sm" onClick={() => handleRestoreBackup(backup.key)} disabled={restoringBackup}>
+                        <FiUpload size={11} /> Restore
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* ── NETWORK ── */}
+          {activeTab === 'network' && isAdmin && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiWifi size={17} /> Network & LAN Sync</h2>
+                  <p className="s-card-desc">Connect multiple tills over your local network</p>
+                </div>
+              </div>
+              <LanSettings />
+            </div>
+          )}
+
+        </div>
       </div>
     </div>
   )

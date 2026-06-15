@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getExpiringProducts, getExpiredProducts, getExpiryReport } from '../database/db'
 import './ExpiryTracking.css'
-import { FiCalendar, FiAlertTriangle } from 'react-icons/fi'
+import { FiCalendar, FiAlertTriangle, FiClock, FiShield } from 'react-icons/fi'
 
 function ExpiryTracking() {
   const [expiryReport, setExpiryReport] = useState({})
@@ -59,11 +59,6 @@ function ExpiryTracking() {
 
   return (
     <div className="expiry-page">
-      <div className="page-header">
-        <h1>Expiry Tracking</h1>
-        <p>Monitor product expiry dates - ensure food safety and minimize waste</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
 
       {/* Summary Cards */}
@@ -108,13 +103,13 @@ function ExpiryTracking() {
           className={`tab-btn ${activeTab === 'expiring' ? 'active' : ''}`}
           onClick={() => setActiveTab('expiring')}
         >
-          ⏰ Expiring Soon ({expiringProducts.length})
+          <FiClock size={14} /> Expiring Soon ({expiringProducts.length})
         </button>
         <button
           className={`tab-btn ${activeTab === 'expired' ? 'active' : ''}`}
           onClick={() => setActiveTab('expired')}
         >
-          🚫 Already Expired ({expiredProducts.length})
+          <FiAlertTriangle size={14} /> Already Expired ({expiredProducts.length})
         </button>
       </div>
 
@@ -150,19 +145,19 @@ function ExpiryTracking() {
                         </td>
                         <td className="days">
                           {daysUntil === 0 ? (
-                            <span className="expires-today">🔴 Today</span>
+                            <span className="expires-today">Today</span>
                           ) : daysUntil === 1 ? (
-                            <span className="expires-tomorrow">🟠 Tomorrow</span>
+                            <span className="expires-tomorrow">Tomorrow</span>
                           ) : (
                             <span>{daysUntil} days</span>
                           )}
                         </td>
                         <td className={`status ${urgency}`}>
-                          {urgency === 'critical' && '🚨 Critical'}
-                          {urgency === 'today' && '⚠️ TODAY'}
-                          {urgency === 'urgent' && '⚡ Urgent'}
-                          {urgency === 'warning' && '📢 Warning'}
-                          {urgency === 'caution' && '💡 Notice'}
+                          {urgency === 'critical' && 'Critical'}
+                          {urgency === 'today' && 'TODAY'}
+                          {urgency === 'urgent' && 'Urgent'}
+                          {urgency === 'warning' && 'Warning'}
+                          {urgency === 'caution' && 'Notice'}
                         </td>
                         <td className="action">
                           {daysUntil <= 3 && (
@@ -221,7 +216,7 @@ function ExpiryTracking() {
                           <span className="expired-by">{daysExpired} days ago</span>
                         </td>
                         <td className="status critical">
-                          🚫 Expired
+                          Expired
                         </td>
                         <td className="action">
                           <button className="action-btn remove">Remove</button>
@@ -245,7 +240,7 @@ function ExpiryTracking() {
 
       {/* Best Practices */}
       <div className="best-practices">
-        <h3>🛡️ Best Practices</h3>
+        <h3><FiShield size={16} /> Best Practices</h3>
         <ul>
           <li><strong>Check daily:</strong> Review this page every morning to catch upcoming expirations</li>
           <li><strong>FIFO method:</strong> Use First-In-First-Out to minimize waste</li>

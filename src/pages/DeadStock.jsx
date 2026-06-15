@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getDeadStockProducts } from '../database/db'
 import './DeadStock.css'
-import { FiTrendingDown, FiCalendar } from 'react-icons/fi'
+import { FiTrendingDown, FiCalendar, FiCheck, FiPackage } from 'react-icons/fi'
 
 function DeadStock() {
   const [deadStockProducts, setDeadStockProducts] = useState([])
@@ -55,11 +55,6 @@ function DeadStock() {
 
   return (
     <div className="dead-stock-page">
-      <div className="page-header">
-        <h1>Dead Stock Analysis</h1>
-        <p>Products that haven't been sold recently - opportunities for clearance</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
 
       {/* Overview */}
@@ -127,11 +122,17 @@ function DeadStock() {
                 <div className="info-row">
                   <span>Status</span>
                   <span className={`status-badge ${product.current_quantity > 0 ? 'stocked' : 'empty'}`}>
-                    {product.current_quantity > 0 ? '📦 Has Stock' : '✓ Cleared'}
+                    {product.current_quantity > 0 ? <><FiPackage size={11} /> In Stock</> : <><FiCheck size={11} /> Cleared</>}
                   </span>
                 </div>
               </div>
 
+              {product.current_quantity > 0 && (
+                <div className="card-action">
+                  <button className="action-btn promote">Run Promotion</button>
+                  <button className="action-btn discount">Apply Discount</button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -146,7 +147,7 @@ function DeadStock() {
       {/* Recommendations */}
       {filteredProducts.length > 0 && (
         <div className="recommendations">
-          <h3>💡 Recommendations</h3>
+          <h3>Recommendations</h3>
           <ul>
             <li>Consider running a clearance sale on slow-moving items to free up cash and shelf space</li>
             <li>Review pricing - these items might benefit from a discount strategy</li>

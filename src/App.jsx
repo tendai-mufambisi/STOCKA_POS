@@ -124,7 +124,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <HashRouter>
+      <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/" element={
             setupComplete === null || setupComplete === false ? <Navigate to="/setup" /> : user ? <Navigate to="/dashboard" /> : <Navigate to="/login" />

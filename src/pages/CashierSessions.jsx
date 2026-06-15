@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getActiveShifts, getAllShifts, getShiftById } from '../database/db'
 import './CashierSessions.css'
-import { FiClock, FiEye, FiFilter, FiRefreshCw, FiTrendingUp } from 'react-icons/fi'
+import { FiClock, FiEye, FiFilter, FiRefreshCw, FiTrendingUp, FiX, FiCheckCircle, FiAlertCircle, FiInfo } from 'react-icons/fi'
 
 function CashierSessions() {
   const [activeSection, setActiveSection] = useState('live') // 'live' | 'history'
@@ -104,29 +104,12 @@ function CashierSessions() {
     return `${hours}h ${mins}m`
   }
 
-  const getVarianceColor = (status) => {
-    switch (status) {
-      case 'balanced':
-        return '#4CAF50'
-      case 'short':
-        return '#f44336'
-      case 'over':
-        return '#2196F3'
-      default:
-        return '#666'
-    }
-  }
-
   const getVarianceIcon = (status) => {
     switch (status) {
-      case 'balanced':
-        return '✅'
-      case 'short':
-        return '⚠️'
-      case 'over':
-        return 'ℹ️'
-      default:
-        return ''
+      case 'balanced': return <FiCheckCircle size={13} />
+      case 'short':    return <FiAlertCircle size={13} />
+      case 'over':     return <FiInfo size={13} />
+      default:         return null
     }
   }
 
@@ -142,7 +125,7 @@ function CashierSessions() {
         <div className="header-actions">
           {activeSection === 'live' && (
             <>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <label>
                 <input
                   type="checkbox"
                   checked={autoRefresh}
@@ -150,24 +133,8 @@ function CashierSessions() {
                 />
                 Auto-refresh
               </label>
-              <button 
-                onClick={() => loadActiveShifts()}
-                style={{
-                  padding: '8px 16px',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  backgroundColor: '#fff',
-                  color: '#333',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  fontWeight: '500',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}
-              >
-                <FiRefreshCw size={16} />
-                Refresh Now
+              <button className="btn btn-secondary" onClick={() => loadActiveShifts()}>
+                <FiRefreshCw size={16} /> Refresh Now
               </button>
             </>
           )}
@@ -212,7 +179,7 @@ function CashierSessions() {
                     <div key={shift.id} className="shift-card active-card">
                       <div className="card-header">
                         <h3>{shift.cashier_display_name || shift.cashier_username}</h3>
-                        <span className="status-badge active">🔴 CLOCK IN</span>
+                        <span className="status-badge live"><span className="live-dot" />Live</span>
                       </div>
 
                       <div className="card-body">
@@ -234,34 +201,16 @@ function CashierSessions() {
                         </div>
 
                         <div className="payment-breakdown">
-                          <h4 style={{ fontSize: '12px', fontWeight: '600', color: '#666', marginTop: '12px', marginBottom: '8px' }}>USD Cash Expected:</h4>
-                          <div style={{ fontSize: '12px', color: '#666', lineHeight: '1.6' }}>
+                          <h4>USD Cash Expected:</h4>
+                          <div className="bd-amount">
                             <div>${totalExpected_usd.toFixed(2)}</div>
                           </div>
                         </div>
                       </div>
 
                       <div className="card-footer">
-                        <button
-                          onClick={() => setSelectedShift(shift)}
-                          style={{
-                            flex: 1,
-                            padding: '10px',
-                            backgroundColor: '#2196F3',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            fontSize: '13px',
-                            fontWeight: '500',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '6px'
-                          }}
-                        >
-                          <FiEye size={16} />
-                          View Details
+                        <button className="btn btn-primary btn-block" onClick={() => setSelectedShift(shift)}>
+                          <FiEye size={16} /> View Details
                         </button>
                       </div>
                     </div>
@@ -282,12 +231,6 @@ function CashierSessions() {
                     value={filterCashier}
                     onChange={(e) => setFilterCashier(e.target.value)}
                     placeholder="Search cashier..."
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      fontSize: '14px'
-                    }}
                   />
                 </div>
                 <div className="filter-group">
@@ -295,13 +238,6 @@ function CashierSessions() {
                   <select
                     value={filterStatus}
                     onChange={(e) => setFilterStatus(e.target.value)}
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      fontSize: '14px',
-                      backgroundColor: '#fff'
-                    }}
                   >
                     <option value="all">All</option>
                     <option value="balanced">Balanced</option>
@@ -315,12 +251,6 @@ function CashierSessions() {
                     type="date"
                     value={dateFrom}
                     onChange={(e) => setDateFrom(e.target.value)}
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      fontSize: '14px'
-                    }}
                   />
                 </div>
                 <div className="filter-group">
@@ -329,12 +259,6 @@ function CashierSessions() {
                     type="date"
                     value={dateTo}
                     onChange={(e) => setDateTo(e.target.value)}
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      fontSize: '14px'
-                    }}
                   />
                 </div>
               </div>
@@ -373,26 +297,15 @@ function CashierSessions() {
                         <td>{shift.total_sales_count || 0}</td>
                         <td>${(shift.total_sales_value || 0).toFixed(2)}</td>
                         <td>
-                          <span style={{ color: getVarianceColor(shift.reconciliation_status) }}>
+                          <span className={`variance-status ${shift.reconciliation_status || ''}`}>
                             {getVarianceIcon(shift.reconciliation_status)} {shift.reconciliation_status}
                           </span>
                         </td>
-                        <td style={{ color: getVarianceColor(shift.reconciliation_status) }}>
+                        <td className={`variance-amount ${shift.reconciliation_status || ''}`}>
                           ${Math.abs(shift.overall_variance || 0).toFixed(2)}
                         </td>
                         <td>
-                          <button
-                            onClick={() => setSelectedShift(shift)}
-                            style={{
-                              padding: '6px 12px',
-                              backgroundColor: '#2196F3',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '4px',
-                              fontSize: '12px',
-                              cursor: 'pointer'
-                            }}
-                          >
+                          <button className="btn btn-primary btn-sm" onClick={() => setSelectedShift(shift)}>
                             View Report
                           </button>
                         </td>
@@ -417,7 +330,6 @@ function CashierSessions() {
   )
 }
 
-// Simple detail modal
 function ShiftDetailModal({ shift, onClose }) {
   const [shiftData, setShiftData] = useState(shift)
 
@@ -431,198 +343,91 @@ function ShiftDetailModal({ shift, onClose }) {
 
   const formatTime = (dateString) => {
     if (!dateString) return '-'
-    const date = new Date(dateString)
-    return date.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+    return new Date(dateString).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
   }
 
-  const VarianceRow = ({ label, expected, actual, variance, isUSD = false }) => {
-    const isZero = Math.abs(variance) < 0.01
-    return (
-      <tr>
-        <td style={{ padding: '12px' }}>{label}</td>
-        <td style={{ padding: '12px', textAlign: 'right', fontFamily: 'monospace' }}>
-          {isUSD ? '$' : 'ZWG'}{expected.toFixed(isUSD ? 2 : 0)}
-        </td>
-        <td style={{ padding: '12px', textAlign: 'right', fontFamily: 'monospace' }}>
-          {isUSD ? '$' : 'ZWG'}{actual.toFixed(isUSD ? 2 : 0)}
-        </td>
-        <td style={{
-          padding: '12px',
-          textAlign: 'right',
-          fontFamily: 'monospace',
-          color: isZero ? '#666' : (variance > 0 ? '#4CAF50' : '#f44336'),
-          fontWeight: '500'
-        }}>
-          {variance > 0 ? '+' : ''}{isUSD ? '$' : 'ZWG'}{Math.abs(variance).toFixed(isUSD ? 2 : 0)}
-        </td>
-      </tr>
-    )
-  }
+  const status = shiftData.reconciliation_status
+  const variance = shiftData.variance || 0
+  const isZero = Math.abs(variance) < 0.01
+
+  const statusLabel = status === 'balanced'
+    ? 'Balanced'
+    : status === 'short'
+      ? `Short — $${Math.abs(shiftData.overall_variance || 0).toFixed(2)}`
+      : `Over — $${(shiftData.overall_variance || 0).toFixed(2)}`
+
+  const StatusIcon = status === 'balanced' ? FiCheckCircle : status === 'short' ? FiAlertCircle : FiInfo
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 2000
-    }}>
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '8px',
-        maxWidth: '900px',
-        width: '90%',
-        maxHeight: '90vh',
-        overflow: 'auto',
-        boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)'
-      }}>
-        {/* Modal Header */}
-        <div style={{
-          padding: '24px',
-          borderBottom: '1px solid #eee',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
+    <div className="shift-modal-overlay" onClick={onClose}>
+      <div className="shift-modal" onClick={e => e.stopPropagation()}>
+
+        <div className="shift-modal-header">
           <div>
-            <h2 style={{ margin: '0 0 8px 0', fontSize: '22px', fontWeight: '600' }}>
-              Shift Report: {shiftData.cashier_display_name || shiftData.cashier_username}
-            </h2>
-            <p style={{ margin: '0', fontSize: '14px', color: '#666' }}>
-              {new Date(shiftData.started_at).toLocaleDateString('en-ZA')}
-            </p>
+            <h2>Shift Report: {shiftData.cashier_display_name || shiftData.cashier_username}</h2>
+            <p>{new Date(shiftData.started_at).toLocaleDateString('en-ZA')}</p>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              fontSize: '28px',
-              cursor: 'pointer',
-              color: '#ccc'
-            }}
-          >
-            ✕
-          </button>
+          <button className="shift-modal-close" onClick={onClose}><FiX size={16} /></button>
         </div>
 
-        {/* Modal Body */}
-        <div style={{ padding: '24px' }}>
-          {/* Summary */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 1fr',
-            gap: '16px',
-            marginBottom: '24px'
-          }}>
-            <div style={{ padding: '12px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
-              <div style={{ fontSize: '12px', color: '#666' }}>Start Time</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', marginTop: '4px' }}>
-                {formatTime(shiftData.started_at)}
-              </div>
+        <div className="shift-modal-body">
+          <div className="shift-summary-grid">
+            <div className="shift-summary-item">
+              <div className="s-label">Start Time</div>
+              <div className="s-value">{formatTime(shiftData.started_at)}</div>
             </div>
-            <div style={{ padding: '12px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
-              <div style={{ fontSize: '12px', color: '#666' }}>End Time</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', marginTop: '4px' }}>
-                {formatTime(shiftData.closed_at)}
-              </div>
+            <div className="shift-summary-item">
+              <div className="s-label">End Time</div>
+              <div className="s-value">{formatTime(shiftData.closed_at)}</div>
             </div>
-            <div style={{ padding: '12px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
-              <div style={{ fontSize: '12px', color: '#666' }}>Transactions</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', marginTop: '4px' }}>
-                {shiftData.total_sales_count || 0}
-              </div>
+            <div className="shift-summary-item">
+              <div className="s-label">Transactions</div>
+              <div className="s-value">{shiftData.total_sales_count || 0}</div>
             </div>
-            <div style={{ padding: '12px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
-              <div style={{ fontSize: '12px', color: '#666' }}>Total Sales</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', marginTop: '4px' }}>
-                ${(shiftData.total_sales_value || 0).toFixed(2)}
-              </div>
+            <div className="shift-summary-item">
+              <div className="s-label">Total Sales</div>
+              <div className="s-value">${(shiftData.total_sales_value || 0).toFixed(2)}</div>
             </div>
           </div>
 
-          {/* Reconciliation Table */}
-          <h3 style={{ fontSize: '16px', fontWeight: '600', marginTop: '24px', marginBottom: '12px' }}>
-            Float Reconciliation
-          </h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '24px' }}>
+          <h3 className="recon-title">Float Reconciliation</h3>
+          <table className="recon-table">
             <thead>
-              <tr style={{ backgroundColor: '#f5f5f5' }}>
-                <th style={{ padding: '12px', textAlign: 'left', fontWeight: '600', fontSize: '13px' }}>Payment Method</th>
-                <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600', fontSize: '13px' }}>Expected</th>
-                <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600', fontSize: '13px' }}>Actual</th>
-                <th style={{ padding: '12px', textAlign: 'right', fontWeight: '600', fontSize: '13px' }}>Variance</th>
+              <tr>
+                <th>Payment Method</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Variance</th>
               </tr>
             </thead>
             <tbody>
-              <VarianceRow
-                label="USD Cash"
-                expected={(shiftData.opening_cash || 0) + (shiftData.total_sales_value || 0)}
-                actual={shiftData.closing_cash || 0}
-                variance={shiftData.variance || 0}
-                isUSD={true}
-              />
+              <tr>
+                <td>USD Cash</td>
+                <td>${((shiftData.opening_cash || 0) + (shiftData.total_sales_value || 0)).toFixed(2)}</td>
+                <td>${(shiftData.closing_cash || 0).toFixed(2)}</td>
+                <td className={`recon-variance ${isZero ? 'zero' : variance > 0 ? 'positive' : 'negative'}`}>
+                  {variance > 0 ? '+' : ''}${Math.abs(variance).toFixed(2)}
+                </td>
+              </tr>
             </tbody>
           </table>
 
-          {/* Overall Status */}
           {shiftData.notes && (
-            <div style={{
-              padding: '12px',
-              backgroundColor: '#f5f5f5',
-              borderRadius: '4px',
-              marginBottom: '16px'
-            }}>
-              <strong style={{ fontSize: '13px' }}>Cashier Notes:</strong><br />
-              <span style={{ fontSize: '13px', color: '#666' }}>{shiftData.notes}</span>
+            <div className="cashier-notes-box">
+              <span className="notes-label">Cashier Notes</span>
+              <span className="notes-text">{shiftData.notes}</span>
             </div>
           )}
 
-          <div style={{
-            padding: '16px',
-            backgroundColor: shiftData.reconciliation_status === 'balanced' ? '#f1f8f4' : 
-                           shiftData.reconciliation_status === 'short' ? '#fff3e0' : '#f3e5f5',
-            borderLeft: `4px solid ${
-              shiftData.reconciliation_status === 'balanced' ? '#4CAF50' :
-              shiftData.reconciliation_status === 'short' ? '#ff9800' : '#9c27b0'
-            }`,
-            borderRadius: '4px'
-          }}>
-            <div style={{ fontSize: '16px', fontWeight: '600' }}>
-              {shiftData.reconciliation_status === 'balanced' ? '✅ BALANCED' :
-               shiftData.reconciliation_status === 'short' ? `⚠️ SHORT $${Math.abs(shiftData.overall_variance || 0).toFixed(2)}` :
-               `ℹ️ OVER $${(shiftData.overall_variance || 0).toFixed(2)}`}
-            </div>
+          <div className={`shift-status-banner ${status || ''}`}>
+            <StatusIcon size={16} /> {statusLabel}
           </div>
         </div>
 
-        {/* Modal Footer */}
-        <div style={{
-          padding: '16px 24px',
-          borderTop: '1px solid #eee',
-          textAlign: 'right'
-        }}>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '10px 20px',
-              backgroundColor: '#2196F3',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              fontSize: '14px',
-              fontWeight: '500',
-              cursor: 'pointer'
-            }}
-          >
-            Close
-          </button>
+        <div className="shift-modal-footer">
+          <button className="btn btn-primary" onClick={onClose}>Close</button>
         </div>
+
       </div>
     </div>
   )

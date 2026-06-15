@@ -1,28 +1,45 @@
 const fs   = require('fs')
 const path = require('path')
+const os   = require('os')
 const { execSync } = require('child_process')
 
-const PS_SCRIPT = path.join(__dirname, '..', 'send-to-printer.ps1')
-const TMP_FILE  = path.join(__dirname, '..', 'receipt_tmp.bin')
+// In a packaged app __dirname is inside the read-only app.asar, so we must
+// resolve the PS1 script from the unpacked resources and write the temp
+// binary to the OS temp directory instead.
+const isPackaged = __dirname.includes('app.asar')
+const PS_SCRIPT = isPackaged
+  ? path.join(process.resourcesPath, 'app.asar.unpacked', 'send-to-printer.ps1')
+  : path.join(__dirname, '..', 'send-to-printer.ps1')
+const TMP_FILE = path.join(os.tmpdir(), 'stocka_receipt_tmp.bin')
 
 const ESC = 0x1B
 const GS  = 0x1D
 const cmd = (...b) => Buffer.from(b)
 const txt = s => Buffer.from(String(s), 'latin1')
 
-const W = 32
-function padLine(left, right) {
+// 58mm paper = 32 chars, 80mm paper = 42 chars
+function getWidth(shopInfo) {
+  return shopInfo?.receipt_width_mm === 80 ? 42 : 32
+}
+
+function padLine(left, right, W) {
   const r = String(right)
   const l = String(left).substring(0, W - r.length - 1)
   return l + ' '.repeat(Math.max(1, W - l.length - r.length)) + r
 }
 
 function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
+  const W        = getWidth(shopInfo)
+  const divider  = '-'.repeat(W)
   const shop     = (shopInfo?.name || 'STOCKA SHOP').trim()
   const currency = shopInfo?.currency || 'USD'
   const total    = Number(receipt.total    || 0)
   const sub      = Number(receipt.subtotal !== undefined ? receipt.subtotal : total)
-  const tax      = Number(receipt.tax      || 0)
+  const vatRate  = Number(shopInfo?.vat_rate || 0)
+  // If the receipt already carries a tax value use it; otherwise derive from VAT rate (tax-inclusive)
+  const tax      = receipt.tax !== undefined
+    ? Number(receipt.tax)
+    : (vatRate > 0 ? total - total / (1 + vatRate / 100) : 0)
   const tendered = Number(receipt.cash_tendered || 0)
   const change   = Number(receipt.change_given  || 0)
   const dateStr  = receipt.created_at
@@ -47,7 +64,7 @@ function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
   if (shopInfo?.address) push(txt(shopInfo.address + '\n'))
   if (shopInfo?.phone)   push(txt(shopInfo.phone   + '\n'))
 
-  push(txt('--------------------------------\n'))
+  push(txt(divider + '\n'))
 
   // Receipt header info — left aligned
   push(cmd(ESC, 0x61, 0x00))
@@ -55,45 +72,46 @@ function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
   push(txt(`Date:    ${dateStr}\n`))
   if (receipt.cashier) push(txt(`Cashier: ${receipt.cashier}\n`))
 
-  push(txt('--------------------------------\n'))
+  push(txt(divider + '\n'))
 
   // Item header
   push(cmd(ESC, 0x45, 0x01))
-  push(txt(padLine('Item', 'Amount') + '\n'))
+  push(txt(padLine('Item', 'Amount', W) + '\n'))
   push(cmd(ESC, 0x45, 0x00))
-  push(txt('--------------------------------\n'))
+  push(txt(divider + '\n'))
 
   // Items
   for (const it of (receipt.items || [])) {
-    const name     = (it.product_name || it.name || 'Item').substring(0, 20)
+    const name     = (it.product_name || it.name || 'Item').substring(0, W - 12)
     const qty      = Number(it.quantity || 1)
     const lineAmt  = it.subtotal !== undefined
       ? Number(it.subtotal)
       : qty * Number(it.selling_price || it.price || 0)
-    push(txt(padLine(`${qty}x ${name}`, fmt(lineAmt)) + '\n'))
+    push(txt(padLine(`${qty}x ${name}`, fmt(lineAmt), W) + '\n'))
   }
 
-  push(txt('--------------------------------\n'))
+  push(txt(divider + '\n'))
 
   // Totals
-  if (sub !== total) push(txt(padLine('Subtotal', fmt(sub)) + '\n'))
-  if (tax > 0)       push(txt(padLine('Tax',      fmt(tax)) + '\n'))
+  if (sub !== total) push(txt(padLine('Subtotal', fmt(sub), W) + '\n'))
+  if (tax > 0)       push(txt(padLine(`VAT (${vatRate}%)`, fmt(tax), W) + '\n'))
 
   push(cmd(ESC, 0x45, 0x01))
-  push(txt(padLine('TOTAL', fmt(total)) + '\n'))
+  push(txt(padLine('TOTAL', fmt(total), W) + '\n'))
   push(cmd(ESC, 0x45, 0x00))
 
-  if (receipt.payment_method) push(txt(padLine('Payment', receipt.payment_method) + '\n'))
+  if (receipt.payment_method) push(txt(padLine('Payment', receipt.payment_method, W) + '\n'))
   if (tendered > 0) {
-    push(txt(padLine('Tendered', fmt(tendered)) + '\n'))
-    push(txt(padLine('Change',   fmt(change))   + '\n'))
+    push(txt(padLine('Tendered', fmt(tendered), W) + '\n'))
+    push(txt(padLine('Change',   fmt(change),   W) + '\n'))
   }
 
-  push(txt('--------------------------------\n'))
+  push(txt(divider + '\n'))
 
-  // Footer — centered
+  // Footer — centered, configurable
+  const footer = (shopInfo?.receipt_footer || 'Thank you for your business!').trim()
   push(cmd(ESC, 0x61, 0x01))
-  push(txt('Thank you for your business!\n'))
+  push(txt(footer + '\n'))
   push(txt('Powered by Stocka\n'))
   push(txt('\n\n\n'))
 

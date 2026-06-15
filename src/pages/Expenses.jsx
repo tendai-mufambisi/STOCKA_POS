@@ -3,6 +3,7 @@ import { addExpense, getExpenses, updateExpense, deleteExpense } from '../databa
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
+import { FiPlus, FiX, FiEdit2, FiTrash2, FiDollarSign, FiCalendar, FiTag } from 'react-icons/fi'
 import './Expenses.css'
 
 function Expenses() {
@@ -147,11 +148,6 @@ function Expenses() {
 
   return (
     <div className="expenses-page">
-      <div className="page-header">
-        <h1>Expenses</h1>
-        <p>Track business expenses</p>
-      </div>
-
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-label">Today</div>
@@ -183,7 +179,7 @@ function Expenses() {
             })
           }
         }}>
-          {showForm ? '✕ Cancel' : '✚ Add Expense'}
+          {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Add Expense</>}
         </button>
         <input type="text" placeholder="Search..." value={search} 
           onChange={(e) => setSearch(e.target.value)} className="search-input" />
@@ -195,7 +191,7 @@ function Expenses() {
 
       {showForm && (
         <div className="form-card">
-          <h3>{editingId ? '✎ Edit' : '✚ Add'} Expense</h3>
+          <h3>{editingId ? <><FiEdit2 size={14} /> Edit</> : <><FiPlus size={14} /> Add</>} Expense</h3>
           <form onSubmit={handleSubmit}>
             <div className="form-row">
               <div className="form-group">
@@ -256,8 +252,8 @@ function Expenses() {
                   <td className="amount">${e.amount?.toFixed(2)}</td>
                   <td className="notes">{e.notes}</td>
                   <td>
-                    <button className="btn-icon" onClick={() => handleEdit(e)}>✎</button>
-                    <button className="btn-icon delete" onClick={() => handleDelete(e.id)}>✘</button>
+                    <button className="btn-icon" onClick={() => handleEdit(e)} title="Edit"><FiEdit2 size={14} /></button>
+                    <button className="btn-icon delete" onClick={() => handleDelete(e.id)} title="Delete"><FiTrash2 size={14} /></button>
                   </td>
                 </tr>
               ))}

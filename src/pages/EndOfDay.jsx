@@ -124,11 +124,6 @@ function EndOfDay() {
 
   return (
     <div className="eod-page">
-      <div className="page-header">
-        <h1>End of Day</h1>
-        <p>Daily reconciliation and cash count</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
 
       {/* View Toggle */}
@@ -365,7 +360,7 @@ function EndOfDay() {
         </div>
       ) : (
         <div className="record-card">
-          <h3 style={{color: '#2e7d32'}}>✓ Day Closed</h3>
+          <h3 className="success"><FiCheckCircle size={18} /> Day Closed</h3>
           <div className="record-details">
             <div className="detail-row">
               <span>Total Sales</span>

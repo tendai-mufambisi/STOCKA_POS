@@ -1,11 +1,9 @@
-const { getDb, saveDb } = require('../index')
-const { extractResults, getScalar } = require('../utils')
+const { getDb } = require('../index')
 const { createNotification } = require('./notifications')
 const { logAuditAction } = require('./audit')
 
 function getShiftById(shiftId) {
-  const rows = extractResults(getDb().exec('SELECT * FROM shifts WHERE id = ?', [shiftId]))
-  return rows[0] || null
+  return getDb().prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId) || null
 }
 
 function startShift(userData, openingFloat, branchId = null) {
@@ -15,23 +13,19 @@ function startShift(userData, openingFloat, branchId = null) {
     : (parseFloat(openingFloat) || 0)
 
   const startedAt = new Date().toISOString()
-  db.run(
-    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, started_at) VALUES (?, ?, ?, 'open', ?, ?)`,
-    [userData.username, userData.name || userData.username, branchId, openingCash, startedAt]
-  )
-  const shiftId = getScalar(db.exec('SELECT last_insert_rowid() as id'), null)
+  const { lastInsertRowid: shiftId } = db.prepare(
+    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, started_at) VALUES (?, ?, ?, 'open', ?, ?)`
+  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt)
+
   if (!shiftId) throw new Error('Failed to get shift ID after insert')
-  db.run('UPDATE users SET current_shift_id = ? WHERE id = ?', [shiftId, userData.id])
-  saveDb()
+  db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
   return getShiftById(shiftId)
 }
 
 function updateShiftSalesForPaymentMethod(shiftId, paymentMethod, amount) {
-  getDb().run(
-    `UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`,
-    [amount, shiftId]
-  )
-  saveDb()
+  getDb().prepare(
+    `UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`
+  ).run(amount, shiftId)
 }
 
 function closeShift(shiftId, closingFloat, notes = '') {
@@ -39,9 +33,9 @@ function closeShift(shiftId, closingFloat, notes = '') {
   const shift = getShiftById(shiftId)
   if (!shift) throw new Error('Shift not found')
 
-  const shiftExpenses = extractResults(db.exec(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`, [shiftId]
-  ))[0]?.total || 0
+  const shiftExpenses = db.prepare(
+    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`
+  ).get(shiftId)?.total || 0
 
   const closingCash = typeof closingFloat === 'object'
     ? (closingFloat.closing_cash || 0)
@@ -53,12 +47,10 @@ function closeShift(shiftId, closingFloat, notes = '') {
   if (Math.abs(variance) > 0.01) reconciliationStatus = variance > 0 ? 'over' : 'short'
 
   const closedAt = new Date().toISOString()
-  db.run(
-    `UPDATE shifts SET closing_cash = ?, variance = ?, reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed' WHERE id = ?`,
-    [closingCash, variance, reconciliationStatus, notes, closedAt, shiftId]
-  )
-  db.run('UPDATE users SET current_shift_id = NULL WHERE username = ?', [shift.cashier_username])
-  saveDb()
+  db.prepare(
+    `UPDATE shifts SET closing_cash = ?, variance = ?, reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed' WHERE id = ?`
+  ).run(closingCash, variance, reconciliationStatus, notes, closedAt, shiftId)
+  db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
 
   const durationHours = (new Date(closedAt) - new Date(shift.started_at)) / (1000 * 60 * 60)
   try {
@@ -71,11 +63,9 @@ function closeShift(shiftId, closingFloat, notes = '') {
 }
 
 function getCurrentShift(cashierUsername) {
-  const rows = extractResults(getDb().exec(
-    `SELECT * FROM shifts WHERE cashier_username = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`,
-    [cashierUsername]
-  ))
-  return rows[0] || null
+  return getDb().prepare(
+    `SELECT * FROM shifts WHERE cashier_username = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`
+  ).get(cashierUsername) || null
 }
 
 function getExistingOpenShift(cashierUsername) {
@@ -87,7 +77,7 @@ function getShiftsByCashier(cashierUsername, status = null) {
   const params = [cashierUsername]
   if (status) { sql += ' AND status = ?'; params.push(status) }
   sql += ' ORDER BY started_at DESC'
-  return extractResults(getDb().exec(sql, params))
+  return getDb().prepare(sql).all(...params)
 }
 
 function getAllShifts(status = null, fromDate = null, toDate = null) {
@@ -97,7 +87,7 @@ function getAllShifts(status = null, fromDate = null, toDate = null) {
   if (fromDate) { sql += ' AND started_at >= ?'; params.push(fromDate) }
   if (toDate) { sql += ' AND started_at <= ?'; params.push(toDate) }
   sql += ' ORDER BY started_at DESC'
-  return extractResults(getDb().exec(sql, params))
+  return getDb().prepare(sql).all(...params)
 }
 
 function getActiveShifts() {
@@ -109,16 +99,15 @@ function getShiftSummary(shiftId) {
   if (!shift) throw new Error('Shift not found')
   const db = getDb()
 
-  const salesRow = extractResults(db.exec(
-    `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`,
-    [shiftId]
-  ))[0] || {}
-  const heldRow = extractResults(db.exec(
-    `SELECT COUNT(*) as count FROM sales WHERE shift_id = ? AND status = 'held'`, [shiftId]
-  ))[0] || {}
-  const expRow = extractResults(db.exec(
-    `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`, [shiftId]
-  ))[0] || {}
+  const salesRow = db.prepare(
+    `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
+  ).get(shiftId) || {}
+  const heldRow = db.prepare(
+    `SELECT COUNT(*) as count FROM sales WHERE shift_id = ? AND status = 'held'`
+  ).get(shiftId) || {}
+  const expRow = db.prepare(
+    `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`
+  ).get(shiftId) || {}
 
   const salesTotal = salesRow.total || 0
   const expensesTotal = expRow.total || 0

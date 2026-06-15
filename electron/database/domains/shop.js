@@ -1,65 +1,64 @@
-const { getDb, saveDb } = require('../index')
-const { extractResults } = require('../utils')
+const { getDb } = require('../index')
 const bcrypt = require('bcryptjs')
 
 function getShop() {
-  const rows = extractResults(getDb().exec('SELECT * FROM shops LIMIT 1'))
-  return rows[0] || null
+  return getDb().prepare('SELECT * FROM shops LIMIT 1').get() || null
 }
 
 function initializeShop(shopData) {
   const db = getDb()
-  db.run(
-    `INSERT INTO shops (name, address, phone, email, currency, setup_complete) VALUES (?, ?, ?, ?, ?, 1)`,
-    [shopData.name, shopData.address || '', shopData.phone || '', shopData.email || '', shopData.currency || 'USD']
-  )
+  db.prepare(
+    `INSERT INTO shops (name, address, phone, email, currency, setup_complete) VALUES (?, ?, ?, ?, ?, 1)`
+  ).run(shopData.name, shopData.address || '', shopData.phone || '', shopData.email || '', shopData.currency || 'USD')
 
   const username = shopData.ownerName || shopData.adminUsername
   const credential = shopData.ownerPin || shopData.adminPassword
 
   if (username && credential) {
-    // Check if user already exists (e.g., from a failed setup attempt)
-    const existingUsers = extractResults(db.exec('SELECT id FROM users WHERE username = ?', [username]))
-    if (!existingUsers.length) {
+    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username)
+    if (!existing) {
       const hash = bcrypt.hashSync(credential, 10)
-      db.run(
-        `INSERT INTO users (username, password, password_hash, role, is_active, created_by) VALUES (?, ?, ?, 'Admin', 1, 'system')`,
-        [username, '', hash]
-      )
+      db.prepare(
+        `INSERT INTO users (username, password, password_hash, role, is_active, created_by) VALUES (?, ?, ?, 'Admin', 1, 'system')`
+      ).run(username, '', hash)
     }
-    db.run(`DELETE FROM users WHERE username = 'admin' AND created_by = 'system' AND username != ?`, [username])
+    db.prepare(`DELETE FROM users WHERE username = 'admin' AND created_by = 'system' AND username != ?`).run(username)
   }
-
-  saveDb()
 }
 
 function updateShop(id, shopData) {
-  getDb().run(
-    `UPDATE shops SET name = ?, address = ?, phone = ?, email = ?, currency = ?, printer_name = ?, printer_port = ?, auto_print = ?, print_duplicate = ? WHERE id = ?`,
-    [
-      shopData.name || '',
-      shopData.address || '',
-      shopData.phone || '',
-      shopData.email || '',
-      shopData.currency || 'USD',
-      shopData.printer_name || null,
-      shopData.printer_port || null,
-      shopData.auto_print !== undefined ? shopData.auto_print : 1,
-      shopData.print_duplicate !== undefined ? shopData.print_duplicate : 0,
-      id
-    ]
+  getDb().prepare(
+    `UPDATE shops SET
+      name = ?, address = ?, phone = ?, email = ?, currency = ?,
+      printer_name = ?, printer_port = ?, auto_print = ?, print_duplicate = ?,
+      receipt_width_mm = ?, receipt_footer = ?,
+      vat_rate = ?, default_reorder_level = ?, variance_tolerance = ?
+     WHERE id = ?`
+  ).run(
+    shopData.name || '',
+    shopData.address || '',
+    shopData.phone || '',
+    shopData.email || '',
+    shopData.currency || 'USD',
+    shopData.printer_name || null,
+    shopData.printer_port || null,
+    shopData.auto_print !== undefined ? shopData.auto_print : 1,
+    shopData.print_duplicate !== undefined ? shopData.print_duplicate : 0,
+    shopData.receipt_width_mm || 58,
+    shopData.receipt_footer !== undefined ? shopData.receipt_footer : 'Thank you for your business!',
+    shopData.vat_rate !== undefined ? shopData.vat_rate : 0,
+    shopData.default_reorder_level || 5,
+    shopData.variance_tolerance !== undefined ? shopData.variance_tolerance : 0.01,
+    id
   )
-  saveDb()
 }
 
 function resetOwnerPin(username, newPin) {
   const db = getDb()
-  const rows = extractResults(db.exec('SELECT * FROM users WHERE username = ?', [username]))
-  const user = rows[0]
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username)
   if (!user) throw new Error('User not found')
   const hash = bcrypt.hashSync(newPin, 10)
-  db.run(`UPDATE users SET password_hash = ?, password = '' WHERE id = ?`, [hash, user.id])
-  saveDb()
+  db.prepare(`UPDATE users SET password_hash = ?, password = '' WHERE id = ?`).run(hash, user.id)
   return true
 }
 

@@ -1,5 +1,10 @@
-import { useState, useEffect } from 'react'
-import { getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts, getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale, getSaleById, getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber, getReceiptBySaleId } from '../database/db'
+import { useState, useEffect, useRef } from 'react'
+import { useBlocker } from 'react-router-dom'
+import {
+  getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts,
+  getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale,
+  getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber
+} from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
@@ -8,104 +13,141 @@ import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import './Sales.css'
 import {
-  FiChevronLeft, FiChevronRight, FiPackage, FiDollarSign, FiCreditCard, FiSmartphone, FiCheck, FiPause, FiX, FiTrash2
+  FiSearch, FiPackage, FiShoppingCart, FiTrash2, FiPause,
+  FiCheck, FiX, FiChevronLeft, FiAlertTriangle
 } from 'react-icons/fi'
 
 function Sales() {
-  const { user } = useAuthStore()
+  const { user }         = useAuthStore()
   const { currentShift } = useShiftStore()
-  // Product & Cart State
-  const [products, setProducts] = useState([])
+
+  // ── Product & Cart state ─────────────────────────
+  const [products, setProducts]           = useState([])
   const [mostSoldProducts, setMostSoldProducts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
+  const [loading, setLoading]             = useState(true)
+  const [search, setSearch]               = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
-  const [cart, setCart] = useState([])
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  
-  // Held Sales State
-  const [heldSales, setHeldSales] = useState([])
-  const [showHeldModal, setShowHeldModal] = useState(false)
+  const [cart, setCart]                   = useState([])
+
+  // ── Held sales state ─────────────────────────────
+  const [heldSales, setHeldSales]         = useState([])
   const [showHeldPanel, setShowHeldPanel] = useState(false)
-  const [recalledSaleId, setRecalledSaleId] = useState(null) // tracks a recalled held sale
-  
-  // Checkout Flow State
-  const [checkoutStep, setCheckoutStep] = useState(null) // null | 'paymentMethod' | 'cashTendered'
-  const [selectedPaymentForCheckout, setSelectedPaymentForCheckout] = useState(null)
+  const [recalledSaleId, setRecalledSaleId] = useState(null)
+
+  // ── Checkout state ────────────────────────────────
+  const [checkoutStep, setCheckoutStep]               = useState(null) // null | 'cashTendered'
   const [checkoutCashTendered, setCheckoutCashTendered] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
-  
-  // Legacy State (for compatibility during transition)
-  const [cashTendered, setCashTendered] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState('USD Cash')
-  const [currency, setCurrency] = useState('USD')
-  
-  // UI State
+  const [isProcessing, setIsProcessing]               = useState(false)
+
+  // ── UI state ──────────────────────────────────────
   const [showConfirmation, setShowConfirmation] = useState(false)
-  const [lastSale, setLastSale] = useState(null)
-  const [error, setError] = useState('')
-  const [voidSaleId, setVoidSaleId] = useState(null)
-  const [voidReason, setVoidReason] = useState('')
-  const [showVoidModal, setShowVoidModal] = useState(false)
+  const [lastSale, setLastSale]                 = useState(null)
+  const [message, setMessage]                   = useState({ text: '', type: '' }) // type: 'error' | 'info'
+  const [showVoidModal, setShowVoidModal]       = useState(false)
+  const [voidSaleId, setVoidSaleId]             = useState(null)
+  const [isHoldingForNav, setIsHoldingForNav]   = useState(false)
+  const [voidReason, setVoidReason]             = useState('')
 
-  // Printer Hook
-  const { printReceipt, printTestReceipt, isPrinting, printError, printSuccess } = useReceiptPrinter()
-
-  // Printer State
-  const [shopInfo, setShopInfo] = useState(null)
+  // ── Printer & shop state ──────────────────────────
+  const [shopInfo, setShopInfo]           = useState(null)
   const [printerSettings, setPrinterSettings] = useState(null)
+  const { printReceipt } = useReceiptPrinter()
 
+  // Block navigation away when the cart has items
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      cart.length > 0 && !showConfirmation && currentLocation.pathname !== nextLocation.pathname
+  )
+
+  // ── Refs ──────────────────────────────────────────
+  const searchRef   = useRef(null)
+  const cashInputRef = useRef(null)
+
+  // ── Load on mount ─────────────────────────────────
   useEffect(() => {
     loadProducts()
     loadHeldSales()
     loadShopInfo()
   }, [])
 
-  const loadHeldSales = async () => {
-    try {
-      const held = await getHeldSales()
-      setHeldSales(held)
-    } catch (err) {
-      console.error('Failed to load held sales:', err)
+  // Auto-focus cash input when modal opens
+  useEffect(() => {
+    if (checkoutStep === 'cashTendered') {
+      setTimeout(() => cashInputRef.current?.focus(), 80)
     }
-  }
+  }, [checkoutStep])
 
-  const loadShopInfo = async () => {
-    try {
-      const shop = await getShop()
-      
-      if (!shop) {
-        setError('Shop not configured. Please go to Settings to configure your shop and printer.')
-        setShopInfo(null)
-        setPrinterSettings({
-          printer_name: '',
-          printer_port: '',
-          auto_print: 0,
-          print_duplicate: 0
-        })
-        return
-      }
-
-      setShopInfo(shop)
-      const settings = {
-        printer_name: shop?.printer_name || '',
-        printer_port: shop?.printer_port || '',
-        auto_print: shop?.auto_print ?? 1,
-        print_duplicate: shop?.print_duplicate ?? 0
-      }
-      setPrinterSettings(settings)
-    } catch (err) {
-      setError('Failed to load shop configuration')
-    }
-  }
-
- useEffect(() => {
+  // Auto-close confirmation, then return focus to search
+  useEffect(() => {
     if (showConfirmation) {
-      const timer = setTimeout(() => setShowConfirmation(false), 3000)
-      return () => clearTimeout(timer)
+      const t = setTimeout(() => {
+        setShowConfirmation(false)
+        setTimeout(() => searchRef.current?.focus(), 50)
+      }, 3200)
+      return () => clearTimeout(t)
     }
   }, [showConfirmation])
 
+  // ── Cart total (must be before keyboard useEffect so deps array evaluates correctly) ──
+  const cartTotal = cart.reduce((s, i) => s + i.subtotal, 0)
+
+  // ── Keyboard shortcuts ────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target.tagName
+
+      // Escape: close whatever is open
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (checkoutStep) { setCheckoutStep(null); setCheckoutCashTendered('') }
+        else if (showVoidModal) { setShowVoidModal(false); setVoidSaleId(null); setVoidReason('') }
+        else if (showHeldPanel) setShowHeldPanel(false)
+        return
+      }
+
+      // Enter in cash input: complete sale
+      if (e.key === 'Enter' && checkoutStep === 'cashTendered' && tag === 'INPUT') {
+        e.preventDefault()
+        const amt = parseFloat(checkoutCashTendered)
+        if (!isNaN(amt) && amt >= cartTotal && !isProcessing) {
+          handleCompleteCheckout(checkoutCashTendered)
+        }
+        return
+      }
+
+      // F9 fires even when the cursor is in the search bar
+      if (e.key === 'F9') {
+        e.preventDefault()
+        if (!checkoutStep && cart.length > 0 && !isProcessing) handleChargeClick()
+        return
+      }
+
+      // Don't fire other shortcuts when typing in inputs
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      switch (e.key) {
+        case 'F2':
+          e.preventDefault()
+          searchRef.current?.focus()
+          break
+        case 'F3':
+          e.preventDefault()
+          if (cart.length > 0 && !checkoutStep && !isProcessing) handleHoldSale()
+          break
+        case 'F4':
+          e.preventDefault()
+          if (heldSales.length > 0) setShowHeldPanel(p => !p)
+          break
+        default:
+          break
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [checkoutStep, showHeldPanel, showVoidModal, cart, cartTotal, checkoutCashTendered, isProcessing, heldSales.length])
+
+  // ── Loaders ───────────────────────────────────────
   const loadProducts = async () => {
     try {
       setLoading(true)
@@ -114,836 +156,760 @@ function Sales() {
         getMostSoldProducts(10),
         getAllLatestCostPrices()
       ])
-
-      const enrich = (product) => ({
-        ...product,
-        selling_price: product.selling_price || 0,
-        cost_price: costPrices[product.id] || 0
-      })
-
-      const enrichedProducts = productsData.map(enrich)
-      enrichedProducts.sort((a, b) => (b.current_quantity || 0) - (a.current_quantity || 0))
-      setProducts(enrichedProducts)
+      const enrich = p => ({ ...p, selling_price: p.selling_price || 0, cost_price: costPrices[p.id] || 0 })
+      const enriched = productsData.map(enrich)
+      enriched.sort((a, b) => (b.current_quantity || 0) - (a.current_quantity || 0))
+      setProducts(enriched)
       setMostSoldProducts(mostSold.map(enrich))
-    } catch (err) {
-      setError('Failed to load products')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
+    } catch { flash('Failed to load products', 'error') }
+    finally { setLoading(false) }
   }
 
-  const searchResults = search.trim()
-    ? products.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 20)
-    : searchFocused
-    ? products.slice(0, 30)
-    : []
+  const loadHeldSales = async () => {
+    try { setHeldSales(await getHeldSales()) } catch { /* silent */ }
+  }
 
-  const addToCart = (product) => {
-    if (product.current_quantity <= 0) {
-      setError('Product out of stock')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    if (!product.selling_price || product.selling_price <= 0) {
-      setError(`"${product.name}" has no price set. Update the price in Products before selling.`)
-      setTimeout(() => setError(''), 5000)
-      return
-    }
-
-    const existingItem = cart.find(item => item.product_id === product.id)
-
-    if (existingItem) {
-      const newQuantity = existingItem.quantity + 1
-      // Validate that new quantity doesn't exceed available stock
-      if (newQuantity > product.current_quantity) {
-        setError(`Only ${product.current_quantity} units of "${product.name}" available in stock`)
-        setTimeout(() => setError(''), 4000)
+  const loadShopInfo = async () => {
+    try {
+      const shop = await getShop()
+      if (!shop) {
+        setShopInfo(null)
+        setPrinterSettings({ printer_name: '', printer_port: '', auto_print: 0, print_duplicate: 0 })
         return
       }
-      
-      setCart(cart.map(item =>
-        item.product_id === product.id
-          ? {
-              ...item,
-              quantity: newQuantity,
-              subtotal: newQuantity * item.selling_price
-            }
-          : item
+      setShopInfo(shop)
+      setPrinterSettings({
+        printer_name: shop.printer_name || '',
+        printer_port: shop.printer_port || '',
+        auto_print: shop.auto_print ?? 1,
+        print_duplicate: shop.print_duplicate ?? 0,
+      })
+    } catch { /* silent */ }
+  }
+
+  // ── Flash message ──────────────────────────────────
+  const flash = (text, type = 'error', duration = 4000) => {
+    setMessage({ text, type })
+    setTimeout(() => setMessage({ text: '', type: '' }), duration)
+  }
+
+  // ── Cart helpers ───────────────────────────────────
+
+  const addToCart = (product) => {
+    if (product.current_quantity <= 0) { flash(`"${product.name}" is out of stock`); return }
+    if (!product.selling_price || product.selling_price <= 0) {
+      flash(`"${product.name}" has no price — update it in Products first`); return
+    }
+    const existing = cart.find(i => i.product_id === product.id)
+    if (existing) {
+      const newQty = existing.quantity + 1
+      if (newQty > product.current_quantity) {
+        flash(`Only ${product.current_quantity} units of "${product.name}" available`); return
+      }
+      setCart(cart.map(i => i.product_id === product.id
+        ? { ...i, quantity: newQty, subtotal: newQty * i.selling_price }
+        : i
       ))
     } else {
       setCart([...cart, {
-        product_id: product.id,
-        product_name: product.name,
-        selling_price: product.selling_price,
-        cost_price: product.cost_price,
-        quantity: 1,
-        subtotal: product.selling_price
+        product_id: product.id, product_name: product.name,
+        selling_price: product.selling_price, cost_price: product.cost_price,
+        quantity: 1, subtotal: product.selling_price
       }])
     }
-
-    setSearch('')
+    // Select-all so the cashier can immediately type the next product without clearing the view
+    setTimeout(() => {
+      if (searchRef.current) {
+        searchRef.current.focus()
+        searchRef.current.select()
+      }
+    }, 0)
   }
 
-  const updateCartQuantity = (productId, quantity) => {
-    // Validate quantity against available stock
+  const updateQty = (productId, qty) => {
     const product = products.find(p => p.id === productId)
     if (!product) return
-
-    // Check if quantity exceeds available stock
-    if (quantity > product.current_quantity) {
-      setError(`Only ${product.current_quantity} units of "${product.name}" available in stock`)
-      setTimeout(() => setError(''), 4000)
-      return
+    if (qty > product.current_quantity) {
+      flash(`Only ${product.current_quantity} units available`); return
     }
-
-    // Keep items in cart even with 0 quantity - don't remove them
-    setCart(cart.map(item =>
-      item.product_id === productId
-        ? {
-            ...item,
-            quantity,
-            subtotal: quantity > 0 ? quantity * item.selling_price : 0
-          }
-        : item
+    setCart(cart.map(i => i.product_id === productId
+      ? { ...i, quantity: qty, subtotal: qty > 0 ? qty * i.selling_price : 0 }
+      : i
     ))
   }
 
-  const removeFromCart = (productId) => {
-    setCart(cart.filter(item => item.product_id !== productId))
+  const removeFromCart = (productId) => setCart(cart.filter(i => i.product_id !== productId))
+
+  const clearCart = () => {
+    setCart([])
+    setRecalledSaleId(null)
+    setSearch('')
+    setTimeout(() => searchRef.current?.focus(), 0)
   }
 
-  // Checkout Flow Handlers
+  // ── Checkout ───────────────────────────────────────
   const handleChargeClick = () => {
-    if (cart.length === 0) {
-      setError('Cart is empty')
-      setTimeout(() => setError(''), 3000)
-      return
+    if (cart.length === 0) { flash('Cart is empty'); return }
+    if (cart.some(i => !i.quantity || i.quantity <= 0)) {
+      flash('All items must have a valid quantity'); return
     }
-    // Check if any items have invalid/empty quantities
-    const hasInvalidQuantity = cart.some(item => !item.quantity || item.quantity <= 0)
-    if (hasInvalidQuantity) {
-      setError('All items must have a valid quantity (greater than 0)')
-      setTimeout(() => setError(''), 4000)
-      return
-    }
-    // Skip payment method, go straight to cash tendered (USD only)
     setCheckoutStep('cashTendered')
     setCheckoutCashTendered('')
-    setError('')
-  }
-
-  const handleHoldSale = async () => {
-    if (cart.length === 0) {
-      setError('Cart is empty, nothing to hold')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    setIsProcessing(true)
-    try {
-      const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-
-      if (recalledSaleId) {
-        // Re-hold a recalled sale — update its status back to held directly
-        await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
-        setRecalledSaleId(null)
-        setCart([])
-        setSearch('')
-        await loadHeldSales()
-        setError(`✓ Sale re-held as "Hold-${recalledSaleId}" - Total: $${cartTotal.toFixed(2)}`)
-        setTimeout(() => setError(''), 4000)
-      } else {
-        // New hold — create the sale record and hold it
-        const sale = {
-          cashier: user.username,
-          total: cartTotal,
-          cash_tendered: 0,
-          change_given: 0,
-          shift_id: currentShift?.id || null
-        }
-
-        const saleId = await addSale(sale, cart)
-        const holdLabel = `Hold-${saleId}`
-        await holdSale(saleId, holdLabel)
-        await loadHeldSales()
-        setCart([])
-        setSearch('')
-        setError(`✓ Sale held as "${holdLabel}" - Total: $${cartTotal.toFixed(2)}`)
-        setTimeout(() => setError(''), 4000)
-        await loadProducts()
-      }
-    } catch (err) {
-      setError('Failed to hold sale')
-      console.error(err)
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const handleRecallSale = async (heldSaleId) => {
-    try {
-      // If cart already has items from a recalled sale, re-hold it before switching
-      if (cart.length > 0 && recalledSaleId) {
-        await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
-      } else if (cart.length > 0) {
-        // Non-recalled items in cart — create and hold them
-        const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-        const saleId = await addSale({
-          cashier: user.username,
-          total: cartTotal,
-          cash_tendered: 0,
-          change_given: 0,
-          shift_id: currentShift?.id || null
-        }, cart)
-        await holdSale(saleId, `Hold-${saleId}`)
-        await loadProducts()
-      }
-
-      const items = await getSaleItems(heldSaleId)
-      const cartItems = items.map(item => ({
-        product_id: item.product_id,
-        product_name: item.product_name,
-        selling_price: item.selling_price,
-        cost_price: item.cost_price,
-        quantity: item.quantity,
-        subtotal: item.subtotal
-      }))
-
-      setCart(cartItems)
-      setRecalledSaleId(heldSaleId)
-
-      // Mark as pending (in progress)
-      await recallHeldSale(heldSaleId)
-      await loadHeldSales()
-
-      setShowHeldPanel(false)
-      setError(`Sale #${heldSaleId} recalled ✓`)
-      setTimeout(() => setError(''), 3000)
-    } catch (err) {
-      setError('Failed to recall sale')
-      console.error(err)
-    }
-  }
-
-  const handleDiscardHeldSale = async (heldSaleId) => {
-    if (!window.confirm('Are you sure you want to discard this held sale?')) {
-      return
-    }
-
-    try {
-      await discardHeldSale(heldSaleId)
-      await loadHeldSales()
-      setError('Held sale discarded ✓')
-      setTimeout(() => setError(''), 3000)
-    } catch (err) {
-      setError('Failed to discard sale')
-      console.error(err)
-    }
-  }
-
-  const handleVoidSaleClick = async () => {
-    if (!voidReason.trim()) {
-      setError('Please enter a reason for voiding')
-      return
-    }
-    
-    // Validate void reason length
-    if (voidReason.length < 3) {
-      setError('Void reason must be at least 3 characters')
-      return
-    }
-
-    setIsProcessing(true)
-    try {
-      await voidSale(voidSaleId, voidReason, user.username)
-      setShowVoidModal(false)
-      setVoidSaleId(null)
-      setVoidReason('')
-      setError('Sale voided successfully ✓')
-      setTimeout(() => setError(''), 3000)
-      await loadProducts()
-    } catch (err) {
-      setError(err.message || 'Failed to void sale')
-      console.error(err)
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const handlePaymentMethodSelect = (method) => {
-    setSelectedPaymentForCheckout(method)
-    // No longer needed - go straight to cash tendered (USD only)
-    setCheckoutStep('cashTendered')
-    setCheckoutCashTendered('')
-  }
-
-  const handleCashTenderedChange = (e) => {
-    setCheckoutCashTendered(e.target.value)
-  }
-
-  const handleCashInputClick = (e) => {
-    // Select all text when clicked so user can easily delete it with backspace
-    e.target.select()
+    setMessage({ text: '', type: '' })
   }
 
   const handleBackNavigation = () => {
-    // Simply go back to cart (no payment method step anymore)
     setCheckoutStep(null)
     setCheckoutCashTendered('')
   }
 
   const handleCompleteCheckout = async (cashAmount) => {
-    const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-    
-    // Validate cash currency format
-    const currencyValidation = validateCurrency(cashAmount, 'Cash amount')
-    if (!currencyValidation.valid) {
-      setError(currencyValidation.error)
-      return
-    }
-    
-    // Validate cash - all sales are USD cash only
+    const validation = validateCurrency(cashAmount, 'Cash amount')
+    if (!validation.valid) { flash(validation.error); return }
     const cash = parseFloat(cashAmount)
-    if (cash < cartTotal) {
-      setError('Insufficient cash tendered')
-      return
-    }
+    if (cash < cartTotal) { flash('Insufficient cash tendered'); return }
 
     setIsProcessing(true)
     try {
-      const cashAmount_ = parseFloat(cashAmount)
-      const change = Math.max(0, cashAmount_ - cartTotal)
+      const change = Math.max(0, cash - cartTotal)
       let saleId
-      let sale = {
+      const saleBase = {
         cashier: user.username,
         total: cartTotal,
-        cash_tendered: cashAmount_,
+        cash_tendered: cash,
         change_given: change,
         shift_id: currentShift?.id || null
       }
 
       if (recalledSaleId) {
-        // Complete the existing held sale — stock was already deducted at hold time
-        saleId = await completeHeldSale(recalledSaleId, cashAmount_, change, currentShift?.id || null)
+        saleId = await completeHeldSale(recalledSaleId, cash, change, currentShift?.id || null)
         setRecalledSaleId(null)
       } else {
-        // Fresh sale — create the record and deduct stock
-        saleId = await addSale(sale, cart)
+        saleId = await addSale(saleBase, cart)
       }
 
-      // Generate and store receipt number
+      // Receipt number + print
       try {
         const lastReceipt = await getLastReceiptNumber()
-        const nextCounter = getNextReceiptCounter(lastReceipt)
-        const receiptNumber = generateReceiptNumber(nextCounter)
+        const receiptNumber = generateReceiptNumber(getNextReceiptCounter(lastReceipt))
         await updateSaleReceiptNumber(saleId, receiptNumber)
 
-        // Prepare receipt data for printing
-        const receiptData = {
-          ...sale,
-          id: saleId,
-          receipt_number: receiptNumber,
-          items: cart,
-          created_at: new Date().toISOString()
-        }
+        const receiptData = { ...saleBase, id: saleId, receipt_number: receiptNumber, items: cart, created_at: new Date().toISOString() }
 
-        // Auto-print if enabled and printer is configured
-        if (printerSettings?.auto_print) {
-          // Check if shop info is available
-          if (!shopInfo) {
-            setError('Shop not configured. Please configure your shop in Settings to enable printing.')
-            setTimeout(() => setError(''), 5000)
-          } else {
-            try {
-              // Use the new printReceipt function to format and print
-              const success = await printReceipt(receiptData, shopInfo, {
-                isDuplicate: false,
-                printerName: printerSettings?.printer_name || '',
-                portPath: printerSettings?.printer_port || ''
-              })
+        if (printerSettings?.auto_print && shopInfo) {
+          await printReceipt(receiptData, shopInfo, {
+            isDuplicate: false,
+            printerName: printerSettings.printer_name || '',
+            portPath: printerSettings.printer_port || ''
+          }).catch(() => {})
 
-              if (!success) {
-                setError('Printer error: Sale was recorded but printing failed')
-                setTimeout(() => setError(''), 5000)
-              }
-
-              if (success && printerSettings?.print_duplicate === 1) {
-                try {
-                  await printReceipt(receiptData, shopInfo, {
-                    isDuplicate: true,
-                    printerName: printerSettings?.printer_name || '',
-                    portPath: printerSettings?.printer_port || ''
-                  })
-                } catch (err) {
-                  // Silently fail duplicate print
-                }
-              }
-            } catch (err) {
-              // Don't block the sale for printer errors
-              setError('Printer error: Sale recorded but print failed')
-              setTimeout(() => setError(''), 5000)
-            }
+          if (printerSettings.print_duplicate === 1) {
+            await printReceipt(receiptData, shopInfo, {
+              isDuplicate: true,
+              printerName: printerSettings.printer_name || '',
+              portPath: printerSettings.printer_port || ''
+            }).catch(() => {})
           }
         }
-      } catch (err) {
-        console.error('[RECEIPT/PRINT]', err)
-        setError('Print error: ' + (err.message || 'Unknown error'))
-        setTimeout(() => setError(''), 5000)
-      }
-      
-      setLastSale({
-        id: saleId,
-        total: cartTotal,
-        change: change,
-        timestamp: new Date()
-      })
+      } catch { /* Don't block sale for print errors */ }
+
+      setLastSale({ id: saleId, total: cartTotal, change, timestamp: new Date() })
       setShowConfirmation(true)
-      
-      // Reset checkout flow
       setCheckoutStep(null)
       setCheckoutCashTendered('')
       setCart([])
       setSearch('')
-      await loadProducts()
-    } catch (err) {
-      setError('Failed to complete sale')
-      console.error(err)
-    } finally {
-      setIsProcessing(false)
-    }
+      loadProducts()
+      loadHeldSales()
+    } catch { flash('Failed to complete sale') }
+    finally { setIsProcessing(false) }
   }
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0)
-  const change = Math.max(0, parseFloat(cashTendered || 0) - cartTotal)
+  // ── Hold / Recall ──────────────────────────────────
+  const handleHoldSale = async () => {
+    if (cart.length === 0) { flash('Nothing in cart to hold'); return }
+    setIsProcessing(true)
+    try {
+      const total = cartTotal
+      if (recalledSaleId) {
+        await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
+        setRecalledSaleId(null)
+      } else {
+        const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null }, cart)
+        await holdSale(saleId, `Hold-${saleId}`)
+        await loadProducts()
+      }
+      setCart([])
+      setSearch('')
+      await loadHeldSales()
+      flash(`Sale held — $${total.toFixed(2)}`, 'info', 3000)
+    } catch { flash('Failed to hold sale') }
+    finally { setIsProcessing(false) }
+  }
+
+  const handleRecallSale = async (heldSaleId) => {
+    try {
+      if (cart.length > 0) {
+        if (recalledSaleId) {
+          await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
+        } else {
+          const total = cartTotal
+          const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null }, cart)
+          await holdSale(saleId, `Hold-${saleId}`)
+          await loadProducts()
+        }
+      }
+      const items = await getSaleItems(heldSaleId)
+      setCart(items.map(i => ({ product_id: i.product_id, product_name: i.product_name, selling_price: i.selling_price, cost_price: i.cost_price, quantity: i.quantity, subtotal: i.subtotal })))
+      setRecalledSaleId(heldSaleId)
+      await recallHeldSale(heldSaleId)
+      await loadHeldSales()
+      setShowHeldPanel(false)
+      flash(`Hold #${heldSaleId} recalled`, 'info', 2500)
+    } catch { flash('Failed to recall sale') }
+  }
+
+  const handleDiscardHeld = async (heldSaleId) => {
+    if (!window.confirm('Discard this held sale permanently?')) return
+    try {
+      await discardHeldSale(heldSaleId)
+      await loadHeldSales()
+      flash('Held sale discarded', 'info', 2500)
+    } catch { flash('Failed to discard') }
+  }
+
+  // ── Void ──────────────────────────────────────────
+  const handleVoidConfirm = async () => {
+    if (!voidReason.trim() || voidReason.length < 3) { flash('Enter a reason (at least 3 characters)'); return }
+    setIsProcessing(true)
+    try {
+      await voidSale(voidSaleId, voidReason, user.username)
+      setShowVoidModal(false); setVoidSaleId(null); setVoidReason('')
+      flash('Sale voided', 'info', 2500)
+      loadProducts()
+    } catch (err) { flash(err.message || 'Failed to void sale') }
+    finally { setIsProcessing(false) }
+  }
+
+  // ── Search / display lists ────────────────────────
+  const displayProducts = search.trim()
+    ? products.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 25)
+    : searchFocused ? products.slice(0, 30) : []
+
+  const showProducts = searchFocused || search.trim()
+
+  // ── Quick amounts for payment modal ───────────────
+  const quickAmounts = (() => {
+    const fixed = [5, 10, 20, 50, 100]
+    const valid = fixed.filter(a => a >= cartTotal)
+    return [
+      { label: 'Exact', value: cartTotal.toFixed(2), isExact: true },
+      ...valid.slice(0, 4).map(a => ({ label: `$${a}`, value: String(a) }))
+    ]
+  })()
+
+  // ── Change calculation ────────────────────────────
+  const tenderedNum  = parseFloat(checkoutCashTendered) || 0
+  const changeAmount = Math.max(0, tenderedNum - cartTotal)
+  const isInsufficient = checkoutCashTendered && tenderedNum < cartTotal
 
   if (loading) {
-    return <div className="sales-page"><div className="loading">Loading...</div></div>
+    return (
+      <div className="pos-loading">
+        <div className="pos-spinner" />
+        <span>Loading inventory…</span>
+      </div>
+    )
   }
 
   return (
-    <div className="sales-page">
-      {/* Held Sales Drawer Toggle Button - Only show when there are held sales */}
-      {heldSales.length > 0 && (
-        <button 
-          className={`held-sales-drawer-toggle ${showHeldPanel ? 'active' : ''}`}
-          onClick={() => setShowHeldPanel(!showHeldPanel)}
-          title={`${heldSales.length} held sales`}
-        >
-          <div className="toggle-arrow">
-            {showHeldPanel ? '◀' : '▶'}
-          </div>
-          <div className="toggle-badge">{heldSales.length}</div>
-        </button>
-      )}
+    <div className="pos-page">
 
-      {/* Held Sales Drawer Panel */}
-      {heldSales.length > 0 && (
-        <div className={`held-sales-drawer ${showHeldPanel ? 'open' : ''}`}>
-        <div className="drawer-header">
-          <h3>Held Sales Queue ({heldSales.length})</h3>
-          <button 
-            className="drawer-close"
-            onClick={() => setShowHeldPanel(false)}
-            title="Close"
-          >
-            ✕
-          </button>
+      {/* ── Keyboard shortcut bar ── */}
+      <div className="pos-shortcuts">
+        <div className="pos-shortcut">
+          <span className="pos-key">F2</span>
+          <span>Search</span>
         </div>
-        
-        {heldSales.length === 0 ? (
-          <div className="drawer-empty">No held sales</div>
-        ) : (
-          <div className="drawer-content">
-            {heldSales.map(sale => (
-              <div key={sale.id} className="held-sale-item">
-                <div className="item-header">
-                  <div className="item-id">{sale.id}</div>
-                  <div className="item-total">${sale.total?.toFixed(2) || '0.00'}</div>
-                </div>
-                <div className="item-qty">Items: {sale.items?.length || 0}</div>
-                <div className="item-time">{new Date(sale.held_at).toLocaleTimeString()}</div>
-                
-                <div className="item-actions">
-                  <button
-                    className="recall-action-btn"
-                    onClick={() => {
-                      handleRecallSale(sale.id)
-                      setShowHeldPanel(false)
-                    }}
-                  >
-                    <FiCheck size={16} /> Recall
-                  </button>
-                  <button
-                    className="discard-action-btn"
-                    onClick={() => handleDiscardHeldSale(sale.id)}
-                  >
-                    <FiTrash2 size={16} /> Discard
-                  </button>
-                </div>
-              </div>
-            ))}
+        <div className="pos-shortcut">
+          <span className="pos-key">F3</span>
+          <span>Hold</span>
+        </div>
+        <div className="pos-shortcut">
+          <span className="pos-key">F4</span>
+          <span>Recall {heldSales.length > 0 ? `(${heldSales.length})` : ''}</span>
+        </div>
+        <div className="pos-shortcut">
+          <span className="pos-key">F9</span>
+          <span>Pay</span>
+        </div>
+        <div className="pos-shortcut">
+          <span className="pos-key">Esc</span>
+          <span>Cancel</span>
+        </div>
+        {recalledSaleId && (
+          <div className="pos-shortcut pos-shortcut--recalled">
+            <span className="recalled-badge">RECALLED #{recalledSaleId}</span>
           </div>
         )}
+        <div className="pos-shift-indicator">
+          {currentShift && <><div className="pos-shift-dot" /><span>Shift active</span></>}
+        </div>
       </div>
-      )}
-      
-      <div className="sales-container" style={{ gridTemplateColumns: sidebarOpen ? '1fr 1fr' : '0fr 1fr' }}>
-        {/* Left Panel - Product Search & Selection */}
-        <div className="sales-left" style={{ display: sidebarOpen ? 'flex' : 'none' }}>
-          <div className="search-section">
-            <h2>Products</h2>
+
+      {/* ── Two-panel body ── */}
+      <div className="pos-body">
+
+        {/* ════ LEFT — Products ════ */}
+        <div className="pos-left">
+
+          {/* Search bar */}
+          <div className="pos-search-wrap">
+            <FiSearch size={18} className="pos-search-icon" />
             <input
+              ref={searchRef}
+              className="pos-search-input"
               type="text"
-              placeholder="Search product name..."
+              placeholder="Search products…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={e => setSearch(e.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
-              className="product-search"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const eligible = displayProducts.filter(p => p.current_quantity > 0)
+                  if (eligible.length === 1) {
+                    e.preventDefault()
+                    addToCart(eligible[0])
+                  }
+                }
+              }}
               autoFocus
             />
+            <span className="pos-search-badge">F2</span>
+          </div>
 
-            {error && <div className="error-message">{error}</div>}
-
-            <div className="search-results">
-              {searchFocused || search.trim() ? (
-                searchResults.length === 0 ? (
-                  <div className="no-results">No products found</div>
-                ) : (
-                  <>
-                    {!search.trim() && <div className="most-sold-title">All Products</div>}
-                    {searchResults.map(product => (
-                      <button
-                        key={product.id}
-                        className="product-result"
-                        onClick={() => addToCart(product)}
-                        disabled={product.current_quantity <= 0}
-                      >
-                        <div className="result-image-wrapper">
-                          {product.image_data ? (
-                            <img src={product.image_data} alt={product.name} className="result-image" />
-                          ) : (
-                            <div className="result-image-placeholder"><FiPackage size={32} /></div>
-                          )}
-                        </div>
-                        <div className="result-info">
-                          <div className="result-name">{product.name}</div>
-                          <div className="result-price">${product.selling_price.toFixed(2)}</div>
-                          <div className="result-qty">Stock: {product.current_quantity}</div>
-                        </div>
-                      </button>
-                    ))}
-                  </>
-                )
-              ) : (
-                mostSoldProducts.length > 0 ? (
-                  <>
-                    <div className="most-sold-title">Top Selling Products</div>
-                    {mostSoldProducts.map(product => (
-                      <button
-                        key={product.id}
-                        className="product-result"
-                        onClick={() => addToCart(product)}
-                        disabled={product.current_quantity <= 0}
-                      >
-                        <div className="result-image-wrapper">
-                          {product.image_data ? (
-                            <img src={product.image_data} alt={product.name} className="result-image" />
-                          ) : (
-                            <div className="result-image-placeholder"><FiPackage size={32} /></div>
-                          )}
-                        </div>
-                        <div className="result-info">
-                          <div className="result-name">{product.name}</div>
-                          <div className="result-price">${product.selling_price.toFixed(2)}</div>
-                          <div className="result-qty">Stock: {product.current_quantity}</div>
-                        </div>
-                      </button>
-                    ))}
-                  </>
-                ) : (
-                  <div className="no-search">No products available yet</div>
-                )
-              )}
+          {/* Error / info strip */}
+          {message.text && (
+            <div className={`pos-message ${message.type}`}>
+              {message.type === 'error' ? <FiAlertTriangle size={14} /> : <FiCheck size={14} />}
+              {message.text}
             </div>
+          )}
+
+          {/* Section label */}
+          <div className="pos-section-label">
+            {search.trim() ? `Results for "${search}"` : showProducts ? 'All Products' : 'Top Selling'}
+          </div>
+
+          {/* Product list */}
+          <div className="pos-products">
+            {showProducts ? (
+              displayProducts.length === 0 ? (
+                <div className="pos-empty">
+                  <FiPackage size={32} />
+                  <p>No products found</p>
+                  <small>Try a different search</small>
+                </div>
+              ) : (
+                displayProducts.map(product => {
+                  const stockClass = product.current_quantity === 0 ? 'out' : product.current_quantity <= (product.reorder_level || 5) ? 'low' : ''
+                  return (
+                    <button
+                      key={product.id}
+                      className="pos-product"
+                      onClick={() => addToCart(product)}
+                      disabled={product.current_quantity <= 0}
+                    >
+                      <div className="pos-product-thumb">
+                        {product.image_data
+                          ? <img src={product.image_data} alt={product.name} />
+                          : <FiPackage size={22} />}
+                      </div>
+                      <div className="pos-product-info">
+                        <div className="pos-product-name">{product.name}</div>
+                        <div className="pos-product-meta">
+                          <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                          <span className={`pos-product-stock ${stockClass}`}>
+                            {product.current_quantity === 0 ? 'Out of stock' : `${product.current_quantity} in stock`}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="pos-product-add" aria-hidden="true">+</div>
+                    </button>
+                  )
+                })
+              )
+            ) : (
+              mostSoldProducts.length > 0 ? mostSoldProducts.map(product => {
+                const stockClass = product.current_quantity === 0 ? 'out' : product.current_quantity <= (product.reorder_level || 5) ? 'low' : ''
+                return (
+                  <button
+                    key={product.id}
+                    className="pos-product"
+                    onClick={() => addToCart(product)}
+                    disabled={product.current_quantity <= 0}
+                  >
+                    <div className="pos-product-thumb">
+                      {product.image_data
+                        ? <img src={product.image_data} alt={product.name} />
+                        : <FiPackage size={22} />}
+                    </div>
+                    <div className="pos-product-info">
+                      <div className="pos-product-name">{product.name}</div>
+                      <div className="pos-product-meta">
+                        <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                        <span className={`pos-product-stock ${stockClass}`}>
+                          {product.current_quantity === 0 ? 'Out of stock' : `${product.current_quantity} in stock`}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="pos-product-add" aria-hidden="true">+</div>
+                  </button>
+                )
+              }) : (
+                <div className="pos-empty">
+                  <FiPackage size={32} />
+                  <p>No products yet</p>
+                  <small>Add products in the Products module</small>
+                </div>
+              )
+            )}
           </div>
         </div>
 
-        {/* Right Panel - Cart & Payment */}
-        <div className="sales-right">
-          <div className="cart-section">
-            <h2>Shopping Cart</h2>
+        {/* ════ RIGHT — Cart ════ */}
+        <div className="pos-right">
 
-            {cart.length === 0 ? (
-              <div className="empty-cart">
-                <p>No items in cart</p>
-                <small>Search and add products to begin</small>
-              </div>
-            ) : (
-              <>
-                <div className="cart-items">
-                  {cart.map(item => {
-                    const product = products.find(p => p.id === item.product_id)
-                    const availableQty = product?.current_quantity || 0
-                    
-                    return (
+          {/* Cart header */}
+          <div className="cart-header">
+            <div className="cart-header-left">
+              <FiShoppingCart size={16} />
+              <span className="cart-title">Current Sale</span>
+              {cart.length > 0 && <span className="cart-count">{cart.length}</span>}
+            </div>
+            {cart.length > 0 && (
+              <button className="cart-clear-btn" onClick={clearCart}>
+                <FiX size={11} /> Clear
+              </button>
+            )}
+          </div>
+
+          {/* Cart body */}
+          {cart.length === 0 ? (
+            <div className="cart-empty">
+              <div className="cart-empty-icon"><FiShoppingCart size={28} /></div>
+              <p>Cart is empty</p>
+              <small>Search or select a product to begin</small>
+            </div>
+          ) : (
+            <>
+              <div className="cart-items">
+                {cart.map(item => {
+                  const product = products.find(p => p.id === item.product_id)
+                  const maxQty  = product?.current_quantity || 0
+                  return (
                     <div key={item.product_id} className="cart-item">
-                      <div className="item-info">
-                        <div className="item-name">{item.product_name}</div>
-                        <div className="item-price">${item.selling_price.toFixed(2)} x {item.quantity}</div>
-                        <div className="item-available" style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                          Available: {availableQty} units
-                        </div>
+                      <div className="cart-item-info">
+                        <div className="cart-item-name">{item.product_name}</div>
+                        <div className="cart-item-unit">${item.selling_price.toFixed(2)} each</div>
                       </div>
-                      <div className="item-quantity">
+
+                      <div className="cart-qty">
                         <button
-                          className="qty-btn"
-                          onClick={() => updateCartQuantity(item.product_id, item.quantity - 1)}
+                          className="cart-qty-btn"
+                          onClick={() => item.quantity > 1 ? updateQty(item.product_id, item.quantity - 1) : removeFromCart(item.product_id)}
+                          title={item.quantity <= 1 ? 'Remove item' : 'Decrease'}
                         >
                           −
                         </button>
                         <input
                           type="number"
+                          className="cart-qty-input"
                           value={item.quantity || ''}
-                          onChange={(e) => {
-                            const value = e.target.value
-                            // Allow empty, 0, or valid numbers
-                            if (value === '') {
-                              // Allow empty state temporarily so user can see it being cleared
-                              updateCartQuantity(item.product_id, 0)
-                            } else {
-                              const quantity = parseInt(value, 10)
-                              if (!isNaN(quantity) && quantity > 0) {
-                                updateCartQuantity(item.product_id, quantity)
-                              }
+                          onChange={e => {
+                            const v = e.target.value
+                            if (v === '') updateQty(item.product_id, 0)
+                            else {
+                              const n = parseInt(v, 10)
+                              if (!isNaN(n) && n > 0) updateQty(item.product_id, n)
                             }
                           }}
-                          onClick={(e) => e.target.select()}
-                          className="qty-input"
+                          onClick={e => e.target.select()}
                         />
                         <button
-                          className="qty-btn"
-                          onClick={() => updateCartQuantity(item.product_id, item.quantity + 1)}
+                          className="cart-qty-btn"
+                          onClick={() => updateQty(item.product_id, item.quantity + 1)}
+                          disabled={item.quantity >= maxQty}
+                          title={`Max: ${maxQty}`}
                         >
                           +
                         </button>
                       </div>
-                      <div className="item-subtotal">${item.subtotal.toFixed(2)}</div>
-                      <button
-                        className="item-remove"
-                        onClick={() => removeFromCart(item.product_id)}
-                      >
-                        ✕
-                      </button>
+
+                      <div className="cart-item-right">
+                        <span className="cart-item-subtotal">${item.subtotal.toFixed(2)}</span>
+                        <button className="cart-item-remove" onClick={() => removeFromCart(item.product_id)} title="Remove">
+                          <FiTrash2 size={13} />
+                        </button>
+                      </div>
                     </div>
-                    )
-                  })}
-                </div>
+                  )
+                })}
+              </div>
 
-                <div className="cart-summary">
-                  <div className="summary-row">
-                    <span>Total:</span>
-                    <span>${cartTotal.toFixed(2)}</span>
-                  </div>
+              {/* Totals */}
+              <div className="cart-totals">
+                <div className="cart-total-row">
+                  <span>{cart.length} item{cart.length !== 1 ? 's' : ''}</span>
+                  <span>${cartTotal.toFixed(2)}</span>
                 </div>
-
-                <div className="payment-section">
-                  <button
-                    className="charge-btn"
-                    onClick={handleChargeClick}
-                    disabled={cart.length === 0 || isProcessing}
-                  >
-                    💳 Charge Customer
-                  </button>
-                  <button
-                    className="hold-btn"
-                    onClick={handleHoldSale}
-                    disabled={cart.length === 0 || isProcessing}
-                    title="Pause this sale to complete later"
-                  >
-                    <FiPause size={20} /> Hold Sale
-                  </button>
+                <div className="cart-grand-total">
+                  <span className="cart-grand-label">Total Due</span>
+                  <span className="cart-grand-value">${cartTotal.toFixed(2)}</span>
                 </div>
-              </>
-            )}
+              </div>
 
-          </div>
+              {/* Actions */}
+              <div className="cart-actions">
+                <button
+                  className="pos-hold-btn"
+                  onClick={handleHoldSale}
+                  disabled={isProcessing}
+                  title="Hold this sale [F3]"
+                >
+                  <FiPause size={15} />
+                  <span>Hold</span>
+                  <span className="pos-charge-shortcut pos-charge-shortcut--hold">F3</span>
+                </button>
+                <button
+                  className="pos-charge-btn"
+                  onClick={handleChargeClick}
+                  disabled={isProcessing}
+                  title="Proceed to payment [F9]"
+                >
+                  Charge ${cartTotal.toFixed(2)}
+                  <span className="pos-charge-shortcut">F9</span>
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Payment Method Modal - REMOVED (USD only) */}
+      {/* ── Held sales drawer toggle ── */}
+      {heldSales.length > 0 && (
+        <button
+          className="held-drawer-toggle"
+          onClick={() => setShowHeldPanel(p => !p)}
+          title={`${heldSales.length} held sale${heldSales.length !== 1 ? 's' : ''} [F4]`}
+        >
+          <div className="held-toggle-badge">{heldSales.length}</div>
+          <div className="held-toggle-label">HELD</div>
+        </button>
+      )}
 
-      {/* Cash Tendered Modal */}
+      {/* ── Held sales drawer ── */}
+      <div className={`held-drawer ${showHeldPanel ? 'open' : ''}`}>
+        <div className="held-drawer-header">
+          <span className="held-drawer-title">Held Sales ({heldSales.length})</span>
+          <button className="held-drawer-close" onClick={() => setShowHeldPanel(false)}>
+            <FiX size={16} />
+          </button>
+        </div>
+        <div className="held-drawer-body">
+          {heldSales.map(sale => (
+            <div key={sale.id} className="held-item">
+              <div className="held-item-top">
+                <span className="held-item-id">Hold-{sale.id}</span>
+                <span className="held-item-total">${sale.total?.toFixed(2) || '0.00'}</span>
+              </div>
+              <div className="held-item-meta">
+                {sale.items?.length || 0} item{(sale.items?.length || 0) !== 1 ? 's' : ''} · {new Date(sale.held_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+              <div className="held-item-actions">
+                <button className="held-recall-btn" onClick={() => handleRecallSale(sale.id)}>
+                  <FiCheck size={13} /> Recall
+                </button>
+                <button className="held-discard-btn" onClick={() => handleDiscardHeld(sale.id)}>
+                  <FiTrash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Payment modal ── */}
       {checkoutStep === 'cashTendered' && (
-        <div className="checkout-modal-overlay">
-          <div className="checkout-modal cash-modal">
-            <div className="modal-header">
-              <h2>Enter USD Amount Tendered</h2>
+        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
+          <div className="pay-modal">
+            {/* Green header with total */}
+            <div className="pay-modal-top">
+              <div className="pay-modal-label">Amount Due</div>
+              <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
             </div>
 
-            <div className="cash-section">
-              <div className="cash-row">
-                <span className="cash-label">Total Amount:</span>
-                <span className="cash-value">${cartTotal.toFixed(2)}</span>
+            <div className="pay-modal-body">
+              {/* Quick amount buttons */}
+              <div className="pay-quick-label">Quick Cash</div>
+              <div className="pay-quick-row">
+                {quickAmounts.map(({ label, value, isExact }) => (
+                  <button
+                    key={label}
+                    className={`pay-quick-btn ${isExact ? 'exact' : ''}`}
+                    onClick={() => setCheckoutCashTendered(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
 
-              <input
-                type="number"
-                placeholder="0.00"
-                value={checkoutCashTendered}
-                onChange={handleCashTenderedChange}
-                onClick={handleCashInputClick}
-                className="cash-input-large"
-                step="any"
-                autoFocus
-              />
+              {/* Cash input */}
+              <div className="pay-input-label">Cash Tendered</div>
+              <div className="pay-input-wrap">
+                <span className="pay-input-symbol">$</span>
+                <input
+                  ref={cashInputRef}
+                  type="number"
+                  className="pay-cash-input"
+                  placeholder="0.00"
+                  value={checkoutCashTendered}
+                  onChange={e => setCheckoutCashTendered(e.target.value)}
+                  onClick={e => e.target.select()}
+                  step="any"
+                  min="0"
+                />
+              </div>
 
+              {/* Change display */}
               {checkoutCashTendered && (
-                <div className="change-section">
-                  <div className="change-row">
-                    <span className="change-label">Change:</span>
-                    <span className={`change-value ${parseFloat(checkoutCashTendered) < cartTotal ? 'insufficient' : ''}`}>
-                      ${Math.max(0, parseFloat(checkoutCashTendered) - cartTotal).toFixed(2)}
-                    </span>
-                  </div>
+                <div className={`pay-change ${isInsufficient ? 'insufficient' : ''}`}>
+                  <span className="pay-change-label">{isInsufficient ? 'Short by' : 'Change'}</span>
+                  <span className="pay-change-value">
+                    {isInsufficient
+                      ? `$${(cartTotal - tenderedNum).toFixed(2)}`
+                      : `$${changeAmount.toFixed(2)}`}
+                  </span>
                 </div>
               )}
-            </div>
 
-            {error && <div className="error-message">{error}</div>}
-
-            <div className="modal-actions">
-              <button
-                className="modal-back-btn"
-                onClick={handleBackNavigation}
-              >
-                ← Back
-              </button>
-              <button
-                className="modal-complete-btn"
-                onClick={() => handleCompleteCheckout(checkoutCashTendered)}
-                disabled={!checkoutCashTendered || parseFloat(checkoutCashTendered) < cartTotal || isProcessing}
-              >
-                {isProcessing ? 'Processing...' : 'Complete Sale'}
-              </button>
+              {/* Actions */}
+              <div className="pay-actions">
+                <button className="pay-cancel-btn" onClick={handleBackNavigation}>
+                  <FiChevronLeft size={15} /> Back
+                </button>
+                <button
+                  className="pay-complete-btn"
+                  onClick={() => handleCompleteCheckout(checkoutCashTendered)}
+                  disabled={!checkoutCashTendered || isInsufficient || isProcessing}
+                >
+                  {isProcessing ? 'Processing…' : 'Complete Sale'}
+                  {!isProcessing && <span className="pay-enter-hint">↵</span>}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Confirmation Modal */}
+      {/* ── Sale success flash ── */}
       {showConfirmation && lastSale && (
-        <div className="confirmation-modal">
-          <div className="confirmation-content">
-              <div className="confirmation-icon"><FiCheck size={48} color="#4CAF50" /></div>
-            <h3>Sale Completed!</h3>
-            <div className="confirmation-details">
-              <p>Total: <strong>${lastSale.total.toFixed(2)}</strong></p>
-              <p>Change: <strong>${lastSale.change.toFixed(2)}</strong></p>
+        <div className="sale-success-overlay">
+          <div className="sale-success-card">
+            <div className="sale-success-icon">
+              <FiCheck size={32} color="white" strokeWidth={3} />
             </div>
-
-            <small>Auto-closing in 3 seconds...</small>
+            <div className="sale-success-title">Sale Complete!</div>
+            <div className="sale-success-amounts">
+              <div className="sale-success-amount">
+                <div className="sale-success-amount-label">Total</div>
+                <div className="sale-success-amount-value">${lastSale.total.toFixed(2)}</div>
+              </div>
+              <div className="sale-success-amount">
+                <div className="sale-success-amount-label">Change</div>
+                <div className="sale-success-amount-value change">${lastSale.change.toFixed(2)}</div>
+              </div>
+            </div>
+            <div className="sale-success-sub">Closing in 3 seconds…</div>
           </div>
         </div>
       )}
 
-      {/* Held Sales Queue Modal */}
-      {showHeldModal && (
-        <div className="checkout-modal-overlay">
-          <div className="checkout-modal held-sales-modal">
-            <div className="modal-header">
-              <h2>Held Sales Queue</h2>
-              <p>{heldSales.length} sale(s) on hold</p>
-            </div>
-
-            <div className="held-sales-list">
-              {heldSales.length === 0 ? (
-                <div className="no-held-sales">No sales on hold</div>
-              ) : (
-                heldSales.map(sale => (
-                  <div key={sale.id} className="held-sale-item">
-                    <div className="held-sale-info">
-                      <div className="held-sale-name">{sale.held_name}</div>
-                      <div className="held-sale-date">
-                        {new Date(sale.held_at).toLocaleString('en-ZA')}
-                      </div>
-                      <div className="held-sale-amount">
-                        Total: ${sale.total.toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="held-sale-actions">
-                      <button
-                        className="recall-btn"
-                        onClick={() => handleRecallSale(sale.id)}
-                        title="Load this sale back into cart"
-                      >
-                        Recall
-                      </button>
-                      <button
-                        className="discard-btn"
-                        onClick={() => handleDiscardHeldSale(sale.id)}
-                        title="Remove this held sale permanently"
-                      >
-                        <FiTrash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <button
-              className="modal-back-btn"
-              onClick={() => setShowHeldModal(false)}
-            >
-              ← Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Void Sale Modal */}
+      {/* ── Void modal ── */}
       {showVoidModal && (
-        <div className="checkout-modal-overlay">
-          <div className="checkout-modal">
-            <div className="modal-header">
-              <h2>Void Sale</h2>
-              <p>Enter reason for voiding this sale</p>
+        <div className="void-overlay">
+          <div className="void-modal">
+            <div className="void-modal-header">
+              <div className="void-modal-header-icon"><FiAlertTriangle size={17} /></div>
+              <div>
+                <div className="void-modal-title">Void Sale</div>
+                <div className="void-modal-sub">This action cannot be undone</div>
+              </div>
             </div>
-
-            <div className="void-input-section">
+            <div className="void-modal-body">
               <textarea
-                placeholder="e.g., Wrong price charged, Customer refund request, etc."
+                className="void-reason"
+                placeholder="Reason for voiding (e.g. Wrong price, Customer refund…)"
                 value={voidReason}
-                onChange={(e) => setVoidReason(e.target.value)}
-                className="void-textarea"
+                onChange={e => setVoidReason(e.target.value)}
                 rows={3}
                 autoFocus
               />
+              <div className="void-actions">
+                <button className="void-cancel-btn" onClick={() => { setShowVoidModal(false); setVoidSaleId(null); setVoidReason('') }}>
+                  Cancel
+                </button>
+                <button
+                  className="void-confirm-btn"
+                  onClick={handleVoidConfirm}
+                  disabled={!voidReason.trim() || isProcessing}
+                >
+                  {isProcessing ? 'Processing…' : 'Void Sale'}
+                </button>
+              </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {error && <div className="error-message">{error}</div>}
-
-            <div className="modal-actions">
+      {/* ── Navigation guard ── */}
+      {blocker.state === 'blocked' && (
+        <div className="nav-block-overlay">
+          <div className="nav-block-modal">
+            <div className="nav-block-icon"><FiShoppingCart size={30} /></div>
+            <h3 className="nav-block-title">Active sale in progress</h3>
+            <p className="nav-block-sub">
+              You have {cart.length} item{cart.length !== 1 ? 's' : ''} worth <strong>${cartTotal.toFixed(2)}</strong> in the cart.
+              What would you like to do?
+            </p>
+            <div className="nav-block-actions">
               <button
-                className="modal-back-btn"
-                onClick={() => {
-                  setShowVoidModal(false)
-                  setVoidSaleId(null)
-                  setVoidReason('')
-                  setError('')
+                className="nav-block-btn-hold"
+                disabled={isHoldingForNav}
+                onClick={async () => {
+                  setIsHoldingForNav(true)
+                  try { await handleHoldSale() } catch { /* flash shown inside */ }
+                  setIsHoldingForNav(false)
+                  blocker.proceed()
                 }}
               >
-                ← Cancel
+                <FiPause size={15} />
+                {isHoldingForNav ? 'Holding…' : 'Hold Sale & Leave'}
               </button>
               <button
-                className="modal-void-btn"
-                onClick={handleVoidSaleClick}
-                disabled={!voidReason.trim() || isProcessing}
+                className="nav-block-btn-discard"
+                disabled={isHoldingForNav}
+                onClick={() => { clearCart(); blocker.proceed() }}
               >
-                {isProcessing ? 'Processing...' : '⚠️ Void Sale'}
+                <FiTrash2 size={15} /> Discard & Leave
+              </button>
+              <button
+                className="nav-block-btn-stay"
+                disabled={isHoldingForNav}
+                onClick={() => blocker.reset()}
+              >
+                Stay on Sales
               </button>
             </div>
           </div>

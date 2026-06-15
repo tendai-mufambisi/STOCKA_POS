@@ -1,0 +1,332 @@
+.lan-settings {
+  max-width: 600px;
+}
+
+.lan-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.lan-subtitle {
+  color: #666;
+  margin: 0 0 24px;
+  font-size: 14px;
+}
+
+/* ── Status message ────────────────────────────────── */
+.lan-msg {
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  border: 1px solid transparent;
+}
+
+.lan-msg.ok  { background: #e8f5e9; color: #2e7d32; border-color: #c8e6c9; }
+.lan-msg.err { background: #fdecea; color: #c62828; border-color: #f5c6cb; }
+
+/* ── Mode selector ─────────────────────────────────── */
+.lan-section { margin-bottom: 24px; }
+
+.lan-section-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.lan-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lan-mode-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 2px solid #e0e0e0;
+  background: #fff;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.lan-mode-item.active {
+  border-color: #2e7d32;
+  background: #f1f8f1;
+}
+
+.lan-mode-radio { margin-top: 2px; accent-color: #2e7d32; }
+
+.lan-mode-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.lan-mode-desc { font-size: 13px; color: #666; }
+
+/* ── Info cards (server / client) ──────────────────── */
+.lan-server-card {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f9fbe7;
+  border-radius: 10px;
+  border: 1px solid #dce775;
+}
+
+.lan-client-card {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #e3f2fd;
+  border-radius: 10px;
+  border: 1px solid #90caf9;
+}
+
+.lan-card-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.lan-client-card .lan-card-title { margin-bottom: 12px; }
+
+/* ── Server info rows ──────────────────────────────── */
+.lan-server-row {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.lan-server-label { color: #666; }
+.lan-server-value { font-family: monospace; }
+.lan-server-hint  { color: #888; margin-left: 8px; font-size: 12px; }
+
+.lan-server-offline { font-size: 13px; color: #e65100; }
+
+.lan-clients-list { margin-top: 10px; }
+
+.lan-client-item {
+  font-size: 12px;
+  color: #555;
+  font-family: monospace;
+}
+
+/* ── Port field ────────────────────────────────────── */
+.lan-port-field { margin-top: 14px; }
+
+.lan-port-label {
+  display: block;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.lan-port-input {
+  width: 120px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+}
+
+.lan-client-card .lan-port-input { border-color: #90caf9; }
+
+/* ── Pairing secret box ────────────────────────────── */
+.lan-secret-box {
+  margin-top: 14px;
+  padding: 10px;
+  background: #fff8e1;
+  border-radius: 8px;
+  border: 1px solid #ffe082;
+}
+
+.lan-secret-title {
+  font-size: 12px;
+  color: #795548;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.lan-secret-desc { font-size: 11px; color: #666; }
+
+/* ── Client status row ─────────────────────────────── */
+.lan-status-row {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.lan-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.lan-status-dot.online  { background: #4caf50; }
+.lan-status-dot.offline { background: #ff9800; }
+
+.lan-sync-now-btn {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid #1976d2;
+  background: #fff;
+  color: #1976d2;
+  cursor: pointer;
+}
+
+/* ── IP address field ──────────────────────────────── */
+.lan-ip-field { margin-bottom: 12px; }
+
+.lan-ip-label {
+  display: block;
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+.lan-ip-row { display: flex; gap: 8px; }
+
+.lan-ip-input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #90caf9;
+  font-size: 14px;
+  font-family: monospace;
+}
+
+.lan-discover-btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #1976d2;
+  background: #1976d2;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.lan-discover-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+/* ── Discovered servers ────────────────────────────── */
+.lan-discovered { margin-bottom: 12px; }
+
+.lan-discovered-title {
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 6px;
+}
+
+.lan-discovered-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.lan-discovered-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #90caf9;
+  background: #fff;
+  color: #1976d2;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.lan-discovered-btn.active {
+  background: #1976d2;
+  color: #fff;
+}
+
+.lan-discovered-name { font-size: 12px; color: #666; }
+
+/* ── Pair warning ──────────────────────────────────── */
+.lan-pair-warning {
+  margin-top: 12px;
+  padding: 10px;
+  background: #fff8e1;
+  border-radius: 8px;
+  border: 1px solid #ffe082;
+  font-size: 12px;
+  color: #795548;
+}
+
+/* ── Client port section ───────────────────────────── */
+.lan-client-port { margin-bottom: 4px; }
+
+.lan-client-port-label {
+  display: block;
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+/* ── Save button ───────────────────────────────────── */
+.lan-save-btn {
+  padding: 10px 28px;
+  border-radius: 8px;
+  border: none;
+  background: #2e7d32;
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  margin-bottom: 24px;
+  transition: background 0.15s;
+}
+
+.lan-save-btn:disabled { background: #9e9e9e; cursor: not-allowed; }
+.lan-save-btn:not(:disabled):hover { background: #1b5e20; }
+
+/* ── Failure log ───────────────────────────────────── */
+.lan-failures { margin-top: 16px; }
+
+.lan-failures-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #c62828;
+  margin-bottom: 8px;
+}
+
+.lan-failures-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid #ffcdd2;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.lan-failure-item {
+  font-size: 12px;
+  color: #555;
+  padding: 4px 0;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.lan-failure-item:last-child { border-bottom: none; }
+
+.lan-failure-channel { font-family: monospace; color: #c62828; }
+
+.lan-failure-time { float: right; color: #999; }
+
+.lan-clear-btn {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #888;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}

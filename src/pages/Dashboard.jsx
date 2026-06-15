@@ -4,6 +4,7 @@ import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import './Dashboard.css'
 import fullLogo from '../assets/full_logo.png'
+import iconLogo from '../assets/icon.png'
 import Products from './Products'
 import StockControl from './StockControl'
 import CurrentInventory from './CurrentInventory'
@@ -20,7 +21,8 @@ import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
 import Notifications from '../components/Notifications'
-import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift } from '../database/db'
+import LanStatusBar from '../components/LanStatusBar'
+import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop } from '../database/db'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
 
@@ -41,7 +43,9 @@ import {
   FiLogOut,
   FiMenu,
   FiTrendingUp,
-  FiCalendar
+  FiCalendar,
+  FiArrowRight,
+  FiUsers
 } from 'react-icons/fi'
 
 
@@ -52,7 +56,8 @@ function Dashboard() {
   const [activePage, setActivePage] = useState('dashboard')
   const [dashboardStats, setDashboardStats] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarExpanded, setSidebarExpanded] = useState(false)
+  const [shopSettings, setShopSettings] = useState(null)
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
 
@@ -83,7 +88,7 @@ function Dashboard() {
     }
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
-  }, [updateInfo, updateReady])
+  }, [])
 
   // Shift UI state
   const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
@@ -102,6 +107,10 @@ function Dashboard() {
       console.error('Failed to load shift:', err)
     }
   }
+
+  useEffect(() => {
+    getShop().then(s => setShopSettings(s)).catch(() => {})
+  }, [])
 
   const handleOpeningFloatSubmit = async (floatData) => {
     setIsStartingShift(true)
@@ -176,15 +185,10 @@ function Dashboard() {
     // Reset all state and navigate
     setActivePage('dashboard')
     setDashboardStats(null)
-    setSidebarOpen(true)
+    setSidebarExpanded(false)
     
     // Navigate to login
     navigate('/login', { replace: true })
-    
-    // Fallback: reload page after a short delay to ensure clean state
-    setTimeout(() => {
-      window.location.href = '/login'
-    }, 100)
   }
 
   // Check authentication on component mount
@@ -377,16 +381,16 @@ function Dashboard() {
   ]
 
   const quickActions = [
-    { icon: 'shopping-cart', label: 'New Sale',        page: 'sales' },
-    { icon: 'plus', label: 'Add Product',     page: 'products' },
-    { icon: 'download', label: 'Receive Stock',   page: 'stock' },
-    { icon: 'credit-card', label: 'Add Expense',     page: 'expenses' },
-    { icon: 'bar-chart-2', label: 'View Reports',    page: 'reports' },
-    { icon: 'clock', label: 'End of Day',      page: 'endofday' },
+    { icon: 'shopping-cart', label: 'New Sale',       hint: 'Open the POS terminal',          page: 'sales',    theme: 'green'  },
+    { icon: 'plus',          label: 'Add Product',    hint: 'Register a new stock item',       page: 'products', theme: 'blue'   },
+    { icon: 'download',      label: 'Receive Stock',  hint: 'Record incoming inventory',       page: 'stock',    theme: 'teal'   },
+    { icon: 'credit-card',   label: 'Add Expense',    hint: 'Log a business expense',          page: 'expenses', theme: 'red'    },
+    { icon: 'bar-chart-2',   label: 'View Reports',   hint: 'Sales and stock analytics',       page: 'reports',  theme: 'purple' },
+    { icon: 'clock',         label: 'End of Day',     hint: 'Close out and reconcile',         page: 'endofday', theme: 'orange' },
   ]
 
-  // Check if current page should use full-screen layout
-  const isFullScreenPage = activePage === 'sales'
+  // Sales and Settings manage their own layout — no outer padding/header
+  const isFullScreenPage = activePage === 'sales' || activePage === 'settings'
   const shouldHideSidebar = isFullScreenPage
 
   // Render the correct page content
@@ -451,23 +455,22 @@ function Dashboard() {
 
   return (
     <div className="dashboard-layout">
-      <aside className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+      <aside
+        className={`sidebar ${sidebarExpanded ? 'expanded' : 'collapsed'}`}
+        onMouseEnter={() => setSidebarExpanded(true)}
+        onMouseLeave={() => setSidebarExpanded(false)}
+      >
+        {/* Logo area */}
         <div className="sidebar-logo">
-          <img
-            src={fullLogo}
-            alt="Stocka"
-            style={{
-              height: '55px',
-              objectFit: 'contain',
-              background: 'rgba(255,255,255,0.95)',
-              borderRadius: '8px',
-              padding: '4px 10px',
-              display: 'block',
-              margin: '0 auto',
-            }}
-          />
+          <div className="logo-icon-wrap">
+            <img src={iconLogo} alt="Stocka" className="logo-icon" />
+          </div>
+          <div className="logo-full-wrap">
+            <img src={fullLogo} alt="Stocka" className="logo-full" />
+          </div>
         </div>
 
+        {/* Navigation */}
         <nav className="sidebar-nav">
           {filteredNavItems.map(item => {
             const showGroupLabel = item.group !== lastGroup && groupLabels[item.group] !== ''
@@ -480,100 +483,112 @@ function Dashboard() {
                 <div
                   className={`nav-item ${activePage === item.id ? 'active' : ''}`}
                   onClick={() => setActivePage(item.id)}
+                  title={!sidebarExpanded ? item.label : ''}
                 >
                   <span className="nav-icon">{renderNavIcon(item.icon)}</span>
-                  <span>{item.label}</span>
+                  <span className="nav-label">{item.label}</span>
+                  {activePage === item.id && <span className="nav-active-dot" />}
                 </div>
               </div>
             )
           })}
         </nav>
 
+        {/* Footer */}
         <div className="sidebar-footer">
-          <div className="user-info">
+          <div className="user-info" title={!sidebarExpanded ? `${user.username} · ${user.role}` : ''}>
             <div className="user-avatar">
               {user.username?.[0]?.toUpperCase() || 'U'}
             </div>
-            <div>
+            <div className="user-info-text">
               <div className="user-name">{user.username}</div>
               <div className="user-role">{user.role}</div>
             </div>
           </div>
-          {currentShift && (
+
+          <LanStatusBar />
+
+          <div className="footer-actions">
+            {currentShift && (
+              <button
+                className="footer-action-btn shift-btn"
+                onClick={handleCloseShiftClick}
+                disabled={isClosingShift}
+                title={!sidebarExpanded ? (isClosingShift ? 'Closing shift…' : 'Close My Shift') : ''}
+              >
+                <span className="footer-btn-icon"><FiLogOut size={18} /></span>
+                <span className="btn-label">{isClosingShift ? 'Closing…' : 'Close Shift'}</span>
+              </button>
+            )}
             <button
-              className="close-shift-btn"
-              onClick={handleCloseShiftClick}
-              disabled={isClosingShift}
+              className="footer-action-btn logout-btn"
+              onClick={handleLogout}
+              title={!sidebarExpanded ? 'Sign Out' : ''}
             >
-              <FiLogOut size={18} style={{ marginRight: '8px' }} />
-              {isClosingShift ? 'Closing...' : 'Close My Shift'}
+              <span className="footer-btn-icon"><FiLogOut size={18} /></span>
+              <span className="btn-label">Sign Out</span>
             </button>
-          )}
-          <button className="logout-btn" onClick={handleLogout}>
-            <FiLogOut size={18} style={{ marginRight: '8px' }} />
-            Sign Out
-          </button>
+          </div>
         </div>
       </aside>
 
-      <button 
-        className="sidebar-toggle-caret"
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-        style={{ left: sidebarOpen ? '240px' : '0' }}
-      >
-        {sidebarOpen ? '‹' : '›'}
-      </button>
-
-      <main className="main-content" style={{ marginLeft: sidebarOpen ? '240px' : '0', padding: isFullScreenPage ? '0' : '32px' }}>
-        {!isFullScreenPage && <div className="main-header">
-          <div className="header-right">
-            {user.role !== 'Cashier' && <Notifications />}
-          </div>
-        </div>}
+      <main className={`main-content${isFullScreenPage ? ' fullscreen' : ''}`}>
+        {!isFullScreenPage && (() => {
+          const pageTitles = {
+            dashboard: null,
+            products: 'Products',
+            inventory: 'Current Inventory',
+            reconciliation: 'Reconciliation',
+            stock: 'Receive Stock',
+            suppliers: 'Suppliers',
+            restock: 'Restock Needed',
+            deadstock: 'Dead Stock',
+            expenses: 'Expenses',
+            reports: 'Reports',
+            endofday: 'End of Day',
+            shifts: 'Shift Management',
+            'cashier-sessions': 'Cashier Sessions',
+            expiry: 'Expiry Tracking',
+          }
+          const title = pageTitles[activePage]
+          return (
+            <div className="main-header">
+              <div className="header-left">
+                {title && <span className="main-header-title">{title}</span>}
+              </div>
+              <div className="header-right">
+                {user.role !== 'Cashier' && <Notifications />}
+              </div>
+            </div>
+          )
+        })()}
 
         {(updateInfo || updateDownloading || updateReady) && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '12px',
-            background: updateReady ? '#1b5e20' : '#2e7d32',
-            color: '#fff', padding: '10px 18px', borderRadius: '8px',
-            marginBottom: '16px', fontSize: '14px'
-          }}>
-            <FiDownload size={16} />
+          <div className={`update-banner ${updateReady ? 'ready' : ''}`}>
+            <FiDownload size={15} />
             {updateReady ? (
               <>
-                <span style={{ flex: 1 }}>Update ready — restart to apply the new version.</span>
-                <button
-                  onClick={() => window.stocka.updater.install()}
-                  style={{
-                    background: '#fff', color: '#2e7d32', border: 'none',
-                    borderRadius: '5px', padding: '5px 14px', cursor: 'pointer', fontWeight: 600
-                  }}
-                >
+                <span className="update-text">Update ready — restart to apply the new version.</span>
+                <button className="update-action-btn" onClick={() => window.stocka.updater.install()}>
                   Restart &amp; Install
                 </button>
               </>
             ) : updateDownloading ? (
               <>
-                <span style={{ flex: 1 }}>Downloading update… {updateProgress}%</span>
-                <div style={{ width: '120px', height: '6px', background: 'rgba(255,255,255,0.3)', borderRadius: '3px' }}>
-                  <div style={{ width: `${updateProgress}%`, height: '100%', background: '#fff', borderRadius: '3px', transition: 'width 0.3s' }} />
+                <span className="update-text">Downloading update… {updateProgress}%</span>
+                <div className="update-progress-track">
+                  <div className="update-progress-fill" style={{ width: `${updateProgress}%` }} />
                 </div>
               </>
             ) : (
               <>
-                <span style={{ flex: 1 }}>
+                <span className="update-text">
                   {updateInfo.releaseCount > 1
-                    ? `${updateInfo.releaseCount} Stocka updates are available — latest is v${updateInfo.version}.`
-                    : `A new version of Stocka (v${updateInfo.version}) is available.`}
+                    ? `${updateInfo.releaseCount} updates available — latest v${updateInfo.version}`
+                    : `New version v${updateInfo.version} available`}
                 </span>
-                <button
-                  onClick={() => { setUpdateDownloading(true); window.stocka.updater.download() }}
-                  style={{
-                    background: '#fff', color: '#2e7d32', border: 'none',
-                    borderRadius: '5px', padding: '5px 14px', cursor: 'pointer', fontWeight: 600
-                  }}
-                >
+                <button className="update-action-btn"
+                  onClick={() => { setUpdateDownloading(true); window.stocka.updater.download().catch(() => setUpdateDownloading(false)) }}>
                   Update Now
                 </button>
               </>
@@ -598,6 +613,7 @@ function Dashboard() {
           onConfirm={handleClosingFloatSubmit}
           onCancel={handleClosingFloatCancel}
           isLoading={isClosingShift}
+          varianceTolerance={shopSettings?.variance_tolerance ?? 0.01}
         />
       )}
     </div>
@@ -639,99 +655,28 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
   ]
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: '24px',
-      right: '24px',
-      width: '300px',
-      background: '#fff',
-      borderRadius: '12px',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
-      border: '1px solid #e8f5e9',
-      zIndex: 500,
-      fontFamily: 'system-ui, sans-serif',
-      overflow: 'hidden',
-    }}>
-      <div style={{
-        background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
-        padding: '14px 16px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}>
+    <div className="onboarding-panel">
+      <div className="onboarding-header">
         <div>
-          <p style={{ margin: 0, color: '#fff', fontWeight: 700, fontSize: '14px' }}>
-            You're ready to sell!
-          </p>
-          <p style={{ margin: '2px 0 0', color: 'rgba(255,255,255,0.75)', fontSize: '12px' }}>
+          <p className="onboarding-header-title">You're ready to sell!</p>
+          <p className="onboarding-header-sub">
             {items.filter(i => i.done).length} of {items.length} steps done
           </p>
         </div>
-        <button
-          onClick={handleDismiss}
-          style={{
-            background: 'rgba(255,255,255,0.2)',
-            border: 'none',
-            borderRadius: '6px',
-            color: '#fff',
-            cursor: 'pointer',
-            padding: '4px 8px',
-            fontSize: '12px',
-          }}
-        >
-          Dismiss
-        </button>
+        <button className="onboarding-dismiss-btn" onClick={handleDismiss}>Dismiss</button>
       </div>
-      <div style={{ padding: '12px 16px' }}>
+      <div className="onboarding-body">
         {items.map((item, i) => (
-          <div key={i} style={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
-            marginBottom: i < items.length - 1 ? '12px' : 0,
-          }}>
-            <div style={{
-              width: '20px',
-              height: '20px',
-              borderRadius: '50%',
-              border: `2px solid ${item.done ? '#2e7d32' : '#ddd'}`,
-              background: item.done ? '#2e7d32' : 'transparent',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              marginTop: '1px',
-            }}>
-              {item.done && <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>✓</span>}
+          <div key={i} className="onboarding-item">
+            <div className={`onboarding-step-circle${item.done ? ' done' : ''}`}>
+              {item.done && <span className="onboarding-step-check">✓</span>}
             </div>
-            <div style={{ flex: 1 }}>
-              <p style={{
-                margin: 0,
-                fontSize: '13px',
-                fontWeight: 600,
-                color: item.done ? '#aaa' : '#333',
-                textDecoration: item.done ? 'line-through' : 'none',
-              }}>
-                {item.label}
-              </p>
+            <div className="onboarding-item-content">
+              <p className={`onboarding-item-label${item.done ? ' done' : ''}`}>{item.label}</p>
               {!item.done && (
                 <>
-                  <p style={{ margin: '2px 0 6px', fontSize: '12px', color: '#999', lineHeight: 1.4 }}>
-                    {item.hint}
-                  </p>
-                  <button
-                    onClick={item.action}
-                    style={{
-                      padding: '5px 10px',
-                      background: '#f0f7f0',
-                      color: '#2e7d32',
-                      border: '1px solid #a5d6a7',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
+                  <p className="onboarding-item-hint">{item.hint}</p>
+                  <button className="onboarding-action-btn" onClick={item.action}>
                     {item.actionLabel} →
                   </button>
                 </>
@@ -745,7 +690,10 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
 }
 
 function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
-  const today = new Date().toLocaleDateString('en-ZW', {
+  const now = new Date()
+  const hour = now.getHours()
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+  const today = now.toLocaleDateString('en-ZW', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
 
@@ -754,7 +702,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
     return (
       <>
         <div className="page-header">
-          <h1>Welcome back, {user.username}!</h1>
+          <h1>{greeting}, {user.username}!</h1>
           <p>{today}</p>
         </div>
 
@@ -790,7 +738,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
   return (
     <>
       <div className="page-header">
-        <h1>How are you, {user.username}!</h1>
+        <h1>{greeting}, {user.username}!</h1>
         <p>{today}</p>
       </div>
 
@@ -832,16 +780,20 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
       </div>
 
       <div className="quick-actions">
-        <h3>Quick Actions</h3>
+        <h3 className="section-eyebrow">Quick Actions</h3>
         <div className="actions-grid">
           {quickActions.map((action, i) => (
             <button
               key={i}
-              className="action-btn"
+              className={`action-btn theme-${action.theme}`}
               onClick={() => setActivePage(action.page)}
             >
-              <span className="action-icon">{renderIcon(action.icon, 24)}</span>
-              <span>{action.label}</span>
+              <span className="action-icon-wrap">{renderIcon(action.icon, 18)}</span>
+              <span className="action-text">
+                <span className="action-label">{action.label}</span>
+                <span className="action-hint">{action.hint}</span>
+              </span>
+              <FiArrowRight className="action-arrow" size={14} />
             </button>
           ))}
         </div>
@@ -851,41 +803,35 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
       {(user.role === 'Admin' || user.role === 'Manager') && (
         <div className="dashboard-section live-cashiers-widget">
           <div className="section-header">
-            <h3>⏱️ Live Cashiers</h3>
-            <button 
-              className="section-link"
-              onClick={() => setActivePage('cashier-sessions')}
-            >
-              View All Sessions →
+            <h3><FiUsers size={15} /> Live Cashiers</h3>
+            <button className="section-link" onClick={() => setActivePage('cashier-sessions')}>
+              View All Sessions
             </button>
           </div>
           {activeCashiersLoading ? (
-            <div className="loading-state">
-              <p>Loading active sessions...</p>
-            </div>
+            <div className="loading-state"><p>Loading active sessions...</p></div>
           ) : activeCashiers && activeCashiers.length > 0 ? (
             <div className="live-cashiers-content">
               <div className="cashiers-stats">
                 <div className="stat-box">
-                  <div className="stat-label">Active Cashiers</div>
-                  <div className="stat-number">{activeCashiers.length}</div>
+                  <div className="stat-box-label">Active Cashiers</div>
+                  <div className="stat-box-number">{activeCashiers.length}</div>
                 </div>
                 <div className="stat-box">
-                  <div className="stat-label">Total Sales (Today)</div>
-                  <div className="stat-number">
+                  <div className="stat-box-label">Total Sales Today</div>
+                  <div className="stat-box-number">
                     ${activeCashiers.reduce((sum, shift) => sum + (shift.total_sales_value || 0), 0).toFixed(2)}
                   </div>
                 </div>
               </div>
-              
               {activeCashiers.some(shift => Math.abs(shift.overall_variance || 0) > 0.01) && (
                 <div className="variance-alerts">
-                  <div className="alert-header">⚠️ Shifts with Variances</div>
+                  <div className="alert-header"><FiAlertTriangle size={12} /> Shifts with Variances</div>
                   {activeCashiers.filter(shift => Math.abs(shift.overall_variance || 0) > 0.01).map((shift, idx) => (
                     <div key={idx} className="variance-alert-item">
                       <span className="cashier-name">{shift.cashier_username}</span>
                       <span className={shift.overall_variance < 0 ? 'shortage' : 'overage'}>
-                        {shift.overall_variance < 0 ? '- $' : '+ $'}{Math.abs(shift.overall_variance).toFixed(2)}
+                        {shift.overall_variance < 0 ? '-' : '+'}${Math.abs(shift.overall_variance).toFixed(2)}
                       </span>
                     </div>
                   ))}
@@ -894,7 +840,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
             </div>
           ) : (
             <div className="empty-state">
-              <div className="empty-icon">{renderIcon('clock', 32)}</div>
+              <FiClock size={32} />
               <p>No active cashier sessions</p>
             </div>
           )}
@@ -904,14 +850,9 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
       <div className="dashboard-grid">
         <div className="dashboard-section">
           <div className="section-header">
-            <h3>{renderIcon('alert-triangle', 20)} Low Stock Items ({lowStockItems?.length || 0})</h3>
+            <h3><FiAlertTriangle size={15} /> Low Stock ({lowStockItems?.length || 0})</h3>
             {lowStockItems && lowStockItems.length > 0 && (
-              <button 
-                className="section-link"
-                onClick={() => setActivePage('stock')}
-              >
-                View All →
-              </button>
+              <button className="section-link" onClick={() => setActivePage('stock')}>View All</button>
             )}
           </div>
           {lowStockItems && lowStockItems.length > 0 ? (
@@ -920,8 +861,8 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
                 <div key={idx} className="stock-item">
                   <div className="item-name">{item.name}</div>
                   <div className="item-qty">
-                    <span className="current">Qty: {item.current_quantity}</span>
-                    <span className="reorder">Reorder: {item.reorder_level}</span>
+                    <span className="current">{item.current_quantity}</span>
+                    <span className="reorder">/ {item.reorder_level}</span>
                   </div>
                 </div>
               ))}
@@ -931,14 +872,19 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
             </div>
           ) : (
             <div className="empty-state">
-              <div className="empty-icon">{renderIcon('package', 32)}</div>
-              <p>All stock levels are good!</p>
+              <FiPackage size={32} />
+              <p>All stock levels are good</p>
             </div>
           )}
         </div>
 
         <div className="dashboard-section">
-          <h3>{renderIcon('bar-chart-2', 20)} Recent Sales ({recentSales?.length || 0})</h3>
+          <div className="section-header">
+            <h3><FiBarChart2 size={15} /> Recent Sales ({recentSales?.length || 0})</h3>
+            {recentSales && recentSales.length > 0 && (
+              <button className="section-link" onClick={() => setActivePage('sales')}>New Sale</button>
+            )}
+          </div>
           {recentSales && recentSales.length > 0 ? (
             <div className="recent-sales-list">
               {recentSales.slice(0, 5).map((sale, idx) => (
@@ -952,7 +898,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
             </div>
           ) : (
             <div className="empty-state">
-              <div className="empty-icon">{renderIcon('shopping-cart', 32)}</div>
+              <FiShoppingCart size={32} />
               <p>No sales yet today</p>
             </div>
           )}

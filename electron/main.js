@@ -6,9 +6,10 @@ const fs = require('fs')
 // We use Electron's native webContents.print() directly instead.
 const logger = require('./logger')
 const { verifyLicense, saveLicense, loadLicense } = require('./license')
-const { initDb, getSql, saveDb, closeDb } = require('./database/index')
+const { initDb, saveDb, closeDb } = require('./database/index')
 const { createTables, runMigrations } = require('./database/schema')
 const { registerAll: registerDomainIpc } = require('./database/ipc')
+const { initLan } = require('./lan/index')
 const btPrinter = require('./printer')
 
 // Set userData path before app is ready (must be first)
@@ -101,13 +102,17 @@ app.whenReady().then(async () => {
   // Initialize database in main process
   const dbFilePath = path.join(userDataPath, 'stocka.db')
   try {
-    const db = await initDb(dbFilePath)
-    global._stockaSqlJs = getSql()
+    const db = initDb(dbFilePath)
     createTables(db)
     runMigrations(db)
     saveDb()
-    registerDomainIpc(ipcMain, userDataPath)
+    // initLan MUST run before registerDomainIpc so CLIENT mode can inject makeHandler
+    const { lanHandlers, stopLan: _stopLan, makeHandler } = initLan(userDataPath, () => mainWindow)
+    registerDomainIpc(ipcMain, userDataPath, makeHandler)
+    lanHandlers.forEach(([ch, fn]) => ipcMain.handle(ch, (event, ...args) => fn(event, ...args)))
+    app.on('before-quit', () => _stopLan())
     logger.info('✅ Database ready')
+    logger.info('✅ LAN subsystem ready')
   } catch (err) {
     logger.error('❌ Database init failed: ' + err.message)
     dialog.showErrorBox('Stocka - Database Error', 'Failed to initialize database: ' + err.message)
@@ -142,6 +147,11 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('💥 Unhandled Rejection', { reason, promise })
+})
+
+// Synchronous version query from preload
+ipcMain.on('app:get-version', (event) => {
+  event.returnValue = app.getVersion()
 })
 
 // ══════════════════════════════════════════════════════════
@@ -852,9 +862,13 @@ function formatMoney(amount) {
 // AUTO-UPDATER
 // ══════════════════════════════════════════════════════════
 
+
 function setupAutoUpdater() {
   try {
     const { autoUpdater } = require('electron-updater')
+    // For dev testing: set to false to test with real GitHub releases
+    // Set to true only if you have dev-app-update.yml fully configured for offline use
+    autoUpdater.forceDevUpdateConfig = false
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false
 

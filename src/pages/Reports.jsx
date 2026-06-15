@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { FiDownload, FiLock, FiPrinter, FiCheck, FiBarChart2 } from 'react-icons/fi'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
@@ -492,12 +493,8 @@ function Reports() {
   if (!canAccessReports) {
     return (
       <div className="reports-page">
-        <div className="page-header">
-          <h1>📊 Reports</h1>
-          <p>Analyze your business performance</p>
-        </div>
-        <div className="access-denied">
-          <div className="denied-icon">🔒</div>
+          <div className="access-denied">
+          <div className="denied-icon"><FiLock size={40} /></div>
           <h2>Access Denied</h2>
           <p>Your role (Cashier) does not have permission to access Reports.</p>
           <p className="denied-details">Reports are available to Managers and Administrators only.</p>
@@ -510,11 +507,6 @@ function Reports() {
 
   return (
     <div className="reports-page">
-      <div className="page-header">
-        <h1>📊 Reports</h1>
-        <p>Analyze your business performance</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
       {success && <div className="success-banner">{success}</div>}
 
@@ -565,8 +557,8 @@ function Reports() {
           </div>
         )}
 
-        <button className="btn btn-primary" onClick={handleExport}>
-          ⇩ Export to Excel
+        <button className="btn btn-secondary" onClick={handleExport}>
+          <FiDownload size={14} /> Export
         </button>
       </div>
 
@@ -594,7 +586,7 @@ function Reports() {
 
       {paymentBreakdown.length > 0 && (
         <div className="chart-container">
-          <h3>💳 Payment Method Breakdown</h3>
+          <h3>Payment Method Breakdown</h3>
           <ResponsiveContainer width="100%" height={300}>
             <PieChart>
               <Pie
@@ -737,9 +729,8 @@ function Reports() {
                             className="btn btn-small btn-secondary"
                             onClick={() => handleReprintReceipt(row.id)}
                             disabled={reprintingId === row.id}
-                            style={{ padding: '4px 8px', fontSize: '12px' }}
                           >
-                            {reprintingId === row.id ? '🖨️ Printing...' : '🖨️ Reprint'}
+                            {reprintingId === row.id ? <><FiPrinter size={12} /> Printing...</> : <><FiPrinter size={12} /> Reprint</>}
                           </button>
                         )}
                       </td>
@@ -795,7 +786,7 @@ function Reports() {
                       <td>{row.category || '-'}</td>
                       <td>
                         <span className={`stock-badge ${row.current_quantity === 0 ? 'out-of-stock' : row.current_quantity <= row.reorder_level ? 'low-stock' : 'in-stock'}`}>
-                          {row.current_quantity === 0 ? '❌ Out of Stock' : row.current_quantity <= row.reorder_level ? '⚠️  Low Stock' : '✓ In Stock'}
+                          {row.current_quantity === 0 ? 'Out of Stock' : row.current_quantity <= row.reorder_level ? 'Low Stock' : <><FiCheck size={11} /> In Stock</>}
                         </span>
                       </td>
                     </>

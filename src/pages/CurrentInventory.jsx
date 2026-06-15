@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getProducts, getStockValue } from '../database/db'
 import './CurrentInventory.css'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiDownload } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiDownload, FiDollarSign } from 'react-icons/fi'
 
 function CurrentInventory({ onNavigateToAddStock } = {}) {
   const [products, setProducts] = useState([])
@@ -135,9 +135,9 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
   const getSortIcon = (column) => {
     if (sortConfig.column !== column) return null
     return sortConfig.direction === 'asc' ? (
-      <FiArrowUp size={16} style={{ marginLeft: '6px', display: 'inline' }} />
+      <FiArrowUp size={16} className="sort-icon-inline" />
     ) : (
-      <FiArrowDown size={16} style={{ marginLeft: '6px', display: 'inline' }} />
+      <FiArrowDown size={16} className="sort-icon-inline" />
     )
   }
 
@@ -163,7 +163,7 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
   if (loading) {
     return (
       <div className="current-inventory">
-        <div style={{ textAlign: 'center', padding: '40px' }}>
+        <div className="loading-center">
           <p>Loading inventory...</p>
         </div>
       </div>
@@ -174,7 +174,7 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
     <div className="current-inventory">
       <div className="inventory-header">
         <div>
-          <h1>📦 Current Inventory</h1>
+          <h1>Current Inventory</h1>
           <p className="inventory-subtitle">
             Real-time stock levels for all products — {filteredProducts.length} of {products.length} products
           </p>
@@ -192,7 +192,7 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
       {/* Total Stock Value Metric */}
       <div className="metrics-section">
         <div className="metric-card">
-          <div className="metric-icon">💰</div>
+          <div className="metric-icon"><FiDollarSign size={20} /></div>
           <div className="metric-details">
             <div className="metric-label">Total Stock Value</div>
             <div className="metric-value">${stockValue.toFixed(2)}</div>
@@ -201,11 +201,7 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
         </div>
       </div>
 
-      {error && (
-        <div className="error-message" style={{ margin: '20px 0', padding: '12px', background: '#fee', color: '#c33', borderRadius: '4px' }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="error-banner">{error}</div>}
 
       <div className="inventory-table-container">
         <table className="inventory-table">
@@ -258,7 +254,7 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
           <tbody>
             {filteredProducts.length === 0 ? (
               <tr>
-                <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
+                <td colSpan="6" className="empty-td">
                   No products found matching your filters
                 </td>
               </tr>
@@ -293,10 +289,10 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
         <div className="modal-overlay" onClick={() => setShowAddStock(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h2>Add Stock</h2>
-            <p style={{ color: '#666', marginBottom: '20px' }}>
+            <p className="modal-description">
               This feature will redirect you to the stock receiving form in Stock Control.
             </p>
-            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+            <div className="modal-actions">
               <button
                 className="btn btn-secondary"
                 onClick={() => setShowAddStock(false)}
@@ -319,32 +315,6 @@ function CurrentInventory({ onNavigateToAddStock } = {}) {
         </div>
       )}
 
-      <style>{`
-        .modal-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: rgba(0, 0, 0, 0.5);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 1000;
-        }
-        .modal-content {
-          background: white;
-          padding: 30px;
-          border-radius: 8px;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-          max-width: 400px;
-          width: 90%;
-        }
-        .modal-content h2 {
-          margin-top: 0;
-          color: #1a5c2a;
-        }
-      `}</style>
     </div>
   )
 }

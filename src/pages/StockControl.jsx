@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck } from 'react-icons/fi'
 import './StockControl.css'
 
 // Inline searchable dropdown component used for product and supplier selection
@@ -37,84 +37,39 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled }) {
   }
 
   return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <div
-        onClick={() => { if (!disabled) setOpen(o => !o) }}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          border: '1px solid #ddd',
-          borderRadius: '4px',
-          padding: '8px 10px',
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          background: disabled ? '#f5f5f5' : '#fff',
-          minHeight: '38px',
-          gap: '6px',
-          userSelect: 'none'
-        }}
-      >
-        <FiSearch size={14} style={{ color: '#999', flexShrink: 0 }} />
-        <span style={{ flex: 1, fontSize: '14px', color: selected ? '#333' : '#999' }}>
+    <div ref={ref} className="ss-container">
+      <div className={`ss-trigger${disabled ? ' disabled' : ''}`} onClick={() => { if (!disabled) setOpen(o => !o) }}>
+        <FiSearch size={14} className="ss-trigger-icon" />
+        <span className={`ss-trigger-text${selected ? ' selected' : ''}`}>
           {selected ? selected.label : placeholder}
         </span>
         {selected && !disabled && (
-          <FiX size={14} style={{ color: '#999', flexShrink: 0 }} onClick={handleClear} />
+          <FiX size={14} className="ss-clear-icon" onClick={handleClear} />
         )}
       </div>
 
       {open && (
-        <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          background: '#fff',
-          border: '1px solid #ddd',
-          borderRadius: '4px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
-          zIndex: 1000,
-          maxHeight: '260px',
-          display: 'flex',
-          flexDirection: 'column'
-        }}>
-          <div style={{ padding: '8px', borderBottom: '1px solid #eee' }}>
+        <div className="ss-dropdown">
+          <div className="ss-search-wrap">
             <input
               autoFocus
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Type to search..."
-              style={{
-                width: '100%',
-                padding: '6px 8px',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                fontSize: '13px',
-                boxSizing: 'border-box'
-              }}
+              className="ss-search-input"
               onClick={e => e.stopPropagation()}
             />
           </div>
-          <div style={{ overflowY: 'auto', flex: 1 }}>
+          <div className="ss-options">
             {filtered.length === 0 ? (
-              <div style={{ padding: '12px', color: '#999', fontSize: '13px', textAlign: 'center' }}>
-                No results found
-              </div>
+              <div className="ss-empty">No results found</div>
             ) : (
               filtered.map(opt => (
                 <div
                   key={opt.value}
                   onClick={() => handleSelect(opt)}
-                  style={{
-                    padding: '9px 12px',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    color: String(opt.value) === String(value) ? '#2e7d32' : '#333',
-                    fontWeight: String(opt.value) === String(value) ? '600' : '400',
-                    backgroundColor: String(opt.value) === String(value) ? '#f0f7f0' : 'transparent'
-                  }}
-                  onMouseEnter={e => { if (String(opt.value) !== String(value)) e.currentTarget.style.background = '#f5f5f5' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = String(opt.value) === String(value) ? '#f0f7f0' : 'transparent' }}
+                  className={`ss-option${String(opt.value) === String(value) ? ' selected' : ''}`}
                 >
                   {opt.label}
                 </div>
@@ -225,8 +180,8 @@ function StockControl() {
   const SortIcon = ({ column }) => {
     if (sortConfig.column !== column) return null
     return sortConfig.direction === 'asc'
-      ? <FiArrowUp size={13} style={{ marginLeft: 4, display: 'inline' }} />
-      : <FiArrowDown size={13} style={{ marginLeft: 4, display: 'inline' }} />
+      ? <FiArrowUp size={13} className="sort-icon" />
+      : <FiArrowDown size={13} className="sort-icon" />
   }
 
   // Computed values for both form types
@@ -305,17 +260,12 @@ function StockControl() {
 
   return (
     <div className="stock-control-page">
-      <div className="page-header">
-        <h1>Stock Receiving</h1>
-        <p>Record stock received from suppliers or direct purchases</p>
-      </div>
-
       {error && <div className="error-banner">{error}</div>}
       {successMessage && <div className="success-banner">{successMessage}</div>}
 
       <div className="toolbar">
         <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm) }}>
-          {showForm ? <><FiX size={16} style={{ marginRight: 6 }} />Cancel</> : <><FiPlus size={16} style={{ marginRight: 6 }} />Record Stock</>}
+          {showForm ? <><FiX size={16} />Cancel</> : <><FiPlus size={16} />Record Stock</>}
         </button>
       </div>
 
@@ -328,26 +278,15 @@ function StockControl() {
             <div className="form-row">
               <div className="form-group">
                 <label>Purchase Type *</label>
-                <div style={{ display: 'flex', gap: '10px' }}>
+                <div className="form-actions">
                   {['supplier', 'direct'].map(type => (
                     <button
                       key={type}
                       type="button"
                       onClick={() => handleTypeChange(type)}
-                      style={{
-                        flex: 1,
-                        padding: '10px',
-                        border: `2px solid ${purchaseType === type ? '#2e7d32' : '#ddd'}`,
-                        borderRadius: '6px',
-                        background: purchaseType === type ? '#f0f7f0' : '#fff',
-                        color: purchaseType === type ? '#2e7d32' : '#555',
-                        fontWeight: purchaseType === type ? '600' : '400',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        transition: 'all 0.15s'
-                      }}
+                      className={`purchase-type-btn ${purchaseType === type ? 'active' : ''}`}
                     >
-                      {type === 'supplier' ? '🏭 From Supplier' : '🛒 Direct Purchase'}
+                      {type === 'supplier' ? <><FiTruck size={15} /> From Supplier</> : <><FiShoppingBag size={15} /> Direct Purchase</>}
                     </button>
                   ))}
                 </div>
@@ -437,9 +376,7 @@ function StockControl() {
                         <span className="calc-value">${directTotalValue.toFixed(2)}</span>
                       </div>
                     </div>
-                    <p style={{ fontSize: '12px', color: '#888', marginTop: '10px', marginBottom: 0 }}>
-                      💡 Selling price is managed separately in the Products section
-                    </p>
+                    <p className="calc-note">Selling price is managed separately in the Products section</p>
                   </div>
                 )}
               </>
@@ -487,9 +424,7 @@ function StockControl() {
                         <span className="calc-value">${directTotalValue.toFixed(2)}</span>
                       </div>
                     </div>
-                    <p style={{ fontSize: '12px', color: '#888', marginTop: '10px', marginBottom: 0 }}>
-                      💡 Selling price is managed separately in the Products section
-                    </p>
+                    <p className="calc-note">Selling price is managed separately in the Products section</p>
                   </div>
                 )}
 
@@ -501,16 +436,15 @@ function StockControl() {
                       onChange={e => handleFieldChange('notes', e.target.value)}
                       placeholder="e.g. Personal purchase, donation, inter-branch transfer..."
                       rows="2"
-                      style={{ fontFamily: 'inherit', resize: 'vertical' }}
-                    />
+                      />
                   </div>
                 </div>
               </>
             )}
 
-            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+            <div className="form-actions">
               <button type="submit" className="btn btn-primary">
-                {purchaseType === 'supplier' ? '✓ Record Stock Receiving' : '✓ Confirm Direct Purchase'}
+                {purchaseType === 'supplier' ? <><FiCheck size={14} /> Record Stock Receiving</> : <><FiCheck size={14} /> Confirm Direct Purchase</>}
               </button>
               <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setError('') }}>
                 Cancel
@@ -522,30 +456,29 @@ function StockControl() {
 
       {/* ── Purchase History Table ── */}
       <div className="receivings-list">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-          <h3 style={{ margin: 0 }}>Purchase History ({filteredReceivings.length} of {receivings.length})</h3>
+        <div className="receivings-list-header">
+          <h3>Purchase History ({filteredReceivings.length} of {receivings.length})</h3>
         </div>
 
         {/* Search & Filter Bar */}
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #ddd', borderRadius: '4px', padding: '6px 10px', flex: '1', minWidth: '200px', background: '#fff' }}>
-            <FiSearch size={14} style={{ color: '#999', marginRight: '6px', flexShrink: 0 }} />
+        <div className="history-search-bar">
+          <div className="history-search-input-wrap">
+            <FiSearch size={14} />
             <input
               type="text"
               value={historySearch}
               onChange={e => setHistorySearch(e.target.value)}
               placeholder="Search by product or supplier..."
-              style={{ border: 'none', outline: 'none', fontSize: '13px', width: '100%', background: 'transparent' }}
             />
             {historySearch && (
-              <FiX size={13} style={{ color: '#999', cursor: 'pointer', marginLeft: 4 }} onClick={() => setHistorySearch('')} />
+              <FiX size={13} className="icon-btn" onClick={() => setHistorySearch('')} />
             )}
           </div>
 
           <select
             value={historyTypeFilter}
             onChange={e => setHistoryTypeFilter(e.target.value)}
-            style={{ padding: '7px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px', background: '#fff' }}
+            className="history-filter-select"
           >
             <option value="all">All Types</option>
             <option value="supplier">Supplier</option>
@@ -556,7 +489,7 @@ function StockControl() {
             <select
               value={historySupplierFilter}
               onChange={e => setHistorySupplierFilter(e.target.value)}
-              style={{ padding: '7px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px', background: '#fff' }}
+              className="history-filter-select"
             >
               <option value="all">All Suppliers</option>
               {uniqueSuppliers.map(s => <option key={s} value={s}>{s}</option>)}
@@ -566,7 +499,7 @@ function StockControl() {
           {(historySearch || historyTypeFilter !== 'all' || historySupplierFilter !== 'all') && (
             <button
               onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistorySupplierFilter('all') }}
-              style={{ padding: '7px 12px', border: '1px solid #ddd', borderRadius: '4px', background: '#fff', fontSize: '13px', cursor: 'pointer', color: '#666' }}
+              className="history-clear-btn"
             >
               Clear Filters
             </button>
@@ -582,21 +515,21 @@ function StockControl() {
             <table>
               <thead>
                 <tr>
-                  <th onClick={() => handleSort('date')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  <th onClick={() => handleSort('date')} className="th-sort th-nowrap">
                     Date <SortIcon column="date" />
                   </th>
-                  <th onClick={() => handleSort('product')} style={{ cursor: 'pointer' }}>
+                  <th onClick={() => handleSort('product')} className="th-sort">
                     Product <SortIcon column="product" />
                   </th>
-                  <th onClick={() => handleSort('source')} style={{ cursor: 'pointer' }}>
+                  <th onClick={() => handleSort('source')} className="th-sort">
                     Source <SortIcon column="source" />
                   </th>
                   <th>Type</th>
-                  <th onClick={() => handleSort('units')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  <th onClick={() => handleSort('units')} className="th-sort th-nowrap">
                     Quantity <SortIcon column="units" />
                   </th>
-                  <th style={{ whiteSpace: 'nowrap' }}>Cost/Unit</th>
-                  <th onClick={() => handleSort('value')} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  <th className="th-nowrap">Cost/Unit</th>
+                  <th onClick={() => handleSort('value')} className="th-sort th-nowrap">
                     Total Value <SortIcon column="value" />
                   </th>
                 </tr>
@@ -608,14 +541,7 @@ function StockControl() {
                     <td>{r.product_name}</td>
                     <td>{r.supplier_name || '—'}</td>
                     <td>
-                      <span style={{
-                        padding: '3px 8px',
-                        borderRadius: '4px',
-                        fontSize: '12px',
-                        fontWeight: '500',
-                        backgroundColor: r.purchase_type === 'supplier' ? '#e3f2fd' : '#f3e5f5',
-                        color: r.purchase_type === 'supplier' ? '#1565c0' : '#6a1b9a'
-                      }}>
+                      <span className={`type-badge ${r.purchase_type === 'supplier' ? 'supplier' : 'direct'}`}>
                         {r.purchase_type === 'supplier' ? 'Supplier' : 'Direct'}
                       </span>
                     </td>
