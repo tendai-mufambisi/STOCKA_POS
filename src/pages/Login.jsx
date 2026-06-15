@@ -714,7 +714,7 @@ function Login() {
               Set Up My Shop
             </button>
             <p style={{ margin: '28px 0 0', fontSize: '12px', color: '#ddd' }}>
-              v1.1.9 — Proudly Zimbabwean
+              v1.2.0 — Proudly Zimbabwean
 </p>
           </div>
         </div>
@@ -841,7 +841,7 @@ function Login() {
           )}
 
           <p style={{ margin: '28px 0 0', fontSize: '11px', color: '#e0e0e0', textAlign: 'center' }}>
-            v1.1.9 — Proudly Zimbabwean
+            v1.2.0 — Proudly Zimbabwean
           </p>
         </div>
       </div>

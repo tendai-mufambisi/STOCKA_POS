@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { useBlocker } from 'react-router-dom'
 import {
   getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts,
   getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale,
@@ -53,11 +52,14 @@ function Sales() {
   const [printerSettings, setPrinterSettings] = useState(null)
   const { printReceipt } = useReceiptPrinter()
 
-  // Block navigation away when the cart has items
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) =>
-      cart.length > 0 && !showConfirmation && currentLocation.pathname !== nextLocation.pathname
-  )
+  // Navigation guard state (useBlocker requires a data router; not compatible
+  // with HashRouter, so we manage the blocked modal manually via setNavBlocked)
+  const [navBlocked, setNavBlocked] = useState(false)
+  const blocker = {
+    state: navBlocked ? 'blocked' : 'idle',
+    proceed: () => setNavBlocked(false),
+    reset:   () => setNavBlocked(false),
+  }
 
   // ── Refs ──────────────────────────────────────────
   const searchRef   = useRef(null)
