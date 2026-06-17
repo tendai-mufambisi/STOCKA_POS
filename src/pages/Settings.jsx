@@ -3,9 +3,10 @@ import {
   getShop, updateShop, getUsers, addUser, updateUser, deactivateUser,
   getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile
 } from '../database/db'
-import { validatePasswordStrength } from '../utils/authUtils'
+import { validatePin } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
 import { useAuthStore } from '../store/useAuthStore'
+import { useLanSync } from '../hooks/useLanSync'
 import LanSettings from './LanSettings'
 import './Settings.css'
 import {
@@ -51,6 +52,9 @@ function Settings() {
   const [systemInfo, setSystemInfo]         = useState(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateStatus, setUpdateStatus]     = useState('')
+
+  // Reload users whenever another LAN machine creates/updates an account
+  useLanSync(() => { if (isAdmin) loadUsers() })
 
   // ── Load on mount ───────────────────────────────────
   useEffect(() => {
@@ -132,24 +136,41 @@ function Settings() {
     } catch { flash('error', 'Failed to save settings') }
   }
 
+  // Printer settings are always saved locally — each machine has its own printer.
+  // Uses domain:shop:updatePrinter which is never proxied to the LAN server.
+  const handleSavePrinter = async (e) => {
+    e.preventDefault()
+    try {
+      await window.stocka.shop.updatePrinter({
+        printer_name:    formData.printer_name,
+        printer_port:    formData.printer_port,
+        auto_print:      formData.auto_print,
+        print_duplicate: formData.print_duplicate,
+        receipt_width_mm: formData.receipt_width_mm,
+      })
+      flash('success', 'Printer settings saved')
+    } catch { flash('error', 'Failed to save printer settings') }
+  }
+
   const handleChangePassword = async (e) => {
     e.preventDefault()
-    if (!passwordForm.currentPassword) { flash('error', 'Current password is required'); return }
-    if (passwordForm.newPassword.length < 6) { flash('error', 'New password must be at least 6 characters'); return }
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
+    if (!passwordForm.currentPassword) { flash('error', 'Current PIN is required'); return }
+    const pv = validatePin(passwordForm.newPassword)
+    if (!pv.isValid) { flash('error', pv.message); return }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) { flash('error', 'PINs do not match'); return }
     try {
       await updateUser(user.id, { password: passwordForm.newPassword, currentPassword: passwordForm.currentPassword })
-      flash('success', 'Password updated successfully')
+      flash('success', 'PIN updated successfully')
       setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
-    } catch { flash('error', 'Failed to change password — check your current password') }
+    } catch { flash('error', 'Failed to change PIN — check your current PIN') }
   }
 
   const handleAddUser = async (e) => {
     e.preventDefault()
     if (!newUserForm.username.trim()) { flash('error', 'Username is required'); return }
-    if (newUserForm.password !== newUserForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
-    const pv = validatePasswordStrength(newUserForm.password)
-    if (!pv.isValid) { flash('error', `Weak password: ${pv.message}`); return }
+    const pv = validatePin(newUserForm.password)
+    if (!pv.isValid) { flash('error', pv.message); return }
+    if (newUserForm.password !== newUserForm.confirmPassword) { flash('error', 'PINs do not match'); return }
     try {
       await addUser({ username: newUserForm.username, password: newUserForm.password, role: newUserForm.role, created_by: user.username })
       flash('success', `User "${newUserForm.username}" created`)
@@ -161,16 +182,16 @@ function Settings() {
 
   const handleResetPassword = async (e) => {
     e.preventDefault()
-    if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) { flash('error', 'Passwords do not match'); return }
-    const pv = validatePasswordStrength(resetPasswordForm.newPassword)
-    if (!pv.isValid) { flash('error', `Weak password: ${pv.message}`); return }
+    const pv = validatePin(resetPasswordForm.newPassword)
+    if (!pv.isValid) { flash('error', pv.message); return }
+    if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) { flash('error', 'PINs do not match'); return }
     try {
       await updateUser(resetPasswordUserId, { password: resetPasswordForm.newPassword })
-      flash('success', 'Password reset successfully')
+      flash('success', 'PIN reset successfully')
       setResetPasswordUserId(null)
       setResetPasswordForm({ newPassword: '', confirmPassword: '' })
       loadUsers()
-    } catch { flash('error', 'Failed to reset password') }
+    } catch { flash('error', 'Failed to reset PIN') }
   }
 
   const handleDeactivateUser = async (userId) => {
@@ -216,9 +237,9 @@ function Settings() {
   const handleCreateBackup = async () => {
     setCreatingBackup(true)
     try {
-      const key = await createDatabaseBackup()
-      if (key) { flash('success', `Backup created: ${key}`); loadBackups() }
-      else flash('error', 'Failed to create backup')
+      const result = await createDatabaseBackup()
+      if (result?.success) { flash('success', `Backup created: ${result.filename}`); loadBackups() }
+      else flash('error', result?.error || 'Failed to create backup')
     } catch (err) { flash('error', 'Backup failed: ' + err.message) }
     finally { setCreatingBackup(false) }
   }
@@ -227,9 +248,9 @@ function Settings() {
     if (!confirm('⚠️ This will overwrite your current database. Are you sure?')) return
     setRestoringBackup(true)
     try {
-      const ok = await restoreFromBackup(key)
-      if (ok) { flash('success', 'Database restored. Reloading…'); setTimeout(() => window.location.reload(), 2000) }
-      else flash('error', 'Restore failed')
+      const result = await restoreFromBackup(key)
+      if (result?.success) { flash('success', 'Database restored. Reloading…'); setTimeout(() => window.location.reload(), 2000) }
+      else flash('error', result?.error || 'Restore failed')
     } catch (err) { flash('error', 'Restore failed: ' + err.message) }
     finally { setRestoringBackup(false) }
   }
@@ -258,7 +279,7 @@ function Settings() {
   // ── Nav items ─────────────────────────────────────────
   const navItems = [
     { id: 'shop',     label: 'Shop Details',   Icon: FiShoppingBag, group: 'STORE',      show: !isCashier },
-    { id: 'printer',  label: 'Printer',         Icon: FiPrinter,     group: 'STORE',      show: isAdmin || user?.role === 'Manager' },
+    { id: 'printer',  label: 'Printer',         Icon: FiPrinter,     group: 'STORE',      show: true },
     { id: 'receipt',  label: 'Receipt',         Icon: FiFileText,    group: 'STORE',      show: !isCashier },
     { id: 'users',    label: 'Team & Users',   Icon: FiUsers,        group: 'STAFF',      show: isAdmin },
     { id: 'password', label: 'Security',        Icon: FiShield,      group: 'ACCOUNT',    show: true },
@@ -414,14 +435,16 @@ function Settings() {
                     </div>
                     <div className="s-grid-2">
                       <div className="s-field">
-                        <label className="s-label">Password</label>
-                        <input className="s-input" type="password" value={newUserForm.password}
-                          onChange={e => setNewUserForm({ ...newUserForm, password: e.target.value })} required />
+                        <label className="s-label">PIN (4 digits)</label>
+                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                          value={newUserForm.password}
+                          onChange={e => setNewUserForm({ ...newUserForm, password: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
                       </div>
                       <div className="s-field">
-                        <label className="s-label">Confirm Password</label>
-                        <input className="s-input" type="password" value={newUserForm.confirmPassword}
-                          onChange={e => setNewUserForm({ ...newUserForm, confirmPassword: e.target.value })} required />
+                        <label className="s-label">Confirm PIN</label>
+                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                          value={newUserForm.confirmPassword}
+                          onChange={e => setNewUserForm({ ...newUserForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
                       </div>
                     </div>
                     <div className="s-form-footer">
@@ -473,23 +496,25 @@ function Settings() {
               {resetPasswordUserId && (
                 <div className="s-reset-panel">
                   <h4 className="s-reset-panel-title">
-                    <FiKey size={13} /> Reset Password — {users.find(u => u.id === resetPasswordUserId)?.username}
+                    <FiKey size={13} /> Reset PIN — {users.find(u => u.id === resetPasswordUserId)?.username}
                   </h4>
                   <form onSubmit={handleResetPassword}>
                     <div className="s-grid-2">
                       <div className="s-field">
-                        <label className="s-label">New Password</label>
-                        <input className="s-input" type="password" value={resetPasswordForm.newPassword}
-                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, newPassword: e.target.value })} required />
+                        <label className="s-label">New PIN (4 digits)</label>
+                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                          value={resetPasswordForm.newPassword}
+                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
                       </div>
                       <div className="s-field">
-                        <label className="s-label">Confirm Password</label>
-                        <input className="s-input" type="password" value={resetPasswordForm.confirmPassword}
-                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, confirmPassword: e.target.value })} required />
+                        <label className="s-label">Confirm PIN</label>
+                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                          value={resetPasswordForm.confirmPassword}
+                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
                       </div>
                     </div>
                     <div className="s-form-footer">
-                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Save Password</button>
+                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Save PIN</button>
                       <button type="button" className="s-btn-secondary s-btn-sm" onClick={() => setResetPasswordUserId(null)}>Cancel</button>
                     </div>
                   </form>
@@ -499,7 +524,7 @@ function Settings() {
           )}
 
           {/* ── PRINTER ── */}
-          {activeTab === 'printer' && (isAdmin || user?.role === 'Manager') && (
+          {activeTab === 'printer' && (
             <div className="s-card">
               <div className="s-card-head">
                 <div>
@@ -547,7 +572,7 @@ function Settings() {
 
               <hr className="s-divider" />
 
-              <form onSubmit={handleSaveShop}>
+              <form onSubmit={handleSavePrinter}>
                 <div className="s-toggle-row"
                   onClick={() => setFormData({ ...formData, auto_print: formData.auto_print === 1 ? 0 : 1 })}>
                   <div className="s-toggle-info">
@@ -635,33 +660,33 @@ function Settings() {
               <div className="s-card-head">
                 <div>
                   <h2 className="s-card-title"><FiShield size={17} /> Security</h2>
-                  <p className="s-card-desc">Change your login password</p>
+                  <p className="s-card-desc">Change your login PIN</p>
                 </div>
               </div>
               <form onSubmit={handleChangePassword} className="s-password-form">
                 <div className="s-field">
-                  <label className="s-label">Current Password</label>
-                  <input className="s-input" type="password"
+                  <label className="s-label">Current PIN</label>
+                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
                     value={passwordForm.currentPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
-                    placeholder="Enter your current password" required />
+                    onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                    placeholder="Enter your current PIN" required />
                 </div>
                 <div className="s-field">
-                  <label className="s-label">New Password</label>
-                  <input className="s-input" type="password"
+                  <label className="s-label">New PIN</label>
+                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
                     value={passwordForm.newPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
-                    placeholder="Minimum 6 characters" required />
+                    onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                    placeholder="4 digits" required />
                 </div>
                 <div className="s-field">
-                  <label className="s-label">Confirm New Password</label>
-                  <input className="s-input" type="password"
+                  <label className="s-label">Confirm New PIN</label>
+                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
                     value={passwordForm.confirmPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
-                    placeholder="Repeat new password" required />
+                    onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                    placeholder="Repeat new PIN" required />
                 </div>
                 <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiShield size={13} /> Update Password</button>
+                  <button type="submit" className="s-btn-primary"><FiShield size={13} /> Update PIN</button>
                 </div>
               </form>
             </div>
@@ -788,17 +813,19 @@ function Settings() {
                 </div>
               ) : (
                 backups.map(backup => (
-                  <div key={backup.key} className="s-backup-row">
+                  <div key={backup.filename} className="s-backup-row">
                     <div className="s-backup-icon"><FiHardDrive size={15} /></div>
                     <div className="s-backup-info">
-                      <div className="s-backup-date">{backup.date} · {backup.time}</div>
-                      <div className="s-backup-size">{(backup.size / 1024).toFixed(1)} KB</div>
+                      <div className="s-backup-date">
+                        {new Date(backup.createdAt).toLocaleDateString()} · {new Date(backup.createdAt).toLocaleTimeString()}
+                      </div>
+                      <div className="s-backup-size">{(backup.sizeBytes / 1024).toFixed(1)} KB</div>
                     </div>
                     <div className="s-btn-row">
-                      <button className="s-btn-secondary s-btn-sm" onClick={() => handleExportBackup(backup.key)}>
+                      <button className="s-btn-secondary s-btn-sm" onClick={() => handleExportBackup(backup.filename)}>
                         <FiDownload size={11} /> Export
                       </button>
-                      <button className="s-btn-danger s-btn-sm" onClick={() => handleRestoreBackup(backup.key)} disabled={restoringBackup}>
+                      <button className="s-btn-danger s-btn-sm" onClick={() => handleRestoreBackup(backup.filename)} disabled={restoringBackup}>
                         <FiUpload size={11} /> Restore
                       </button>
                     </div>

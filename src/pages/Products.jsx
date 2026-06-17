@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { FiPackage, FiEdit2, FiTrash2, FiDownload, FiUpload, FiPlus, FiX, FiGrid, FiList, FiImage } from 'react-icons/fi'
-import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop } from '../database/db'
+import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop, updateProductQuantity, addProductsBatch } from '../database/db'
 import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
 import { utils, writeFile, read } from 'xlsx'
 import './Products.css'
@@ -31,7 +31,8 @@ function Products() {
   const [itemsPerPage, setItemsPerPage] = useState(25)
   const [defaultReorderLevel, setDefaultReorderLevel] = useState(5)
   const [showImportModal, setShowImportModal] = useState(false)
-  const [importPreview, setImportPreview] = useState({ valid: [], skipped: 0 })
+  const [importPreview, setImportPreview] = useState({ fresh: [], duplicates: [], skipped: 0 })
+  const [duplicateResolutions, setDuplicateResolutions] = useState({})
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
 
@@ -145,7 +146,14 @@ function Products() {
       image_data: product.image_data || null
     })
     setEditingId(product.id)
-    setShowForm(true)
+    setShowForm(false)
+    setError('')
+  }
+
+  const handleCancelEdit = () => {
+    setEditingId(null)
+    setFormData({ name: '', category: '', supplier_id: '', unit: 'each', selling_price: '', reorder_level: defaultReorderLevel, description: '', image_data: null })
+    setError('')
   }
 
   const handleDelete = async (id) => {
@@ -289,24 +297,35 @@ function Products() {
           setShowImportModal(true)
           return
         }
-        const valid = []
+        const parsed = []
         let skipped = 0
         for (const row of normalized) {
           const name = String(row.name ?? '').trim()
           if (!name) { skipped++; continue }
           const rawUnit = String(row.unit ?? '').toLowerCase().trim()
-          valid.push({
+          parsed.push({
             name,
-            category: String(row.category ?? '').trim(),
-            unit: ['each', 'pack'].includes(rawUnit) ? rawUnit : 'each',
-            selling_price: parseFloat(row.selling_price) || 0,
-            reorder_level: parseInt(row.reorder_level) || 5,
+            category:         String(row.category ?? '').trim(),
+            unit:             ['each', 'pack'].includes(rawUnit) ? rawUnit : 'each',
+            selling_price:    parseFloat(row.selling_price) || 0,
+            reorder_level:    parseInt(row.reorder_level) || 5,
             current_quantity: parseInt(row.current_quantity) || 0,
-            description: String(row.description ?? '').trim(),
-            supplier: String(row.supplier ?? '').trim(),
+            description:      String(row.description ?? '').trim(),
+            supplier:         String(row.supplier ?? '').trim(),
           })
         }
-        setImportPreview({ valid, skipped })
+        // Split into fresh (new) and duplicates (name already exists)
+        const fresh = [], duplicates = []
+        for (const row of parsed) {
+          const existing = products.find(p => p.name.toLowerCase() === row.name.toLowerCase())
+          if (existing) duplicates.push({ incoming: row, existing })
+          else fresh.push(row)
+        }
+        // Default all duplicates to 'skip'
+        const resolutions = {}
+        duplicates.forEach((_, i) => { resolutions[i] = { action: 'skip', useImported: {} } })
+        setImportPreview({ fresh, duplicates, skipped })
+        setDuplicateResolutions(resolutions)
         setImportError('')
         setShowImportModal(true)
       } catch {
@@ -317,13 +336,73 @@ function Products() {
     reader.readAsArrayBuffer(file)
   }
 
+  const getDiffFields = (dup) => {
+    const ex = dup.existing
+    const inc = dup.incoming
+    const exSupplier = suppliers.find(s => s.id === ex.supplier_id)?.name || ''
+    return [
+      { field: 'selling_price',    label: 'Selling Price',  current: `$${(ex.selling_price || 0).toFixed(2)}`,    imported: `$${(inc.selling_price || 0).toFixed(2)}`,    diff: ex.selling_price !== inc.selling_price },
+      { field: 'category',         label: 'Category',       current: ex.category || '—',                          imported: inc.category || '—',                          diff: (ex.category || '') !== (inc.category || '') },
+      { field: 'unit',             label: 'Unit',           current: ex.unit || 'each',                           imported: inc.unit || 'each',                           diff: (ex.unit || 'each') !== (inc.unit || 'each') },
+      { field: 'reorder_level',    label: 'Reorder Level',  current: String(ex.reorder_level ?? 5),               imported: String(inc.reorder_level ?? 5),               diff: (ex.reorder_level ?? 5) !== (inc.reorder_level ?? 5) },
+      { field: 'current_quantity', label: 'Quantity',       current: String(ex.current_quantity ?? 0),            imported: String(inc.current_quantity ?? 0),            diff: (ex.current_quantity ?? 0) !== (inc.current_quantity ?? 0) },
+      { field: 'description',      label: 'Description',    current: ex.description || '—',                       imported: inc.description || '—',                       diff: (ex.description || '') !== (inc.description || '') },
+      { field: 'supplier',         label: 'Supplier',       current: exSupplier || '—',                           imported: inc.supplier || '—',                          diff: exSupplier.toLowerCase() !== (inc.supplier || '').toLowerCase() },
+    ].filter(f => f.diff)
+  }
+
+  const setResAction = (i, action) => {
+    setDuplicateResolutions(prev => {
+      const useImported = {}
+      if (action === 'update') {
+        getDiffFields(importPreview.duplicates[i]).forEach(f => { useImported[f.field] = true })
+      }
+      return { ...prev, [i]: { action, useImported } }
+    })
+  }
+
+  const setResField = (i, field, checked) => {
+    setDuplicateResolutions(prev => ({
+      ...prev,
+      [i]: { ...prev[i], useImported: { ...prev[i].useImported, [field]: checked } }
+    }))
+  }
+
   const handleConfirmImport = async () => {
-    if (importPreview.valid.length === 0) return
+    const toUpdateDups = importPreview.duplicates.filter((_, i) => duplicateResolutions[i]?.action === 'update')
+    if (importPreview.fresh.length === 0 && toUpdateDups.length === 0) { setShowImportModal(false); return }
     setImporting(true)
     try {
-      await window.stocka.products.importBatch(importPreview.valid)
+      if (importPreview.fresh.length > 0) {
+        await addProductsBatch(importPreview.fresh)
+      }
+      for (let i = 0; i < importPreview.duplicates.length; i++) {
+        const res = duplicateResolutions[i]
+        if (res?.action !== 'update') continue
+        const dup = importPreview.duplicates[i]
+        const ui  = res.useImported || {}
+        const ex  = dup.existing
+        const inc = dup.incoming
+        const resolvedSupplierId = ui.supplier === true
+          ? (suppliers.find(s => s.name.toLowerCase() === (inc.supplier || '').toLowerCase())?.id ?? ex.supplier_id)
+          : ex.supplier_id
+        await updateProduct(ex.id, {
+          name:          ex.name,
+          category:      ui.category      === true ? (inc.category || '')   : (ex.category || ''),
+          unit:          ui.unit          === true ? (inc.unit || 'each')   : (ex.unit || 'each'),
+          selling_price: ui.selling_price === true ? inc.selling_price      : ex.selling_price,
+          reorder_level: ui.reorder_level === true ? inc.reorder_level      : ex.reorder_level,
+          description:   ui.description   === true ? (inc.description || '') : (ex.description || ''),
+          supplier_id:   resolvedSupplierId,
+          image_data:    ex.image_data || null,
+        })
+        if (ui.current_quantity === true) {
+          await updateProductQuantity(ex.id, inc.current_quantity)
+        }
+      }
       setShowImportModal(false)
-      setImportPreview({ valid: [], skipped: 0 })
+      setImportPreview({ fresh: [], duplicates: [], skipped: 0 })
+      setDuplicateResolutions({})
       await loadData()
     } catch (err) {
       setImportError('Import failed: ' + err.message)
@@ -331,6 +410,55 @@ function Products() {
       setImporting(false)
     }
   }
+
+  const renderInlineEditForm = (product) => (
+    <div key={product.id} className="product-inline-edit">
+      <div className="inline-edit-header">
+        <span><FiEdit2 size={13} /> Editing: <strong>{product.name}</strong></span>
+        <button type="button" className="btn-icon" onClick={handleCancelEdit} title="Cancel edit"><FiX size={14} /></button>
+      </div>
+      {error && <div className="error-banner">{error}</div>}
+      <form onSubmit={handleSubmit}>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Product Name *</label>
+            <input type="text" name="name" value={formData.name} onChange={handleChange} placeholder="Enter product name" />
+          </div>
+          <div className="form-group">
+            <label>Category</label>
+            <select name="category" value={formData.category} onChange={handleChange}>
+              <option value="">Select category</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Unit of Measure</label>
+            <select name="unit" value={formData.unit} onChange={handleChange}>
+              {units.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Selling Price (USD) *</label>
+            <input type="number" name="selling_price" value={formData.selling_price} onChange={handleChange} placeholder="0.00" step="any" min="0" required />
+          </div>
+          <div className="form-group">
+            <label>Reorder Level</label>
+            <input type="number" name="reorder_level" value={formData.reorder_level} onChange={handleChange} min="0" />
+          </div>
+        </div>
+        <div className="form-group">
+          <label>Description</label>
+          <textarea name="description" value={formData.description} onChange={handleChange} placeholder="Product description" rows="2" />
+        </div>
+        <div className="inline-edit-actions">
+          <button type="button" className="btn btn-secondary" onClick={handleCancelEdit}>Cancel</button>
+          <button type="submit" className="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  )
 
   if (loading) {
     return <div className="products-page"><div className="loading">Loading products...</div></div>
@@ -427,84 +555,146 @@ function Products() {
         </div>
       </div>
 
-      {showImportModal && (
-        <div className="form-overlay" onClick={() => !importing && setShowImportModal(false)}>
-          <div className="product-form import-modal" onClick={e => e.stopPropagation()}>
-            <div className="form-header">
-              <h2>Import Products from Sheet</h2>
-              <button className="close-btn" onClick={() => !importing && setShowImportModal(false)}><FiX size={14} /></button>
-            </div>
+      {showImportModal && (() => {
+        const toUpdateCount = importPreview.duplicates.filter((_, i) => duplicateResolutions[i]?.action === 'update').length
+        const totalActions  = importPreview.fresh.length + toUpdateCount
+        return (
+          <div className="form-overlay" onClick={() => !importing && setShowImportModal(false)}>
+            <div className="product-form import-modal" onClick={e => e.stopPropagation()}>
+              <div className="form-header">
+                <h2>Import Products from Sheet</h2>
+                <button className="close-btn" onClick={() => !importing && setShowImportModal(false)}><FiX size={14} /></button>
+              </div>
 
-            {importError ? (
-              <>
-                <div className="error-banner">{importError}</div>
-                <p className="import-template-hint">
-                  Download the <button className="link-btn" onClick={downloadTemplate}>template file</button> to see the required column format.
-                </p>
-              </>
-            ) : (
-              <>
-                <div className="import-summary">
-                  <p className="import-count-valid">✓ <strong>{importPreview.valid.length}</strong> products ready to import</p>
-                  {importPreview.skipped > 0 && (
-                    <p className="import-count-skipped">✗ {importPreview.skipped} row{importPreview.skipped !== 1 ? 's' : ''} skipped — missing product name</p>
+              {importError ? (
+                <>
+                  <div className="error-banner">{importError}</div>
+                  <p className="import-template-hint">
+                    Download the <button className="link-btn" onClick={downloadTemplate}>template file</button> to see the required column format.
+                  </p>
+                </>
+              ) : (
+                <div className="import-scroll-body">
+                  <div className="import-summary">
+                    {importPreview.fresh.length > 0 && (
+                      <p className="import-count-valid">✓ <strong>{importPreview.fresh.length}</strong> new product{importPreview.fresh.length !== 1 ? 's' : ''} to add</p>
+                    )}
+                    {importPreview.duplicates.length > 0 && (
+                      <p className="import-count-dup">⚠ <strong>{importPreview.duplicates.length}</strong> product{importPreview.duplicates.length !== 1 ? 's' : ''} already exist — review below</p>
+                    )}
+                    {importPreview.skipped > 0 && (
+                      <p className="import-count-skipped">✗ {importPreview.skipped} row{importPreview.skipped !== 1 ? 's' : ''} skipped — missing product name</p>
+                    )}
+                    {importPreview.fresh.length === 0 && importPreview.duplicates.length === 0 && (
+                      <p className="import-count-skipped">No valid rows found in the spreadsheet.</p>
+                    )}
+                  </div>
+
+                  {importPreview.fresh.length > 0 && (
+                    <div className="import-preview-table">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Name</th><th>Category</th><th>Unit</th><th>Price</th><th>Qty</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importPreview.fresh.slice(0, 6).map((row, i) => (
+                            <tr key={i}>
+                              <td>{row.name}</td>
+                              <td>{row.category || '—'}</td>
+                              <td>{row.unit}</td>
+                              <td>${row.selling_price.toFixed(2)}</td>
+                              <td>{row.current_quantity}</td>
+                            </tr>
+                          ))}
+                          {importPreview.fresh.length > 6 && (
+                            <tr className="import-more-row">
+                              <td colSpan="5">… and {importPreview.fresh.length - 6} more new products</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {importPreview.duplicates.length > 0 && (
+                    <div className="dup-section">
+                      <p className="dup-section-title">Existing Products — choose what to do with each:</p>
+                      {importPreview.duplicates.map((dup, i) => {
+                        const res        = duplicateResolutions[i] || { action: 'skip', useImported: {} }
+                        const diffFields = getDiffFields(dup)
+                        return (
+                          <div key={i} className={`dup-item ${res.action === 'update' ? 'updating' : ''}`}>
+                            <div className="dup-header">
+                              <span className="dup-name">{dup.existing.name}</span>
+                              <div className="dup-action-group">
+                                <button type="button" className={`dup-action-btn ${res.action === 'skip' ? 'active-skip' : ''}`} onClick={() => setResAction(i, 'skip')}>Skip</button>
+                                <button type="button" className={`dup-action-btn ${res.action === 'update' ? 'active-update' : ''}`} onClick={() => setResAction(i, 'update')}>Update</button>
+                              </div>
+                            </div>
+
+                            {res.action === 'update' && diffFields.length === 0 && (
+                              <p className="dup-no-diff">All fields already match — no changes will be made.</p>
+                            )}
+
+                            {res.action === 'update' && diffFields.length > 0 && (
+                              <div className="dup-fields">
+                                <table>
+                                  <thead>
+                                    <tr>
+                                      <th>Field</th>
+                                      <th>Current</th>
+                                      <th>Imported</th>
+                                      <th>Use imported</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {diffFields.map(f => (
+                                      <tr key={f.field}>
+                                        <td className="dup-field-label">{f.label}</td>
+                                        <td className="dup-val-current">{f.current}</td>
+                                        <td className="dup-val-imported">{f.imported}</td>
+                                        <td>
+                                          <input
+                                            type="checkbox"
+                                            checked={res.useImported[f.field] === true}
+                                            onChange={e => setResField(i, f.field, e.target.checked)}
+                                          />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
                   )}
                 </div>
+              )}
 
-                {importPreview.valid.length > 0 && (
-                  <div className="import-preview-table">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Category</th>
-                          <th>Unit</th>
-                          <th>Price</th>
-                          <th>Qty</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importPreview.valid.slice(0, 6).map((row, i) => (
-                          <tr key={i}>
-                            <td>{row.name}</td>
-                            <td>{row.category || '—'}</td>
-                            <td>{row.unit}</td>
-                            <td>${row.selling_price.toFixed(2)}</td>
-                            <td>{row.current_quantity}</td>
-                          </tr>
-                        ))}
-                        {importPreview.valid.length > 6 && (
-                          <tr className="import-more-row">
-                            <td colSpan="5">... and {importPreview.valid.length - 6} more products</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </>
-            )}
-
-            <div className="form-actions import-modal-actions">
-              <button className="link-btn" onClick={downloadTemplate} disabled={importing}>
-                ⇩ Download Template
-              </button>
-              <div className="modal-btn-row">
-                <button className="btn btn-secondary" onClick={() => setShowImportModal(false)} disabled={importing}>
-                  Cancel
+              <div className="form-actions import-modal-actions">
+                <button className="link-btn" onClick={downloadTemplate} disabled={importing}>
+                  ⇩ Download Template
                 </button>
-                {!importError && importPreview.valid.length > 0 && (
-                  <button className="btn btn-primary" onClick={handleConfirmImport} disabled={importing}>
-                    {importing ? 'Importing...' : `Import ${importPreview.valid.length} Products`}
-                  </button>
-                )}
+                <div className="modal-btn-row">
+                  <button className="btn btn-secondary" onClick={() => setShowImportModal(false)} disabled={importing}>Cancel</button>
+                  {!importError && (importPreview.fresh.length > 0 || importPreview.duplicates.length > 0) && (
+                    <button className="btn btn-primary" onClick={handleConfirmImport} disabled={importing || totalActions === 0}>
+                      {importing ? 'Importing…' : totalActions === 0 ? 'Nothing to import' : `Import ${totalActions} Product${totalActions !== 1 ? 's' : ''}`}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
-      {showForm && (
+      {showForm && !editingId && (
         <div className="form-card">
           <h3>{editingId ? <><FiEdit2 size={14} /> Edit Product</> : <><FiPlus size={14} /> Add New Product</>}</h3>
           <form onSubmit={handleSubmit}>
@@ -623,6 +813,7 @@ function Products() {
               const status = getStockStatus(product.current_quantity, product.reorder_level)
               
               if (viewMode === 'list') {
+                if (editingId === product.id) return renderInlineEditForm(product)
                 return (
                   <div key={product.id} className="product-list-item">
                     <div className="list-item-top">
@@ -655,7 +846,8 @@ function Products() {
                   </div>
                 )
               }
-              
+
+              if (editingId === product.id) return renderInlineEditForm(product)
               return (
                 <div key={product.id} className="product-card">
                   {product.image_data && (

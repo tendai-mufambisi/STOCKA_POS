@@ -1,7 +1,74 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { FiCheckCircle } from 'react-icons/fi'
 import { FcGoogle } from 'react-icons/fc'
 import fullLogo from '../assets/full_logo.png'
+import './Activation.css'
+
+const KEY_LENGTH = 16
+const BOX_LAYOUT = [0, 1, 2, 3, '-', 4, 5, 6, 7, '-', 8, 9, 10, 11, '-', 12, 13, 14, 15]
+
+function LicenseKeyBoxes({ value, onChange, disabled, hasError, onEnter }) {
+  const refs = useRef([])
+  const chars = Array.from({ length: KEY_LENGTH }, (_, i) => value[i] || '')
+
+  const focusBox = (i) => refs.current[i]?.focus()
+
+  const setCharAt = (i, ch) => {
+    const next = chars.slice()
+    next[i] = ch
+    onChange(next.join('').replace(/\s+$/, ''))
+  }
+
+  const handleInput = (i, e) => {
+    const ch = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-1)
+    setCharAt(i, ch)
+    if (ch && i < KEY_LENGTH - 1) focusBox(i + 1)
+  }
+
+  const handleKeyDown = (i, e) => {
+    if (e.key === 'Backspace' && !chars[i] && i > 0) {
+      focusBox(i - 1)
+    } else if (e.key === 'ArrowLeft' && i > 0) {
+      focusBox(i - 1)
+    } else if (e.key === 'ArrowRight' && i < KEY_LENGTH - 1) {
+      focusBox(i + 1)
+    } else if (e.key === 'Enter') {
+      onEnter?.()
+    }
+  }
+
+  const handlePaste = (e) => {
+    e.preventDefault()
+    const text = e.clipboardData.getData('text').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, KEY_LENGTH)
+    onChange(text)
+    requestAnimationFrame(() => focusBox(Math.min(text.length, KEY_LENGTH - 1)))
+  }
+
+  return (
+    <div className={`license-boxes${hasError ? ' error' : ''}`}>
+      {BOX_LAYOUT.map((slot, pos) =>
+        slot === '-' ? (
+          <span key={pos} className="license-box license-box--dash">–</span>
+        ) : (
+          <input
+            key={pos}
+            ref={(el) => (refs.current[slot] = el)}
+            className={`license-box${chars[slot] ? ' filled' : ''}`}
+            value={chars[slot]}
+            onChange={(e) => handleInput(slot, e)}
+            onKeyDown={(e) => handleKeyDown(slot, e)}
+            onPaste={handlePaste}
+            disabled={disabled}
+            maxLength={1}
+            autoFocus={slot === 0}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        )
+      )}
+    </div>
+  )
+}
 
 const cardStyle = {
   background: '#fff',
@@ -21,12 +88,12 @@ export default function Activation({ onActivated }) {
   const [error, setError] = useState('')
   const [errorType, setErrorType] = useState('')
 
-  const isReady = key.trim().length >= 8
+  const isReady = key.length === KEY_LENGTH
 
   // ── License key path ──────────────────────────────────────
 
-  const handleChange = (e) => {
-    setKey(e.target.value.toUpperCase())
+  const handleKeyChange = (next) => {
+    setKey(next)
     if (error) { setError(''); setErrorType('') }
   }
 
@@ -58,10 +125,6 @@ export default function Activation({ onActivated }) {
       setScreen('license')
       setError('Activation failed. Please restart the app and try again.')
     }
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && isReady && screen === 'license') handleActivate()
   }
 
   // ── Google sign-in path ───────────────────────────────────
@@ -153,24 +216,12 @@ export default function Activation({ onActivated }) {
             <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: '#333' }}>
               Activation Key
             </label>
-            <textarea
+            <LicenseKeyBoxes
               value={key}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              placeholder="Paste your activation key here"
+              onChange={handleKeyChange}
               disabled={validating}
-              autoFocus
-              spellCheck={false}
-              rows={3}
-              style={{
-                width: '100%', padding: '14px 16px', fontSize: '14px',
-                fontFamily: 'monospace', letterSpacing: '1px',
-                border: `2px solid ${error ? '#e53935' : isReady ? '#2e7d32' : '#ddd'}`,
-                borderRadius: '8px', boxSizing: 'border-box', outline: 'none',
-                transition: 'border-color 0.2s',
-                background: validating ? '#f9f9f9' : '#fff',
-                color: '#1a1a1a', resize: 'none', lineHeight: 1.6,
-              }}
+              hasError={!!error}
+              onEnter={handleActivate}
             />
             {error && (
               <p style={{ margin: '8px 0 0', fontSize: '13px', color: '#e53935', textAlign: 'left', lineHeight: 1.4 }}>

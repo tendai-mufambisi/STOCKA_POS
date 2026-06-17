@@ -56,10 +56,12 @@ contextBridge.exposeInMainWorld('stocka', {
 
   // ── SHOP ─────────────────────────────────────────────────
   shop: {
-    get:      ()             => invoke('domain:shop:get'),
-    init:     (data)         => invoke('domain:shop:init', data),
-    update:   (id, data)     => invoke('domain:shop:update', id, data),
-    resetPin: (user, pin)    => invoke('domain:shop:resetPin', user, pin),
+    get:           ()          => invoke('domain:shop:get'),
+    init:          (data)      => invoke('domain:shop:init', data),
+    update:        (id, data)  => invoke('domain:shop:update', id, data),
+    resetPin:      (user, pin) => invoke('domain:shop:resetPin', user, pin),
+    // Local-only: saves printer config for THIS machine only, never synced to server
+    updatePrinter: (data)      => invoke('domain:shop:updatePrinter', data),
   },
 
   // ── PRODUCTS ──────────────────────────────────────────────
@@ -101,7 +103,10 @@ contextBridge.exposeInMainWorld('stocka', {
     getVelocity:     (days)    => invoke('domain:stock:getVelocity', days),
     getExpiring:     (days)    => invoke('domain:stock:getExpiring', days),
     getExpired:      ()        => invoke('domain:stock:getExpired'),
-    getExpiryReport: ()        => invoke('domain:stock:getExpiryReport'),
+    getExpiryReport:    ()           => invoke('domain:stock:getExpiryReport'),
+    importReceivings:   (rows, by)   => invoke('domain:stock:importReceivings', rows, by),
+    reconcileProduct:   (id, qty, notes, by) => invoke('domain:stock:reconcileProduct', id, qty, notes, by),
+    reconcileProducts:  (adjs, by)   => invoke('domain:stock:reconcileProducts', adjs, by),
   },
 
   // ── SALES ─────────────────────────────────────────────────
@@ -227,8 +232,16 @@ contextBridge.exposeInMainWorld('stocka', {
     getClients:     ()       => ipcRenderer.invoke('lan:get-clients'),
     stop:           ()       => ipcRenderer.invoke('lan:stop'),
     syncNow:        ()       => ipcRenderer.invoke('lan:sync-now'),
+    getPairingInfo: ()       => ipcRenderer.invoke('lan:get-pairing-info'),
+    regeneratePairingCode: () => ipcRenderer.invoke('lan:regenerate-pairing-code'),
+    pairAndConnect: (args)   => ipcRenderer.invoke('lan:pair-and-connect', args),
+    forceResync:    ()       => ipcRenderer.invoke('lan:force-resync'),
     onStatusChange: (cb)     => { const l = (_, s) => cb(s); ipcRenderer.on('lan:status-changed', l); return () => ipcRenderer.removeListener('lan:status-changed', l) },
     onSyncFailures: (cb)     => { const l = (_, f) => cb(f); ipcRenderer.on('lan:sync-failures', l);  return () => ipcRenderer.removeListener('lan:sync-failures', l) },
+    // Fired on satellite after each successful delta sync (data just changed in local DB)
+    onSynced:       (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:synced', l);          return () => ipcRenderer.removeListener('lan:synced', l) },
+    // Fired on the main computer after a satellite write landed via /lan/invoke
+    onDataChanged:  (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:data-changed', l);    return () => ipcRenderer.removeListener('lan:data-changed', l) },
   },
 
   // ── BLUETOOTH SERIAL PRINTER ──────────────────────────────

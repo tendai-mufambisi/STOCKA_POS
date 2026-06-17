@@ -427,6 +427,31 @@
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
 
+.product-inline-edit {
+  background: #f0fdf4;
+  border: 1.5px solid #86efac;
+  border-radius: 12px;
+  padding: 16px 18px;
+  grid-column: 1 / -1;
+}
+
+.inline-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #166534;
+}
+
+.inline-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 .form-card h3 {
   margin: 0 0 18px 0;
   font-size: 15px;
@@ -685,6 +710,66 @@
 
 .import-modal-actions { justify-content: space-between; align-items: center; }
 .import-template-hint { font-size: 13px; color: #64748b; margin: 8px 0 0 0; }
+.import-count-dup { margin: 0 0 2px 0; font-size: 14px; color: #b45309; font-weight: 600; }
+
+.import-scroll-body { max-height: 60vh; overflow-y: auto; padding-right: 2px; }
+
+.dup-section { margin-top: 14px; }
+.dup-section-title { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 8px 0; }
+
+.dup-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.dup-item.updating { border-color: #bfdbfe; background: #eff6ff; }
+
+.dup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  gap: 10px;
+}
+.dup-name { font-size: 14px; font-weight: 600; color: #0f172a; }
+
+.dup-action-group { display: flex; gap: 4px; }
+.dup-action-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.dup-action-btn.active-skip   { background: #f1f5f9; border-color: #94a3b8; color: #334155; }
+.dup-action-btn.active-update { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+.dup-no-diff { font-size: 12px; color: #64748b; padding: 6px 14px 10px; margin: 0; }
+
+.dup-fields { border-top: 1px solid #bfdbfe; }
+.dup-fields table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dup-fields th {
+  padding: 7px 12px;
+  text-align: left;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #64748b;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+}
+.dup-fields td { padding: 7px 12px; border-top: 1px solid #e2e8f0; }
+.dup-field-label { font-weight: 600; color: #475569; }
+.dup-val-current  { color: #64748b; }
+.dup-val-imported { color: #1d4ed8; font-weight: 500; }
+.dup-fields input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #2563eb; }
 
 .link-btn {
   background: none;

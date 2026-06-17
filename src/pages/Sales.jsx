@@ -16,6 +16,36 @@ import {
   FiCheck, FiX, FiChevronLeft, FiAlertTriangle
 } from 'react-icons/fi'
 
+function FlyParticle({ startX, startY, endX, endY, onDone }) {
+  const [active, setActive] = useState(false)
+  useEffect(() => {
+    const raf   = requestAnimationFrame(() => setActive(true))
+    const timer = setTimeout(onDone, 650)
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer) }
+  }, [])
+  const dx = endX - startX
+  const dy = endY - startY
+  return (
+    <div style={{
+      position: 'fixed',
+      left: startX, top: startY,
+      width: 22, height: 22,
+      borderRadius: '50%',
+      background: 'linear-gradient(135deg, #2e7d32, #66bb6a)',
+      boxShadow: '0 2px 10px rgba(46,125,50,0.55)',
+      pointerEvents: 'none',
+      zIndex: 9999,
+      transform: active
+        ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.12)`
+        : 'translate(-50%, -50%) scale(1)',
+      opacity: active ? 0 : 0.92,
+      transition: active
+        ? 'transform 0.52s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease-in 0.12s'
+        : 'none',
+    }} />
+  )
+}
+
 function Sales() {
   const { user }         = useAuthStore()
   const { currentShift } = useShiftStore()
@@ -25,7 +55,6 @@ function Sales() {
   const [mostSoldProducts, setMostSoldProducts] = useState([])
   const [loading, setLoading]             = useState(true)
   const [search, setSearch]               = useState('')
-  const [searchFocused, setSearchFocused] = useState(false)
   const [cart, setCart]                   = useState([])
 
   // ── Held sales state ─────────────────────────────
@@ -61,9 +90,18 @@ function Sales() {
     reset:   () => setNavBlocked(false),
   }
 
+  // ── Keyboard nav & fly animation state ───────────
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const [flyingItems, setFlyingItems] = useState([])
+
   // ── Refs ──────────────────────────────────────────
-  const searchRef   = useRef(null)
-  const cashInputRef = useRef(null)
+  const searchRef        = useRef(null)
+  const cashInputRef     = useRef(null)
+  const cartIconRef      = useRef(null)
+  const productListRef   = useRef(null)
+  // Tracks the stable display order so reloads never reorder the list mid-sale.
+  // Set once on first load; subsequent loads sort to match it instead of re-sorting.
+  const productOrderRef  = useRef([])
 
   // ── Load on mount ─────────────────────────────────
   useEffect(() => {
@@ -89,6 +127,14 @@ function Sales() {
       return () => clearTimeout(t)
     }
   }, [showConfirmation])
+
+  // Scroll the keyboard-selected product into view whenever it changes
+  useEffect(() => {
+    if (selectedIdx !== null && productListRef.current) {
+      const items = productListRef.current.querySelectorAll('.pos-product')
+      items[selectedIdx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [selectedIdx])
 
   // ── Cart total (must be before keyboard useEffect so deps array evaluates correctly) ──
   const cartTotal = cart.reduce((s, i) => s + i.subtotal, 0)
@@ -152,7 +198,10 @@ function Sales() {
   // ── Loaders ───────────────────────────────────────
   const loadProducts = async () => {
     try {
-      setLoading(true)
+      // loading starts true; we only call setLoading(true) again after explicit reset.
+      // Subsequent background reloads (after a sale, hold, void) are silent — no spinner.
+      const isFirstLoad = productOrderRef.current.length === 0
+
       const [productsData, mostSold, costPrices] = await Promise.all([
         getProducts(),
         getMostSoldProducts(10),
@@ -160,9 +209,23 @@ function Sales() {
       ])
       const enrich = p => ({ ...p, selling_price: p.selling_price || 0, cost_price: costPrices[p.id] || 0 })
       const enriched = productsData.map(enrich)
-      enriched.sort((a, b) => (b.current_quantity || 0) - (a.current_quantity || 0))
+
+      if (isFirstLoad) {
+        // First load: sort by stock level so high-stock items appear first
+        enriched.sort((a, b) => (b.current_quantity || 0) - (a.current_quantity || 0))
+        setMostSoldProducts(mostSold.map(enrich))
+      } else {
+        // Reload after sale/hold/void: preserve the existing display order so the list
+        // does not jump while the cashier is mid-session
+        const orderMap = new Map(productOrderRef.current.map((p, i) => [p.id, i]))
+        enriched.sort((a, b) => (orderMap.get(a.id) ?? enriched.length) - (orderMap.get(b.id) ?? enriched.length))
+        // Update mostSoldProducts quantities (for stock checks) without changing order
+        const dataMap = new Map(enriched.map(p => [p.id, p]))
+        setMostSoldProducts(prev => prev.map(p => ({ ...p, ...(dataMap.get(p.id) || {}) })))
+      }
+
+      productOrderRef.current = enriched
       setProducts(enriched)
-      setMostSoldProducts(mostSold.map(enrich))
     } catch { flash('Failed to load products', 'error') }
     finally { setLoading(false) }
   }
@@ -197,6 +260,20 @@ function Sales() {
 
   // ── Cart helpers ───────────────────────────────────
 
+  const triggerFly = (srcRect) => {
+    if (!cartIconRef.current) return
+    const tgt = cartIconRef.current.getBoundingClientRect()
+    const id  = Date.now() + Math.random()
+    setFlyingItems(prev => [...prev, {
+      id,
+      startX: srcRect.left + srcRect.width  / 2,
+      startY: srcRect.top  + srcRect.height / 2,
+      endX:   tgt.left     + tgt.width      / 2,
+      endY:   tgt.top      + tgt.height     / 2,
+    }])
+    setTimeout(() => setFlyingItems(prev => prev.filter(f => f.id !== id)), 700)
+  }
+
   const addToCart = (product) => {
     if (product.current_quantity <= 0) { flash(`"${product.name}" is out of stock`); return }
     if (!product.selling_price || product.selling_price <= 0) {
@@ -219,6 +296,7 @@ function Sales() {
         quantity: 1, subtotal: product.selling_price
       }])
     }
+    setSelectedIdx(null)
     // Select-all so the cashier can immediately type the next product without clearing the view
     setTimeout(() => {
       if (searchRef.current) {
@@ -290,31 +368,16 @@ function Sales() {
         saleId = await addSale(saleBase, cart)
       }
 
-      // Receipt number + print
+      // Build receipt data + assign receipt number
+      let receiptData = { ...saleBase, id: saleId, items: cart, created_at: new Date().toISOString() }
       try {
         const lastReceipt = await getLastReceiptNumber()
         const receiptNumber = generateReceiptNumber(getNextReceiptCounter(lastReceipt))
         await updateSaleReceiptNumber(saleId, receiptNumber)
+        receiptData = { ...receiptData, receipt_number: receiptNumber }
+      } catch { /* don't block on receipt number failure */ }
 
-        const receiptData = { ...saleBase, id: saleId, receipt_number: receiptNumber, items: cart, created_at: new Date().toISOString() }
-
-        if (printerSettings?.auto_print && shopInfo) {
-          await printReceipt(receiptData, shopInfo, {
-            isDuplicate: false,
-            printerName: printerSettings.printer_name || '',
-            portPath: printerSettings.printer_port || ''
-          }).catch(() => {})
-
-          if (printerSettings.print_duplicate === 1) {
-            await printReceipt(receiptData, shopInfo, {
-              isDuplicate: true,
-              printerName: printerSettings.printer_name || '',
-              portPath: printerSettings.printer_port || ''
-            }).catch(() => {})
-          }
-        }
-      } catch { /* Don't block sale for print errors */ }
-
+      // ── Update UI immediately — sale is done ──
       setLastSale({ id: saleId, total: cartTotal, change, timestamp: new Date() })
       setShowConfirmation(true)
       setCheckoutStep(null)
@@ -323,6 +386,15 @@ function Sales() {
       setSearch('')
       loadProducts()
       loadHeldSales()
+
+      // ── Print in background after UI is already updated ──
+      if (printerSettings?.auto_print && shopInfo) {
+        const printOpts = { printerName: printerSettings.printer_name || '', portPath: printerSettings.printer_port || '' }
+        printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: false }).catch(() => {})
+        if (printerSettings.print_duplicate === 1) {
+          printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: true }).catch(() => {})
+        }
+      }
     } catch { flash('Failed to complete sale') }
     finally { setIsProcessing(false) }
   }
@@ -394,11 +466,13 @@ function Sales() {
   }
 
   // ── Search / display lists ────────────────────────
-  const displayProducts = search.trim()
+  // showProducts is true only when the cashier has typed something — focusing
+  // the search input alone must NOT switch the view away from Top Selling,
+  // otherwise clicking a product causes the whole list to reorder mid-sale.
+  const showProducts = search.trim().length > 0
+  const displayProducts = showProducts
     ? products.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 25)
-    : searchFocused ? products.slice(0, 30) : []
-
-  const showProducts = searchFocused || search.trim()
+    : []
 
   // ── Quick amounts for payment modal ───────────────
   const quickAmounts = (() => {
@@ -474,15 +548,39 @@ function Sales() {
               type="text"
               placeholder="Search products…"
               value={search}
-              onChange={e => setSearch(e.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+              onChange={e => { setSearch(e.target.value); setSelectedIdx(null) }}
               onKeyDown={(e) => {
+                if (!showProducts || displayProducts.length === 0) return
+
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  setSelectedIdx(prev => prev === null ? 0 : Math.min(prev + 1, displayProducts.length - 1))
+                  return
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setSelectedIdx(prev => prev === null ? 0 : Math.max(prev - 1, 0))
+                  return
+                }
                 if (e.key === 'Enter') {
-                  const eligible = displayProducts.filter(p => p.current_quantity > 0)
-                  if (eligible.length === 1) {
-                    e.preventDefault()
-                    addToCart(eligible[0])
+                  e.preventDefault()
+                  if (selectedIdx !== null) {
+                    const product = displayProducts[selectedIdx]
+                    if (product && product.current_quantity > 0) {
+                      if (productListRef.current) {
+                        const els = productListRef.current.querySelectorAll('.pos-product')
+                        if (els[selectedIdx]) triggerFly(els[selectedIdx].getBoundingClientRect())
+                      }
+                      addToCart(product)
+                      setSearch('')
+                    }
+                  } else {
+                    const eligible = displayProducts.filter(p => p.current_quantity > 0)
+                    if (eligible.length === 1) {
+                      addToCart(eligible[0])
+                    } else if (displayProducts.length > 0) {
+                      setSelectedIdx(0)
+                    }
                   }
                 }
               }}
@@ -501,11 +599,11 @@ function Sales() {
 
           {/* Section label */}
           <div className="pos-section-label">
-            {search.trim() ? `Results for "${search}"` : showProducts ? 'All Products' : 'Top Selling'}
+            {search.trim() ? `Results for "${search}"` : 'Top Selling'}
           </div>
 
           {/* Product list */}
-          <div className="pos-products">
+          <div className="pos-products" ref={productListRef}>
             {showProducts ? (
               displayProducts.length === 0 ? (
                 <div className="pos-empty">
@@ -514,13 +612,13 @@ function Sales() {
                   <small>Try a different search</small>
                 </div>
               ) : (
-                displayProducts.map(product => {
+                displayProducts.map((product, idx) => {
                   const stockClass = product.current_quantity === 0 ? 'out' : product.current_quantity <= (product.reorder_level || 5) ? 'low' : ''
                   return (
                     <button
                       key={product.id}
-                      className="pos-product"
-                      onClick={() => addToCart(product)}
+                      className={`pos-product${selectedIdx === idx ? ' pos-product--selected' : ''}`}
+                      onClick={(e) => { triggerFly(e.currentTarget.getBoundingClientRect()); addToCart(product) }}
                       disabled={product.current_quantity <= 0}
                     >
                       <div className="pos-product-thumb">
@@ -549,7 +647,7 @@ function Sales() {
                   <button
                     key={product.id}
                     className="pos-product"
-                    onClick={() => addToCart(product)}
+                    onClick={(e) => { triggerFly(e.currentTarget.getBoundingClientRect()); addToCart(product) }}
                     disabled={product.current_quantity <= 0}
                   >
                     <div className="pos-product-thumb">
@@ -585,7 +683,7 @@ function Sales() {
 
           {/* Cart header */}
           <div className="cart-header">
-            <div className="cart-header-left">
+            <div className="cart-header-left" ref={cartIconRef}>
               <FiShoppingCart size={16} />
               <span className="cart-title">Current Sale</span>
               {cart.length > 0 && <span className="cart-count">{cart.length}</span>}
@@ -874,6 +972,16 @@ function Sales() {
           </div>
         </div>
       )}
+
+      {/* ── Fly-to-cart particles ── */}
+      {flyingItems.map(f => (
+        <FlyParticle
+          key={f.id}
+          startX={f.startX} startY={f.startY}
+          endX={f.endX}     endY={f.endY}
+          onDone={() => setFlyingItems(prev => prev.filter(p => p.id !== f.id))}
+        />
+      ))}
 
       {/* ── Navigation guard ── */}
       {blocker.state === 'blocked' && (

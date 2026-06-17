@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProducts, getSuppliers, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory } from '../database/db'
+import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload } from 'react-icons/fi'
+import { utils, writeFile, read } from 'xlsx'
 import './StockControl.css'
 
 // Inline searchable dropdown component used for product and supplier selection
-function SearchableSelect({ options, value, onChange, placeholder, disabled }) {
+function SearchableSelect({ options, value, onChange, placeholder, disabled, onQuickAdd }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -63,7 +64,18 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled }) {
           </div>
           <div className="ss-options">
             {filtered.length === 0 ? (
-              <div className="ss-empty">No results found</div>
+              <div className="ss-empty">
+                <span>No results found</span>
+                {onQuickAdd && query.trim() && (
+                  <button
+                    type="button"
+                    className="ss-quick-add-btn"
+                    onMouseDown={e => { e.preventDefault(); onQuickAdd(query.trim()); setOpen(false) }}
+                  >
+                    <FiPlus size={12} /> Add "{query.trim()}"
+                  </button>
+                )}
+              </div>
             ) : (
               filtered.map(opt => (
                 <div
@@ -107,6 +119,52 @@ function StockControl() {
     notes: ''
   }
   const [formData, setFormData] = useState(emptyForm)
+
+  // Quick-add inline form state
+  const [quickAddMode, setQuickAddMode] = useState(null) // 'product' | 'supplier' | null
+  const [quickAddSaving, setQuickAddSaving] = useState(false)
+  const [quickAddError, setQuickAddError] = useState('')
+  const [quickProductForm, setQuickProductForm] = useState({ name: '', category: '', unit: 'each', selling_price: '', reorder_level: 5 })
+  const [quickSupplierForm, setQuickSupplierForm] = useState({ name: '', contact_person: '', phone: '' })
+
+  const handleOpenQuickAdd = (type, prefillName) => {
+    setQuickAddMode(type)
+    setQuickAddError('')
+    if (type === 'product') setQuickProductForm({ name: prefillName, category: '', unit: 'each', selling_price: '', reorder_level: 5 })
+    if (type === 'supplier') setQuickSupplierForm({ name: prefillName, contact_person: '', phone: '' })
+  }
+
+  const handleCloseQuickAdd = () => {
+    setQuickAddMode(null)
+    setQuickAddError('')
+  }
+
+  const handleQuickAddSave = async () => {
+    setQuickAddError('')
+    setQuickAddSaving(true)
+    try {
+      if (quickAddMode === 'product') {
+        if (!quickProductForm.name.trim()) { setQuickAddError('Product name is required'); setQuickAddSaving(false); return }
+        await addProduct({ ...quickProductForm, name: quickProductForm.name.trim(), selling_price: parseFloat(quickProductForm.selling_price) || 0 })
+        const fresh = await getProducts()
+        setProducts(fresh)
+        const created = fresh.find(p => p.name.toLowerCase() === quickProductForm.name.trim().toLowerCase())
+        if (created) handleFieldChange('product_id', created.id)
+      } else {
+        if (!quickSupplierForm.name.trim()) { setQuickAddError('Supplier name is required'); setQuickAddSaving(false); return }
+        await addSupplier({ ...quickSupplierForm, name: quickSupplierForm.name.trim() })
+        const fresh = await getSuppliers()
+        setSuppliers(fresh)
+        const created = fresh.find(s => s.name.toLowerCase() === quickSupplierForm.name.trim().toLowerCase())
+        if (created) handleFieldChange('supplier_id', created.id)
+      }
+      setQuickAddMode(null)
+    } catch (err) {
+      setQuickAddError(err.message || 'Failed to save')
+    } finally {
+      setQuickAddSaving(false)
+    }
+  }
 
   // History search/filter state (matches CurrentInventory pattern)
   const [historySearch, setHistorySearch] = useState('')
@@ -252,6 +310,114 @@ function StockControl() {
     }
   }
 
+  // ── Import state ──
+  const [showImportModal, setShowImportModal]   = useState(false)
+  const [importPreview, setImportPreview]       = useState({ valid: [], skipped: 0 })
+  const [importError, setImportError]           = useState('')
+  const [importing, setImporting]               = useState(false)
+  const importFileRef                           = useRef(null)
+
+  const normalizeImportHeader = (h) => {
+    const s = String(h).toLowerCase().replace(/[\s_\-/]+/g, '')
+    if (['productname', 'product', 'item', 'itemname'].includes(s))   return 'product_name'
+    if (['purchasetype', 'type', 'source'].includes(s))                return 'purchase_type'
+    if (['suppliername', 'supplier', 'vendor'].includes(s))            return 'supplier_name'
+    if (['datereceived', 'date', 'receiveddate'].includes(s))          return 'date_received'
+    if (['quantity', 'qty', 'units', 'totalunits'].includes(s))        return 'quantity'
+    if (['costperunit', 'costunit', 'unitcost', 'cpu', 'cost'].includes(s)) return 'cost_per_unit'
+    if (['notes', 'note', 'description', 'remarks'].includes(s))       return 'notes'
+    return null
+  }
+
+  const downloadImportTemplate = () => {
+    const templateData = [
+      { 'Product Name': 'Bread', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', 'Date Received': '2026-06-17', Quantity: 48, 'Cost Per Unit': 0.80, Notes: '' },
+      { 'Product Name': 'Cooking Oil 2L', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', 'Date Received': '2026-06-17', Quantity: 24, 'Cost Per Unit': 3.20, Notes: '' },
+      { 'Product Name': 'Salt 1kg', 'Purchase Type': 'direct', 'Supplier Name': '', 'Date Received': '2026-06-17', Quantity: 10, 'Cost Per Unit': 0.50, Notes: 'Cash purchase at market' },
+    ]
+    const ws = utils.json_to_sheet(templateData)
+    const wb = utils.book_new()
+    utils.book_append_sheet(wb, ws, 'Stock Receivings')
+    writeFile(wb, 'stock_receiving_import_template.xlsx')
+  }
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const wb  = read(evt.target.result, { type: 'array' })
+        const ws  = wb.Sheets[wb.SheetNames[0]]
+        const raw = utils.sheet_to_json(ws, { defval: '' })
+        if (raw.length === 0) {
+          setImportError('The spreadsheet appears to be empty.')
+          setShowImportModal(true)
+          return
+        }
+        const normalized = raw.map(row => {
+          const out = {}
+          for (const [key, val] of Object.entries(row)) {
+            const mapped = normalizeImportHeader(key)
+            if (mapped) out[mapped] = val
+          }
+          return out
+        })
+        if (!normalized.some(r => r.product_name !== undefined)) {
+          setImportError('Could not find a "Product Name" column. Please use the template.')
+          setShowImportModal(true)
+          return
+        }
+        const valid = []
+        let skipped = 0
+        for (const row of normalized) {
+          const name = String(row.product_name ?? '').trim()
+          if (!name) { skipped++; continue }
+          const qty  = parseInt(row.quantity) || 0
+          if (qty <= 0) { skipped++; continue }
+          const type = String(row.purchase_type ?? 'supplier').toLowerCase().trim() === 'direct' ? 'direct' : 'supplier'
+          valid.push({
+            product_name:  name,
+            purchase_type: type,
+            supplier_name: String(row.supplier_name ?? '').trim(),
+            date_received: String(row.date_received ?? '').trim() || new Date().toISOString().split('T')[0],
+            quantity:      qty,
+            cost_per_unit: parseFloat(row.cost_per_unit) || 0,
+            notes:         String(row.notes ?? '').trim(),
+          })
+        }
+        setImportPreview({ valid, skipped })
+        setImportError('')
+        setShowImportModal(true)
+      } catch {
+        setImportError('Failed to read the file. Make sure it is a valid Excel (.xlsx) file.')
+        setShowImportModal(true)
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const handleConfirmImport = async () => {
+    if (importPreview.valid.length === 0) return
+    setImporting(true)
+    try {
+      const result = await importStockReceivings(importPreview.valid, user?.username || 'Import')
+      setShowImportModal(false)
+      setImportPreview({ valid: [], skipped: 0 })
+      const parts = [`${result.inserted} receiving${result.inserted !== 1 ? 's' : ''} imported`]
+      if (result.created_products)  parts.push(`${result.created_products} new product${result.created_products !== 1 ? 's' : ''} created`)
+      if (result.created_suppliers) parts.push(`${result.created_suppliers} new supplier${result.created_suppliers !== 1 ? 's' : ''} created`)
+      setSuccessMessage(parts.join(' · '))
+      setTimeout(() => setSuccessMessage(''), 5000)
+      await loadData()
+    } catch (err) {
+      setImportError('Import failed: ' + err.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const productOptions = products.map(p => ({ value: p.id, label: `${p.name}${p.current_quantity != null ? ` (${p.current_quantity} in stock)` : ''}` }))
   const supplierOptions = suppliers.map(s => ({ value: s.id, label: s.name }))
   const uniqueSuppliers = [...new Set(receivings.map(r => r.supplier_name).filter(Boolean))]
@@ -267,6 +433,16 @@ function StockControl() {
         <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm) }}>
           {showForm ? <><FiX size={16} />Cancel</> : <><FiPlus size={16} />Record Stock</>}
         </button>
+        <button className="btn btn-secondary" onClick={() => importFileRef.current.click()}>
+          <FiUpload size={15} /> Import Sheet
+        </button>
+        <input
+          ref={importFileRef}
+          type="file"
+          accept=".xlsx"
+          style={{ display: 'none' }}
+          onChange={handleImportFile}
+        />
       </div>
 
       {showForm && (
@@ -300,11 +476,58 @@ function StockControl() {
                 <SearchableSelect
                   options={productOptions}
                   value={formData.product_id}
-                  onChange={val => handleFieldChange('product_id', val)}
+                  onChange={val => { handleFieldChange('product_id', val); handleCloseQuickAdd() }}
                   placeholder="Search and select a product..."
+                  onQuickAdd={name => handleOpenQuickAdd('product', name)}
                 />
               </div>
             </div>
+
+            {quickAddMode === 'product' && (
+              <div className="quick-add-form">
+                <div className="quick-add-header">
+                  <FiPlus size={13} /> New Product
+                  <button type="button" className="btn-icon" onClick={handleCloseQuickAdd}><FiX size={13} /></button>
+                </div>
+                {quickAddError && <div className="error-banner">{quickAddError}</div>}
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Name *</label>
+                    <input type="text" value={quickProductForm.name} onChange={e => setQuickProductForm(p => ({ ...p, name: e.target.value }))} placeholder="Product name" autoFocus />
+                  </div>
+                  <div className="form-group">
+                    <label>Category</label>
+                    <select value={quickProductForm.category} onChange={e => setQuickProductForm(p => ({ ...p, category: e.target.value }))}>
+                      <option value="">Select category</option>
+                      {['Food', 'Non-Food', 'Drinks', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Unit</label>
+                    <select value={quickProductForm.unit} onChange={e => setQuickProductForm(p => ({ ...p, unit: e.target.value }))}>
+                      <option value="each">each</option>
+                      <option value="pack">pack</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Selling Price (USD)</label>
+                    <input type="number" value={quickProductForm.selling_price} onChange={e => setQuickProductForm(p => ({ ...p, selling_price: e.target.value }))} placeholder="0.00" step="any" min="0" />
+                  </div>
+                  <div className="form-group">
+                    <label>Reorder Level</label>
+                    <input type="number" value={quickProductForm.reorder_level} onChange={e => setQuickProductForm(p => ({ ...p, reorder_level: parseInt(e.target.value) || 0 }))} min="0" />
+                  </div>
+                </div>
+                <div className="quick-add-actions">
+                  <button type="button" className="btn btn-secondary" onClick={handleCloseQuickAdd} disabled={quickAddSaving}>Cancel</button>
+                  <button type="button" className="btn btn-primary" onClick={handleQuickAddSave} disabled={quickAddSaving}>
+                    {quickAddSaving ? 'Saving…' : 'Save & Select Product'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ── Step 3: Supplier (supplier type only) ── */}
             {purchaseType === 'supplier' && (
@@ -314,9 +537,42 @@ function StockControl() {
                   <SearchableSelect
                     options={supplierOptions}
                     value={formData.supplier_id}
-                    onChange={val => handleFieldChange('supplier_id', val)}
+                    onChange={val => { handleFieldChange('supplier_id', val); handleCloseQuickAdd() }}
                     placeholder="Search and select a supplier..."
+                    onQuickAdd={name => handleOpenQuickAdd('supplier', name)}
                   />
+                </div>
+              </div>
+            )}
+
+            {purchaseType === 'supplier' && quickAddMode === 'supplier' && (
+              <div className="quick-add-form">
+                <div className="quick-add-header">
+                  <FiPlus size={13} /> New Supplier
+                  <button type="button" className="btn-icon" onClick={handleCloseQuickAdd}><FiX size={13} /></button>
+                </div>
+                {quickAddError && <div className="error-banner">{quickAddError}</div>}
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Name *</label>
+                    <input type="text" value={quickSupplierForm.name} onChange={e => setQuickSupplierForm(p => ({ ...p, name: e.target.value }))} placeholder="Supplier name" autoFocus />
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Person</label>
+                    <input type="text" value={quickSupplierForm.contact_person} onChange={e => setQuickSupplierForm(p => ({ ...p, contact_person: e.target.value }))} placeholder="e.g. John Moyo" />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Phone</label>
+                    <input type="text" value={quickSupplierForm.phone} onChange={e => setQuickSupplierForm(p => ({ ...p, phone: e.target.value }))} placeholder="e.g. 0771234567" />
+                  </div>
+                </div>
+                <div className="quick-add-actions">
+                  <button type="button" className="btn btn-secondary" onClick={handleCloseQuickAdd} disabled={quickAddSaving}>Cancel</button>
+                  <button type="button" className="btn btn-primary" onClick={handleQuickAddSave} disabled={quickAddSaving}>
+                    {quickAddSaving ? 'Saving…' : 'Save & Select Supplier'}
+                  </button>
                 </div>
               </div>
             )}
@@ -451,6 +707,85 @@ function StockControl() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ── Import Modal ── */}
+      {showImportModal && (
+        <div className="form-overlay" onClick={() => !importing && setShowImportModal(false)}>
+          <div className="product-form import-modal" onClick={e => e.stopPropagation()}>
+            <div className="form-header">
+              <h2>Import Stock Receivings</h2>
+              <button className="close-btn" onClick={() => !importing && setShowImportModal(false)}><FiX size={14} /></button>
+            </div>
+
+            {importError ? (
+              <>
+                <div className="error-banner">{importError}</div>
+                <p className="import-template-hint">
+                  Download the <button className="link-btn" onClick={downloadImportTemplate}>template file</button> to see the required column format.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="import-summary">
+                  <p className="import-count-valid">✓ <strong>{importPreview.valid.length}</strong> row{importPreview.valid.length !== 1 ? 's' : ''} ready to import</p>
+                  {importPreview.skipped > 0 && (
+                    <p className="import-count-skipped">✗ {importPreview.skipped} row{importPreview.skipped !== 1 ? 's' : ''} skipped — missing product name or zero quantity</p>
+                  )}
+                </div>
+
+                {importPreview.valid.length > 0 && (
+                  <div className="import-preview-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Product</th>
+                          <th>Type</th>
+                          <th>Supplier</th>
+                          <th>Date</th>
+                          <th>Qty</th>
+                          <th>Cost/Unit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.valid.slice(0, 8).map((row, i) => (
+                          <tr key={i}>
+                            <td>{row.product_name}</td>
+                            <td><span className={`type-badge ${row.purchase_type}`}>{row.purchase_type === 'supplier' ? 'Supplier' : 'Direct'}</span></td>
+                            <td>{row.supplier_name || '—'}</td>
+                            <td>{row.date_received}</td>
+                            <td>{row.quantity}</td>
+                            <td>${row.cost_per_unit.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                        {importPreview.valid.length > 8 && (
+                          <tr className="import-more-row">
+                            <td colSpan="6">… and {importPreview.valid.length - 8} more rows</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="import-template-hint">New products and suppliers in the sheet will be created automatically.</p>
+              </>
+            )}
+
+            <div className="form-actions import-modal-actions">
+              <button className="link-btn" onClick={downloadImportTemplate} disabled={importing}>
+                ⇩ Download Template
+              </button>
+              <div className="modal-btn-row">
+                <button className="btn btn-secondary" onClick={() => setShowImportModal(false)} disabled={importing}>Cancel</button>
+                {!importError && importPreview.valid.length > 0 && (
+                  <button className="btn btn-primary" onClick={handleConfirmImport} disabled={importing}>
+                    {importing ? 'Importing…' : `Import ${importPreview.valid.length} Row${importPreview.valid.length !== 1 ? 's' : ''}`}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

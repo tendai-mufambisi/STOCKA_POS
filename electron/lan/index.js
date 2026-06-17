@@ -1,6 +1,7 @@
 const path = require('path')
+const logger = require('../logger')
 const { getLanConfig, saveLanConfig, getOrCreateSecret, LAN_MODES, DEFAULT_PORT } = require('./lanConfig')
-const { createServer, getConnectedClients } = require('./lanServer')
+const { createServer, getConnectedClients, generatePairingCode, getPairingInfo } = require('./lanServer')
 const { startBeacon, scanForServers, getLocalIp } = require('./lanDiscovery')
 const { OfflineQueue } = require('./offlineQueue')
 const { updateMakeHandler } = require('../database/ipc')
@@ -54,20 +55,26 @@ function startServerMode(cfg, secret) {
   })()
   const shopName = shop?.name || 'Stocka'
 
-  _server = createServer(secret, port)
+  logger.info(`[LAN] Starting Main Computer (server) mode on port ${port}`)
+  _server = createServer(secret, port, (ch, data) => notifyRenderer(ch, data))
   _server.listen(port, '0.0.0.0', () => {
-    console.log(`[LAN Server] Listening on 0.0.0.0:${port}`)
+    logger.info(`[LAN Server] Listening on 0.0.0.0:${port}`)
     notifyRenderer('lan:status-changed', getStatus())
   })
   _server.on('error', (err) => {
-    console.error('[LAN Server] Failed to start:', err.message)
+    const detail = err.code === 'EADDRINUSE'
+      ? `port ${port} is already in use — close any other program using it, or pick a different port in Network settings`
+      : (err.code || err.message)
+    logger.error(`[LAN] Server failed to start: ${detail}`)
     notifyRenderer('lan:status-changed', { ...getStatus(), error: err.message })
   })
 
+  generatePairingCode()
   _stopBeacon = startBeacon(port, shopName)
 }
 
 function startClientMode(cfg, secret) {
+  logger.info(`[LAN] Starting Satellite (client) mode → target ${cfg.serverIp}:${cfg.serverPort || DEFAULT_PORT}`)
   _clientMod = require('./lanClient')
   _clientMod.startClient(
     { serverIp: cfg.serverIp, serverPort: cfg.serverPort || DEFAULT_PORT, secret },
@@ -114,6 +121,20 @@ function initLan(userDataPath, getMainWindow) {
     ['lan:save-config', (event, newCfg) => {
       const current = getLanConfig(_userDataPath)
       const merged = { ...current, ...newCfg }
+
+      // No-op if nothing relevant changed — avoids restarting an already-running
+      // server (which would rotate the pairing code and briefly drop connections)
+      // or re-pinging an already-connected client.
+      const unchanged =
+        current.mode === merged.mode &&
+        current.serverPort === merged.serverPort &&
+        (merged.mode !== LAN_MODES.CLIENT || current.serverIp === merged.serverIp)
+      if (unchanged && ((merged.mode === LAN_MODES.SERVER && _server?.listening) ||
+                         (merged.mode === LAN_MODES.CLIENT && _clientMod) ||
+                         merged.mode === LAN_MODES.STANDALONE)) {
+        return { ok: true, status: getStatus() }
+      }
+
       saveLanConfig(_userDataPath, merged)
 
       const sec = getOrCreateSecret(_userDataPath)
@@ -130,7 +151,13 @@ function initLan(userDataPath, getMainWindow) {
       // Push the new handler into ipc.js so domain calls route correctly without restart
       updateMakeHandler(lanMakeHandler)
 
-      return { ok: true, status: getStatus() }
+      // Server bind is async — the renderer's lan:status-changed subscription will get
+      // the accurate status once the port is bound. Return a provisional status here.
+      const provisionalStatus = getStatus()
+      if (merged.mode === LAN_MODES.SERVER && !provisionalStatus.isRunning) {
+        provisionalStatus.starting = true
+      }
+      return { ok: true, status: provisionalStatus }
     }],
 
     ['lan:discover', async () => {
@@ -143,6 +170,56 @@ function initLan(userDataPath, getMainWindow) {
     }],
 
     ['lan:get-clients', () => getConnectedClients()],
+
+    // Main computer: read/regenerate the one-time pairing PIN shown to the operator
+    ['lan:get-pairing-info', () => {
+      if (!_server) return { ok: false, error: 'Server not running.' }
+      return { ok: true, info: getPairingInfo() }
+    }],
+
+    ['lan:regenerate-pairing-code', () => {
+      if (!_server) return { ok: false, error: 'Server not running.' }
+      return { ok: true, info: generatePairingCode() }
+    }],
+
+    // Satellite: exchange a pairing PIN for the Main computer's secret, switch to
+    // client mode, then immediately pull a full snapshot so local data mirrors Main
+    // exactly instead of merging with whatever was on this machine before.
+    ['lan:pair-and-connect', async (event, { serverIp, serverPort, code }) => {
+      const lanClient = require('./lanClient')
+      const port = parseInt(serverPort) || DEFAULT_PORT
+      try {
+        const { secret, shopName } = await lanClient.pair(serverIp, port, code)
+
+        const current = getLanConfig(_userDataPath)
+        const merged = { ...current, mode: LAN_MODES.CLIENT, serverIp, serverPort: port, secret }
+        saveLanConfig(_userDataPath, merged)
+
+        stopLan()
+        startClientMode(merged, secret)
+        updateMakeHandler(_clientMod.makeHandler)
+
+        await lanClient.applyFullSnapshot(serverIp, port, secret)
+
+        notifyRenderer('lan:status-changed', getStatus())
+        return { ok: true, shopName, status: getStatus() }
+      } catch (err) {
+        return { ok: false, error: err.message }
+      }
+    }],
+
+    // Satellite: manually wipe-and-reseed from Main. Recovery tool for when delta
+    // sync has drifted, or to re-mirror after the satellite's data diverged.
+    ['lan:force-resync', async () => {
+      if (!_clientMod) return { ok: false, error: 'Not in satellite mode.' }
+      try {
+        const cfg = getLanConfig(_userDataPath)
+        await _clientMod.applyFullSnapshot(cfg.serverIp, cfg.serverPort || DEFAULT_PORT, cfg.secret)
+        return { ok: true, status: getStatus() }
+      } catch (err) {
+        return { ok: false, error: err.message }
+      }
+    }],
 
     ['lan:stop', () => {
       stopLan()

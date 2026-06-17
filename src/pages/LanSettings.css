@@ -154,6 +154,36 @@
 
 .lan-secret-desc { font-size: 11px; color: #666; }
 
+.lan-pairing-code {
+  font-family: monospace;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #2e7d32;
+  margin: 4px 0 8px;
+}
+
+.lan-regen-btn {
+  margin-top: 10px;
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid #2e7d32;
+  background: #fff;
+  color: #2e7d32;
+  cursor: pointer;
+}
+
+.lan-regen-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+.lan-resync-box {
+  margin-top: 14px;
+  padding: 10px;
+  background: #fff8e1;
+  border-radius: 8px;
+  border: 1px solid #ffe082;
+}
+
 /* ── Client status row ─────────────────────────────── */
 .lan-status-row {
   margin-bottom: 12px;

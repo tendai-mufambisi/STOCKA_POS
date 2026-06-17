@@ -139,9 +139,43 @@
   margin-bottom: 0.3rem;
 }
 
+.notif-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .notif-time {
   color: #999;
   font-size: 0.8rem;
+}
+
+.notif-nav-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2e7d32;
+  opacity: 0.8;
+}
+
+/* Unread indicator */
+.notification-item.unread .notif-message {
+  font-weight: 700;
+}
+
+/* Clickable items */
+.notification-item.clickable {
+  cursor: pointer;
+}
+
+.notification-item.clickable:hover {
+  filter: brightness(0.97);
+}
+
+.notification-item.clickable:hover .notif-nav-hint {
+  opacity: 1;
 }
 
 .dismiss-btn {

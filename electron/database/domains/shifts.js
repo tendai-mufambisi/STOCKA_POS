@@ -2,6 +2,7 @@ const { getDb } = require('../index')
 const { createNotification } = require('./notifications')
 const { logAuditAction } = require('./audit')
 
+
 function getShiftById(shiftId) {
   return getDb().prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId) || null
 }
@@ -19,6 +20,7 @@ function startShift(userData, openingFloat, branchId = null) {
 
   if (!shiftId) throw new Error('Failed to get shift ID after insert')
   db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
+  try { logAuditAction(userData.username, 'SHIFT_OPENED', 'SHIFT', String(shiftId), `Shift opened with $${openingCash.toFixed(2)} opening cash`) } catch (_) {}
   return getShiftById(shiftId)
 }
 
@@ -51,6 +53,7 @@ function closeShift(shiftId, closingFloat, notes = '') {
     `UPDATE shifts SET closing_cash = ?, variance = ?, reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed' WHERE id = ?`
   ).run(closingCash, variance, reconciliationStatus, notes, closedAt, shiftId)
   db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+  try { logAuditAction(shift.cashier_username, 'SHIFT_CLOSED', 'SHIFT', String(shiftId), `Shift closed — ${reconciliationStatus} (variance: $${variance.toFixed(2)})`) } catch (_) {}
 
   const durationHours = (new Date(closedAt) - new Date(shift.started_at)) / (1000 * 60 * 60)
   try {

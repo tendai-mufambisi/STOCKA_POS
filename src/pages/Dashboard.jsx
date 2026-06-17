@@ -20,9 +20,11 @@ import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
+import ActivityLogs from './ActivityLogs'
 import Notifications from '../components/Notifications'
 import LanStatusBar from '../components/LanStatusBar'
-import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop } from '../database/db'
+import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction } from '../database/db'
+import { useLanSync } from '../hooks/useLanSync'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
 
@@ -45,7 +47,8 @@ import {
   FiTrendingUp,
   FiCalendar,
   FiArrowRight,
-  FiUsers
+  FiUsers,
+  FiList
 } from 'react-icons/fi'
 
 
@@ -60,6 +63,7 @@ function Dashboard() {
   const [shopSettings, setShopSettings] = useState(null)
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
 
   // App update state
   const [updateInfo, setUpdateInfo] = useState(null)   // { version, releaseCount }
@@ -90,6 +94,18 @@ function Dashboard() {
     return () => window.removeEventListener('online', handleOnline)
   }, [])
 
+  // LAN sync failure banner
+  const [lanSyncFailures, setLanSyncFailures] = useState([])
+
+  useEffect(() => {
+    const lan = window.stocka?.lan
+    if (!lan?.onSyncFailures) return
+    const off = lan.onSyncFailures((failures) => {
+      if (failures?.length > 0) setLanSyncFailures(f => [...failures, ...f].slice(0, 10))
+    })
+    return () => off?.()
+  }, [])
+
   // Shift UI state
   const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
   const [isClosingShift, setIsClosingShift] = useState(false)
@@ -98,9 +114,9 @@ function Dashboard() {
 
   const loadCurrentShift = async () => {
     try {
-      const shift = await getCurrentShift(user.username)
+      const shift = await getCurrentShift(user?.username)
       setCurrentShift(shift)
-      if (!shift && user.role?.toLowerCase() === 'cashier') {
+      if (!shift && user?.role?.toLowerCase() === 'cashier') {
         setShowOpeningFloatModal(true)
       }
     } catch (err) {
@@ -111,6 +127,12 @@ function Dashboard() {
   useEffect(() => {
     getShop().then(s => setShopSettings(s)).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!showLogoutConfirm) return
+    const t = setTimeout(() => setShowLogoutConfirm(false), 6000)
+    return () => clearTimeout(t)
+  }, [showLogoutConfirm])
 
   const handleOpeningFloatSubmit = async (floatData) => {
     setIsStartingShift(true)
@@ -139,10 +161,8 @@ function Dashboard() {
       await closeShift(currentShift.id, closingFloat, notes)
       setShowClosingFloatModal(false)
       clearShift()
-      setTimeout(() => {
-        logout()
-        window.location.href = '/'
-      }, 2000)
+      logout()
+      navigate('/login', { replace: true })
     } catch (err) {
       console.error('Failed to close shift:', err)
       setIsClosingShift(false)
@@ -176,6 +196,8 @@ function Dashboard() {
       console.warn('Error during logout cleanup:', err)
     }
     
+    try { await logAuditAction(user?.username || 'unknown', 'LOGOUT', 'USER', String(user?.id || ''), `${user?.role || ''} signed out`) } catch (_) {}
+
     // Clear all authentication and session data
     logout()
     clearShift()
@@ -193,18 +215,21 @@ function Dashboard() {
 
   // Check authentication on component mount
   useEffect(() => {
-    if (!user.id) {
+    if (!user?.id) {
       // User is not authenticated, redirect to login
       navigate('/login', { replace: true })
     }
-  }, [navigate, user.id])
+  }, [navigate, user?.id])
 
   useEffect(() => {
-    if (user.id) {
+    if (user?.id) {
       loadDashboardData()
       loadCurrentShift()
     }
-  }, [user.id])
+  }, [user?.id])
+
+  // Reload dashboard stats when any LAN machine changes data
+  useLanSync(() => { if (user?.id) loadDashboardData() })
 
   const loadDashboardData = async () => {
     try {
@@ -216,7 +241,7 @@ function Dashboard() {
       ])
       
       // Load active cashiers if user is admin or manager
-      if (user.role === 'Admin' || user.role === 'Manager') {
+      if (user?.role === 'Admin' || user?.role === 'Manager') {
         setActiveCashiersLoading(true)
         try {
           const shifts = await getActiveShifts()
@@ -272,18 +297,18 @@ function Dashboard() {
     { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'sales',      icon: 'shopping-cart', label: 'Sales / POS',      group: 'sales',   roles: ['Admin', 'Manager', 'Cashier'] },
     { id: 'expenses',   icon: 'credit-card', label: 'Expenses',         group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'expiry',     icon: 'calendar',   label: 'Expiry Tracking',   group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'settings',   icon: 'settings',   label: 'Settings',        group: 'ops',     roles: ['Admin', 'Manager', 'Cashier'] },
+    { id: 'expiry',       icon: 'calendar',   label: 'Expiry Tracking',  group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'activitylogs', icon: 'list',       label: 'Activity Logs',    group: 'ops',     roles: ['Admin', 'Manager'] },
+    { id: 'settings',   icon: 'settings',   label: 'Settings',         group: 'ops',     roles: ['Admin', 'Manager', 'Cashier'] },
   ]
 
   // Filter nav items based on user role
-  const userRole = user.role || 'Cashier'
+  const userRole = user?.role || 'Cashier'
   const filteredNavItems = navItems.filter(item => 
     !item.roles || item.roles.some(role => role.toLowerCase() === userRole.toLowerCase())
   )
@@ -312,6 +337,7 @@ function Dashboard() {
       case 'map-pin': return <FiMapPin {...iconProps} />
       case 'calendar': return <FiCalendar {...iconProps} />
       case 'settings': return <FiSettings {...iconProps} />
+      case 'list': return <FiList {...iconProps} />
       default: return null
     }
   }
@@ -402,6 +428,7 @@ function Dashboard() {
                   quickActions={quickActions}
                   setActivePage={setActivePage}
                   user={user}
+                  shopSettings={shopSettings}
                   lowStockItems={dashboardStats?.lowStockItems || []}
                   recentSales={dashboardStats?.recentSales || []}
                   renderIcon={renderIcon}
@@ -439,6 +466,8 @@ function Dashboard() {
         return <DeadStock />
       case 'expiry':
         return <ExpiryTracking />
+      case 'activitylogs':
+        return <ActivityLogs />
       case 'settings':
         return <Settings />
       default:
@@ -449,16 +478,16 @@ function Dashboard() {
   let lastGroup = null
 
   // Don't render dashboard if user is not authenticated
-  if (!user.id) {
+  if (!user?.id) {
     return null
   }
 
   return (
     <div className="dashboard-layout">
       <aside
-        className={`sidebar ${sidebarExpanded ? 'expanded' : 'collapsed'}`}
+        className={`sidebar ${(sidebarExpanded || showLogoutConfirm) ? 'expanded' : 'collapsed'}`}
         onMouseEnter={() => setSidebarExpanded(true)}
-        onMouseLeave={() => setSidebarExpanded(false)}
+        onMouseLeave={() => { setSidebarExpanded(false) }}
       >
         {/* Logo area */}
         <div className="sidebar-logo">
@@ -468,6 +497,18 @@ function Dashboard() {
           <div className="logo-full-wrap">
             <img src={fullLogo} alt="Stocka" className="logo-full" />
           </div>
+        </div>
+
+        {/* Sales / POS — primary CTA, always at top */}
+        <div className="sidebar-pos-cta-wrap">
+          <button
+            className={`sidebar-pos-cta ${activePage === 'sales' ? 'active' : ''}`}
+            onClick={() => setActivePage('sales')}
+            title={!sidebarExpanded ? 'Sales / POS' : ''}
+          >
+            <span className="pos-cta-icon"><FiShoppingCart size={22} /></span>
+            <span className="pos-cta-label">New Sale</span>
+          </button>
         </div>
 
         {/* Navigation */}
@@ -503,13 +544,14 @@ function Dashboard() {
             <div className="user-info-text">
               <div className="user-name">{user.username}</div>
               <div className="user-role">{user.role}</div>
+              {shopSettings?.name && <div className="user-shop">{shopSettings.name}</div>}
             </div>
           </div>
 
           <LanStatusBar />
 
           <div className="footer-actions">
-            {currentShift && (
+            {currentShift && !showLogoutConfirm && (
               <button
                 className="footer-action-btn shift-btn"
                 onClick={handleCloseShiftClick}
@@ -520,14 +562,33 @@ function Dashboard() {
                 <span className="btn-label">{isClosingShift ? 'Closing…' : 'Close Shift'}</span>
               </button>
             )}
-            <button
-              className="footer-action-btn logout-btn"
-              onClick={handleLogout}
-              title={!sidebarExpanded ? 'Sign Out' : ''}
-            >
-              <span className="footer-btn-icon"><FiLogOut size={18} /></span>
-              <span className="btn-label">Sign Out</span>
-            </button>
+            {showLogoutConfirm ? (
+              <div className="logout-confirm">
+                <span className="logout-confirm-text">
+                  {currentShift ? 'Close shift or sign out?' : 'Sign out?'}
+                </span>
+                <div className="logout-confirm-btns">
+                  {currentShift && (
+                    <button className="lc-btn lc-shift" onClick={() => { setShowLogoutConfirm(false); handleCloseShiftClick() }}>
+                      Close Shift
+                    </button>
+                  )}
+                  <button className="lc-btn lc-out" onClick={() => { setShowLogoutConfirm(false); handleLogout() }}>
+                    Sign Out
+                  </button>
+                  <button className="lc-btn lc-cancel" onClick={() => setShowLogoutConfirm(false)}>✕</button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="footer-action-btn logout-btn"
+                onClick={() => setShowLogoutConfirm(true)}
+                title={!sidebarExpanded ? 'Sign Out' : ''}
+              >
+                <span className="footer-btn-icon"><FiLogOut size={18} /></span>
+                <span className="btn-label">Sign Out</span>
+              </button>
+            )}
           </div>
         </div>
       </aside>
@@ -549,15 +610,18 @@ function Dashboard() {
             shifts: 'Shift Management',
             'cashier-sessions': 'Cashier Sessions',
             expiry: 'Expiry Tracking',
+            activitylogs: 'Activity Logs',
           }
           const title = pageTitles[activePage]
           return (
             <div className="main-header">
               <div className="header-left">
+                {shopSettings?.name && <span className="main-header-shop">{shopSettings.name}</span>}
+                {shopSettings?.name && title && <span className="main-header-divider">·</span>}
                 {title && <span className="main-header-title">{title}</span>}
               </div>
               <div className="header-right">
-                {user.role !== 'Cashier' && <Notifications />}
+                {user.role !== 'Cashier' && <Notifications onNavigate={setActivePage} />}
               </div>
             </div>
           )
@@ -593,6 +657,20 @@ function Dashboard() {
                 </button>
               </>
             )}
+          </div>
+        )}
+
+        {lanSyncFailures.length > 0 && (
+          <div className="sync-failure-banner">
+            <FiAlertTriangle size={15} style={{ flexShrink: 0 }} />
+            <span>
+              <strong>{lanSyncFailures.length} operation{lanSyncFailures.length !== 1 ? 's' : ''} failed to sync</strong>
+              {' '}after reconnecting to the Main computer. Please verify that the following records were saved:
+              {' '}{[...new Set(lanSyncFailures.map(f => f.channel?.split(':')[2] || 'data'))].join(', ')}.
+            </span>
+            <button onClick={() => setLanSyncFailures([])}>
+              <FiX size={14} />
+            </button>
           </div>
         )}
 
@@ -689,7 +767,7 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
   )
 }
 
-function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
+function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -703,7 +781,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
       <>
         <div className="page-header">
           <h1>{greeting}, {user.username}!</h1>
-          <p>{today}</p>
+          <p>{today}{shopSettings?.name && <> · <span className="page-header-shop">{shopSettings.name}</span></>}</p>
         </div>
 
         <div className="cashier-home">
@@ -739,7 +817,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, lowStockItems
     <>
       <div className="page-header">
         <h1>{greeting}, {user.username}!</h1>
-        <p>{today}</p>
+        <p>{today}{shopSettings?.name && <> · <span className="page-header-shop">{shopSettings.name}</span></>}</p>
       </div>
 
       {/* Onboarding checklist — shown to Admin only, disappears when done or dismissed */}

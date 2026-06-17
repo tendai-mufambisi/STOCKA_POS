@@ -360,12 +360,14 @@ function DevLogin() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [clock, setClock] = useState(getClockData)
+  const [shopName, setShopName] = useState('Stocka')
 
   useEffect(() => {
     getUsers().then(u => {
       setUsers((u || []).filter(x => x.is_active))
       setLoading(false)
     }).catch(() => setLoading(false))
+    getShop().then(s => { if (s?.name) setShopName(s.name) }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -383,7 +385,7 @@ function DevLogin() {
       display: 'flex', height: '100vh', overflow: 'hidden',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
-      <LeftPanel shopName="Stocka" clock={clock} />
+      <LeftPanel shopName={shopName} clock={clock} />
       <div style={{
         flex: 1, background: '#fff',
         display: 'flex', flexDirection: 'column',
@@ -714,7 +716,7 @@ function Login() {
               Set Up My Shop
             </button>
             <p style={{ margin: '28px 0 0', fontSize: '12px', color: '#ddd' }}>
-              v1.2.0 — Proudly Zimbabwean
+              v1.0.0 — Proudly Zimbabwean
 </p>
           </div>
         </div>
@@ -841,7 +843,7 @@ function Login() {
           )}
 
           <p style={{ margin: '28px 0 0', fontSize: '11px', color: '#e0e0e0', textAlign: 'center' }}>
-            v1.2.0 — Proudly Zimbabwean
+            v1.0.0 — Proudly Zimbabwean
           </p>
         </div>
       </div>

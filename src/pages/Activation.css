@@ -1,0 +1,52 @@
+.license-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.license-box {
+  width: 24px;
+  height: 38px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: monospace;
+  text-align: center;
+  text-transform: uppercase;
+  border: 2px solid #ddd;
+  border-radius: 7px;
+  outline: none;
+  background: #fff;
+  color: #1a1a1a;
+  padding: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.license-box:focus {
+  border-color: #2e7d32;
+}
+
+.license-box.filled {
+  border-color: #2e7d32;
+}
+
+.license-box:disabled {
+  background: #f9f9f9;
+  color: #999;
+}
+
+.license-box--dash {
+  border: none;
+  background: transparent;
+  color: #bbb;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+}
+
+.license-boxes.error .license-box {
+  border-color: #e53935;
+}

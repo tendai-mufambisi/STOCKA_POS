@@ -1,4 +1,5 @@
 const http = require('http')
+const logger = require('../logger')
 const shop         = require('../database/domains/shop')
 const products     = require('../database/domains/products')
 const suppliers    = require('../database/domains/suppliers')
@@ -13,6 +14,43 @@ const branches     = require('../database/domains/branches')
 const audit        = require('../database/domains/audit')
 const eod          = require('../database/domains/eod')
 const holds        = require('../database/domains/holds')
+
+// Channels that mutate data — used to decide what to broadcast over SSE and
+// notify the main-window renderer after a satellite write via /lan/invoke.
+const WRITE_CHANNELS_SERVER = new Set([
+  'domain:shop:init', 'domain:shop:update', 'domain:shop:resetPin',
+  'domain:products:add', 'domain:products:update', 'domain:products:delete',
+  'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
+  'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
+  'domain:stock:addReceiving', 'domain:stock:recordDirect',
+  'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
+  'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
+  'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
+  'domain:users:add', 'domain:users:update', 'domain:users:deactivate',
+  'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales',
+  'domain:notifications:create', 'domain:notifications:clearForProduct', 'domain:notifications:markRead',
+  'domain:eod:add',
+  'domain:audit:log', 'domain:audit:cleanup',
+  'domain:branches:add', 'domain:branches:update', 'domain:branches:delete',
+  'domain:holds:create', 'domain:holds:deleteOnLogout', 'domain:holds:release',
+])
+
+// SSE clients waiting for push notifications: clientId → ServerResponse
+const sseClients = new Map()
+
+// Called after any write via /lan/invoke — pushes a tiny event so satellites
+// call syncFromServer() immediately instead of waiting for the poll interval.
+function broadcastChange(channel) {
+  if (sseClients.size === 0) return
+  const event = `data: ${JSON.stringify({ type: 'change', channel })}\n\n`
+  for (const [id, res] of sseClients) {
+    try { res.write(event) }
+    catch (_) { sseClients.delete(id) }
+  }
+}
+
+// Set by createServer(); used inside route handlers (defined at module scope).
+let _notifyMain = null
 
 // Unified dispatch table: maps IPC channel → domain function.
 // Used by POST /lan/invoke so client satellites can proxy any domain call.
@@ -136,6 +174,23 @@ const DISPATCH = {
 // Track connected satellite clients: ip → { ip, lastSeen }
 const clients = new Map()
 
+// ── Pairing (PIN-based secret exchange, replaces manual lan_config.json copy) ──
+const PAIR_TTL_MS = 15 * 60 * 1000
+const PAIR_MAX_ATTEMPTS = 8
+
+let _pairing = null // { code, expiresAt, attempts }
+
+function generatePairingCode() {
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  _pairing = { code, expiresAt: Date.now() + PAIR_TTL_MS, attempts: 0 }
+  return { code: _pairing.code, expiresAt: _pairing.expiresAt }
+}
+
+function getPairingInfo() {
+  if (!_pairing || Date.now() > _pairing.expiresAt) return null
+  return { code: _pairing.code, expiresAt: _pairing.expiresAt }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function send(res, status, data) {
@@ -187,6 +242,30 @@ function match(pattern, pathname) {
 
 const ROUTES = [
 
+  // SSE push — satellites hold this connection open; server sends a tiny event
+  // on every write so they call syncFromServer() immediately.
+  ['GET', '/lan/events', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    })
+    res.write(':ok\n\n')
+    if (req.socket) {
+      req.socket.setKeepAlive(true)
+      req.socket.setTimeout(0)
+    }
+    const clientId = `${req.socket?.remoteAddress || 'x'}:${Date.now()}`
+    sseClients.set(clientId, res)
+    const heartbeat = setInterval(() => {
+      try { res.write(':ping\n\n') }
+      catch (_) { clearInterval(heartbeat); sseClients.delete(clientId) }
+    }, 25000)
+    req.on('close', () => { clearInterval(heartbeat); sseClients.delete(clientId) })
+    req.on('error', () => { clearInterval(heartbeat); sseClients.delete(clientId) })
+    // Returns immediately — response stays open via the stream until client disconnects
+  }],
+
   // UNIFIED INVOKE — used by satellite clients to proxy any domain call
   ['POST', '/lan/invoke', async (req, res, _p, _q, body) => {
     const { channel, args = [] } = body
@@ -196,6 +275,10 @@ const ROUTES = [
     try {
       const result = fn(...args)
       send(res, 200, { result })
+      if (WRITE_CHANNELS_SERVER.has(channel)) {
+        broadcastChange(channel)
+        if (_notifyMain) _notifyMain('lan:data-changed', { channel })
+      }
     } catch (err) {
       const status = err.message.includes('Insufficient stock') ? 409
         : err.message.includes('not found') ? 404 : 500
@@ -308,7 +391,9 @@ const ROUTES = [
   ['GET',  '/lan/reports/sales/:date',  async (req, res, p) => send(res, 200, reports.getSalesForDay(p.date))],
   ['GET',  '/lan/reports/monthly/:year/:month', async (req, res, p) => send(res, 200, reports.getMonthlyData(p.year, p.month))],
 
-  // DELTA SYNC — returns records newer than ?since= ISO timestamp
+  // DELTA SYNC — returns records newer than ?since= ISO timestamp.
+  // users/suppliers/branches/shop are always returned in full — they are small
+  // admin-managed tables and updates don't reliably bump a timestamp column.
   ['GET',  '/lan/changes', async (req, res, _p, q) => {
     const since = q.get('since') || '1970-01-01T00:00:00.000Z'
     const { getDb } = require('../database/index')
@@ -322,13 +407,42 @@ const ROUTES = [
       expenses:   db.prepare(`SELECT * FROM expenses WHERE created_at > ?`).all(since),
       shifts:     db.prepare(`SELECT * FROM shifts WHERE started_at > ? OR closed_at > ?`).all(since, since),
       stock:      db.prepare(`SELECT * FROM stock_receivings WHERE created_at > ?`).all(since),
+      users:      db.prepare(`SELECT * FROM users`).all(),
+      suppliers:  db.prepare(`SELECT * FROM suppliers`).all(),
+      branches:   db.prepare(`SELECT * FROM branches`).all(),
+      shop:       db.prepare(`SELECT * FROM shops LIMIT 1`).get() || null,
+    })
+  }],
+
+  // FULL SNAPSHOT — every row of every shared table; used to seed a satellite on first pairing
+  // or to force a clean resync. Authenticated (unlike /lan/pair).
+  ['GET',  '/lan/snapshot', async (req, res) => {
+    const { getDb } = require('../database/index')
+    const db = getDb()
+    const all = (table) => db.prepare(`SELECT * FROM ${table}`).all()
+    send(res, 200, {
+      fetched_at:       new Date().toISOString(),
+      shop:             shop.getShop(),
+      users:            all('users'),
+      products:         all('products'),
+      suppliers:        all('suppliers'),
+      branches:         all('branches'),
+      stock_receivings: all('stock_receivings'),
+      sales:            all('sales'),
+      sale_items:       all('sale_items'),
+      expenses:         all('expenses'),
+      shifts:           all('shifts'),
+      sale_holds:       all('sale_holds'),
+      notifications:    all('notifications'),
+      end_of_day:       all('end_of_day'),
     })
   }],
 ]
 
 // ── Server factory ────────────────────────────────────────────────────────────
 
-function createServer(secret, port) {
+function createServer(secret, port, notifyMain) {
+  _notifyMain = notifyMain || null
   async function router(req, res) {
     const url = new URL(req.url, 'http://x')
     const pathname = url.pathname
@@ -345,12 +459,46 @@ function createServer(secret, port) {
       })
     }
 
+    // Unauthenticated pairing — exchanges a one-time PIN for the server's secret
+    if (pathname === '/lan/pair' && req.method === 'POST') {
+      const remoteIp = req.socket.remoteAddress || 'unknown'
+      let pairBody = {}
+      try { pairBody = await parseBody(req) } catch (e) {
+        logger.warn(`[LAN Server] Pairing request from ${remoteIp} had an invalid body: ${e.message}`)
+        return send(res, 400, { error: e.message })
+      }
+
+      if (!_pairing || Date.now() > _pairing.expiresAt) {
+        logger.warn(`[LAN Server] Pairing attempt from ${remoteIp} rejected — no active code or it expired`)
+        return send(res, 410, { error: 'Pairing code expired. Generate a new one on the Main computer.' })
+      }
+      _pairing.attempts++
+      if (_pairing.attempts > PAIR_MAX_ATTEMPTS) {
+        logger.warn(`[LAN Server] Pairing attempt from ${remoteIp} rejected — too many incorrect attempts, code invalidated`)
+        _pairing = null
+        return send(res, 429, { error: 'Too many incorrect attempts. Generate a new pairing code on the Main computer.' })
+      }
+      if (pairBody.code !== _pairing.code) {
+        logger.warn(`[LAN Server] Pairing attempt from ${remoteIp} rejected — incorrect code (attempt ${_pairing.attempts}/${PAIR_MAX_ATTEMPTS})`)
+        return send(res, 401, { error: 'Incorrect pairing code.' })
+      }
+
+      _pairing = null // one-time use
+      logger.info(`[LAN Server] Satellite at ${remoteIp} paired successfully`)
+      const shopInfo = (() => { try { return shop.getShop() } catch (_) { return null } })()
+      return send(res, 200, { secret, shopName: shopInfo?.name || 'Stocka' })
+    }
+
     // Auth check
     const token = req.headers['x-stocka-token']
-    if (!token || token !== secret) return send(res, 401, { error: 'Unauthorized' })
+    if (!token || token !== secret) {
+      logger.warn(`[LAN Server] Rejected unauthorized request from ${req.socket.remoteAddress} to ${req.method} ${pathname} (missing or invalid token — likely a stale secret after re-pairing)`)
+      return send(res, 401, { error: 'Unauthorized' })
+    }
 
     // Track satellite client
     const ip = req.socket.remoteAddress || 'unknown'
+    if (!clients.has(ip)) logger.info(`[LAN Server] New satellite connected from ${ip}`)
     clients.set(ip, { ip, lastSeen: Date.now() })
 
     // Parse body once for POST/PUT/PATCH
@@ -367,6 +515,7 @@ function createServer(secret, port) {
       if (params !== null) {
         try { await handler(req, res, params, url.searchParams, body) }
         catch (err) {
+          logger.error(`[LAN Server] Handler error for ${method} ${pathname}: ${err.message}`)
           const status = err.message.includes('Insufficient stock') ? 409
             : err.message.includes('not found') ? 404 : 500
           send(res, status, { error: err.message })
@@ -375,13 +524,18 @@ function createServer(secret, port) {
       }
     }
 
+    logger.warn(`[LAN Server] No route for ${req.method} ${pathname} (request from ${req.socket.remoteAddress})`)
     send(res, 404, { error: `No route for ${req.method} ${pathname}` })
   }
 
   const server = http.createServer(router)
 
   server.on('error', (err) => {
-    console.error('[LAN Server] Error:', err.message)
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`[LAN Server] Port ${port} is already in use — another program (or a previous Stocka instance still shutting down) is using it.`)
+    } else {
+      logger.error(`[LAN Server] Server error: ${err.code || err.message}`)
+    }
   })
 
   return server
@@ -392,4 +546,4 @@ function getConnectedClients() {
   return [...clients.values()].filter(c => c.lastSeen > cutoff)
 }
 
-module.exports = { createServer, getConnectedClients }
+module.exports = { createServer, getConnectedClients, generatePairingCode, getPairingInfo }

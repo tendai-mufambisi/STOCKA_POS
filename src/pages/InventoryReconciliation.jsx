@@ -1,414 +1,352 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getProducts, logAuditAction } from '../database/db'
-import { validateNonNegativeNumber } from '../utils/validation'
+import { reconcileProduct, reconcileProducts } from '../database/domains/stock'
 import { useAuthStore } from '../store/useAuthStore'
 import './InventoryReconciliation.css'
-import { FiCheck, FiX, FiRefreshCw, FiAlertCircle, FiDownload } from 'react-icons/fi'
+import {
+  FiCheck, FiAlertCircle, FiRefreshCw, FiDownload,
+  FiSearch, FiFilter, FiCheckCircle, FiPackage, FiX
+} from 'react-icons/fi'
 
-function InventoryReconciliation() {
+export default function InventoryReconciliation() {
   const { user } = useAuthStore()
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
-  const [reconciliationData, setReconciliationData] = useState({})
-  const [discrepancies, setDiscrepancies] = useState([])
+  // counts[productId] = { counted_qty: string, notes: string }
+  const [counts, setCounts] = useState({})
+  // set of productIds that have been reconciled (DB updated) this session
+  const [reconciled, setReconciled] = useState(new Set())
+  const [applying, setApplying] = useState(new Set())   // in-flight per-row
+  const [finalizing, setFinalizing] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [reconciliationMode, setReconciliationMode] = useState('count') // 'count' or 'review'
-  const [searchTerm, setSearchTerm] = useState('')
-  const [filterBy, setFilterBy] = useState('all') // 'all', 'discrepancies', 'matched'
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState('all') // all | pending | reconciled | discrepancy
+  const successTimer = useRef(null)
 
-  useEffect(() => {
-    loadProducts()
-  }, [])
+  useEffect(() => { loadProducts() }, [])
 
   const loadProducts = async () => {
     try {
       setLoading(true)
       const data = await getProducts()
-      setProducts(data)
-      
-      // Initialize reconciliation data with system quantities
-      const initData = {}
-      data.forEach(product => {
-        initData[product.id] = {
-          system_qty: product.current_quantity || 0,
-          counted_qty: null,
-          discrepancy: 0,
-          notes: ''
-        }
-      })
-      setReconciliationData(initData)
-    } catch (err) {
+      setProducts(data || [])
+      const init = {}
+      ;(data || []).forEach(p => { init[p.id] = { counted_qty: '', notes: '' } })
+      setCounts(init)
+      setReconciled(new Set())
+    } catch {
       setError('Failed to load products')
-      console.error(err)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleCountChange = (productId, count) => {
-    // Validate quantity
-    const validation = validateNonNegativeNumber(count, 'Quantity')
-    if (!validation.valid) {
-      setError(validation.error)
-      return
-    }
+  const flash = (msg) => {
+    setSuccess(msg)
+    clearTimeout(successTimer.current)
+    successTimer.current = setTimeout(() => setSuccess(''), 3500)
+  }
 
+  // ── per-row helpers ──────────────────────────────────────────
+  const setCountedQty = (id, val) => {
     setError('')
-    const countNum = parseInt(count) || 0
-    const systemQty = reconciliationData[productId].system_qty
-    const discrepancy = countNum - systemQty
-
-    setReconciliationData(prev => ({
-      ...prev,
-      [productId]: {
-        ...prev[productId],
-        counted_qty: countNum,
-        discrepancy: discrepancy
-      }
-    }))
+    setCounts(prev => ({ ...prev, [id]: { ...prev[id], counted_qty: val } }))
+  }
+  const setNotes = (id, val) => {
+    setCounts(prev => ({ ...prev, [id]: { ...prev[id], notes: val } }))
   }
 
-  const handleNotesChange = (productId, notes) => {
-    setReconciliationData(prev => ({
-      ...prev,
-      [productId]: {
-        ...prev[productId],
-        notes: notes
-      }
-    }))
+  const parsedQty = (id) => {
+    const v = counts[id]?.counted_qty
+    if (v === '' || v == null) return null
+    const n = parseFloat(v)
+    return isNaN(n) || n < 0 ? null : n
   }
 
-  const getFilteredProducts = () => {
-    let filtered = products
-
-    // Apply search filter
-    if (searchTerm.trim()) {
-      const term = searchTerm.toLowerCase()
-      filtered = filtered.filter(p =>
-        p.name.toLowerCase().includes(term) ||
-        p.category?.toLowerCase().includes(term)
-      )
-    }
-
-    // Apply status filter
-    if (filterBy === 'discrepancies') {
-      filtered = filtered.filter(p => {
-        const data = reconciliationData[p.id]
-        return data?.counted_qty !== null && data?.discrepancy !== 0
-      })
-    } else if (filterBy === 'matched') {
-      filtered = filtered.filter(p => {
-        const data = reconciliationData[p.id]
-        return data?.counted_qty !== null && data?.discrepancy === 0
-      })
-    }
-
-    return filtered
+  const variance = (product) => {
+    const qty = parsedQty(product.id)
+    if (qty === null) return null
+    return qty - (product.current_quantity || 0)
   }
 
-  const calculateSummary = () => {
-    const productsWithCounts = products.filter(p => reconciliationData[p.id]?.counted_qty !== null)
-    const matchedCount = productsWithCounts.filter(p => reconciliationData[p.id]?.discrepancy === 0).length
-    const discrepancyCount = productsWithCounts.filter(p => reconciliationData[p.id]?.discrepancy !== 0).length
-    const totalSystemQty = products.reduce((sum, p) => sum + (reconciliationData[p.id]?.system_qty || 0), 0)
-    const totalCountedQty = productsWithCounts.reduce((sum, p) => sum + (reconciliationData[p.id]?.counted_qty || 0), 0)
-    const totalDiscrepancy = totalCountedQty - totalSystemQty
-
-    return {
-      productsProcessed: productsWithCounts.length,
-      productsTotal: products.length,
-      matchedCount,
-      discrepancyCount,
-      totalSystemQty,
-      totalCountedQty,
-      totalDiscrepancy
+  // ── Apply one product ────────────────────────────────────────
+  const handleApply = async (product) => {
+    const qty = parsedQty(product.id)
+    if (qty === null) { setError(`Enter a valid counted quantity for "${product.name}"`); return }
+    setError('')
+    setApplying(prev => new Set(prev).add(product.id))
+    try {
+      await reconcileProduct(product.id, qty, counts[product.id]?.notes || '', user.username)
+      // Update local system qty so variance refreshes immediately
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, current_quantity: qty } : p))
+      setReconciled(prev => new Set(prev).add(product.id))
+      flash(`✓ "${product.name}" reconciled — new qty: ${qty}`)
+      await logAuditAction(user.username, 'INVENTORY_RECONCILIATION', 'PRODUCT', String(product.id),
+        `Reconciled "${product.name}": ${product.current_quantity} → ${qty}`)
+    } catch (err) {
+      setError(`Failed to reconcile "${product.name}": ${err.message}`)
+    } finally {
+      setApplying(prev => { const s = new Set(prev); s.delete(product.id); return s })
     }
   }
 
-  const handleSubmitReconciliation = async () => {
-    const hasNoDiscrepancies = products.every(p => {
-      const data = reconciliationData[p.id]
-      return !data?.counted_qty || data?.discrepancy === 0
+  // ── Finalize all counted (not yet reconciled) ────────────────
+  const handleFinalizeAll = async () => {
+    const toReconcile = products.filter(p => {
+      const qty = parsedQty(p.id)
+      return qty !== null && !reconciled.has(p.id)
     })
-
-    if (!hasNoDiscrepancies && reconciliationMode === 'count') {
-      // Move to review mode if there are discrepancies
-      setReconciliationMode('review')
-      setSuccess('Review discrepancies before finalizing')
-      setTimeout(() => setSuccess(''), 3000)
+    if (toReconcile.length === 0) {
+      setError('No products with new counted quantities to finalize. Enter counts first.')
       return
     }
-
-    // Prepare discrepancy records for audit
-    const discrepancies_ = []
-    for (const product of products) {
-      const data = reconciliationData[product.id]
-      if (data?.counted_qty !== null && data?.discrepancy !== 0) {
-        discrepancies_.push({
-          product_id: product.id,
-          product_name: product.name,
-          system_qty: data.system_qty,
-          counted_qty: data.counted_qty,
-          discrepancy: data.discrepancy,
-          notes: data.notes || ''
-        })
-      }
-    }
-
+    setError('')
+    setFinalizing(true)
     try {
-      // Log audit record for reconciliation
-      if (discrepancies_.length > 0) {
-        const summary = discrepancies_.map(d =>
-          `${d.product_name}: ${d.system_qty} → ${d.counted_qty} (${d.discrepancy > 0 ? '+' : ''}${d.discrepancy})`
-        ).join(' | ')
-
-        await logAuditAction(
-          user.username,
-          'INVENTORY_RECONCILIATION',
-          'INVENTORY',
-          'reconciliation',
-          `Reconciliation completed with ${discrepancies_.length} discrepancies: ${summary}`
-        )
-      } else {
-        await logAuditAction(
-          user.username,
-          'INVENTORY_RECONCILIATION',
-          'INVENTORY',
-          'reconciliation',
-          `Reconciliation completed - all items matched (${products.length} products verified)`
-        )
-      }
-
-      setSuccess('✓ Reconciliation submitted and logged')
-      setDiscrepancies(discrepancies_)
-      setReconciliationMode('review')
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (err) {
-      setError('Failed to submit reconciliation: ' + err.message)
-      console.error(err)
-    }
-  }
-
-  const handleReset = () => {
-    if (window.confirm('Reset all counts and start over?')) {
-      setReconciliationData({})
-      const initData = {}
-      products.forEach(product => {
-        initData[product.id] = {
-          system_qty: product.current_quantity || 0,
-          counted_qty: null,
-          discrepancy: 0,
-          notes: ''
-        }
+      const adjustments = toReconcile.map(p => ({
+        product_id: p.id,
+        counted_qty: parsedQty(p.id),
+        notes: counts[p.id]?.notes || ''
+      }))
+      const results = await reconcileProducts(adjustments, user.username)
+      // Update local quantities
+      setProducts(prev => prev.map(p => {
+        const r = results.find(r => r.product_id === p.id)
+        return r ? { ...p, current_quantity: r.new_qty } : p
+      }))
+      setReconciled(prev => {
+        const s = new Set(prev)
+        results.forEach(r => s.add(r.product_id))
+        return s
       })
-      setReconciliationData(initData)
-      setReconciliationMode('count')
-      setSuccess('✓ Reconciliation reset')
-      setTimeout(() => setSuccess(''), 2000)
+      const summary = results.map(r =>
+        `${r.product_name}: ${r.previous_qty} → ${r.new_qty} (${r.adjustment >= 0 ? '+' : ''}${r.adjustment})`
+      ).join(' | ')
+      await logAuditAction(user.username, 'INVENTORY_RECONCILIATION', 'INVENTORY', 'batch',
+        `Finalized ${results.length} items: ${summary}`)
+      flash(`✓ ${results.length} product${results.length !== 1 ? 's' : ''} reconciled successfully`)
+    } catch (err) {
+      setError('Finalize failed: ' + err.message)
+    } finally {
+      setFinalizing(false)
     }
   }
 
-  const handleExportReport = () => {
-    const summary = calculateSummary()
-    const csv = [
-      ['Inventory Reconciliation Report'],
-      [`Date: ${new Date().toISOString()}`],
-      [`User: ${user.username}`],
-      [''],
-      ['Summary'],
-      [`Products Processed: ${summary.productsProcessed}/${summary.productsTotal}`],
-      [`Matched: ${summary.matchedCount}`],
-      [`Discrepancies: ${summary.discrepancyCount}`],
-      [`Total System Qty: ${summary.totalSystemQty}`],
-      [`Total Counted Qty: ${summary.totalCountedQty}`],
-      [`Total Variance: ${summary.totalDiscrepancy}`],
-      [''],
-      ['Details'],
-      ['Product Name', 'Category', 'System Qty', 'Counted Qty', 'Variance', 'Notes']
+  // ── Export CSV ───────────────────────────────────────────────
+  const handleExport = () => {
+    const rows = [
+      ['Product', 'Category', 'System Qty', 'Counted Qty', 'Variance', 'Status', 'Notes'],
+      ...products.map(p => {
+        const qty = parsedQty(p.id)
+        const v   = qty !== null ? qty - (p.current_quantity || 0) : ''
+        const status = reconciled.has(p.id) ? 'Reconciled' : qty !== null ? 'Counted' : 'Not counted'
+        return [p.name, p.category || '', p.current_quantity || 0, qty ?? '', v, status, counts[p.id]?.notes || '']
+      })
     ]
-
-    products.forEach(product => {
-      const data = reconciliationData[product.id]
-      if (data?.counted_qty !== null) {
-        csv.push([
-          product.name,
-          product.category || '',
-          data.system_qty,
-          data.counted_qty,
-          data.discrepancy,
-          data.notes
-        ])
-      }
-    })
-
-    const csvContent = csv.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n')
-    const blob = new Blob([csvContent], { type: 'text/csv' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `inventory-reconciliation-${new Date().toISOString().split('T')[0]}.csv`
-    link.click()
-    window.URL.revokeObjectURL(url)
+    const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const a = document.createElement('a'); a.href = url
+    a.download = `reconciliation-${new Date().toISOString().split('T')[0]}.csv`
+    a.click(); URL.revokeObjectURL(url)
   }
 
-  const summary = calculateSummary()
-  const filteredProducts = getFilteredProducts()
+  // ── Filtering ────────────────────────────────────────────────
+  const filtered = products.filter(p => {
+    if (search && !p.name.toLowerCase().includes(search.toLowerCase()) &&
+        !(p.category || '').toLowerCase().includes(search.toLowerCase())) return false
+    if (filter === 'reconciled') return reconciled.has(p.id)
+    if (filter === 'pending') {
+      const qty = parsedQty(p.id)
+      return qty !== null && !reconciled.has(p.id)
+    }
+    if (filter === 'discrepancy') {
+      const v = variance(p)
+      return v !== null && v !== 0 && !reconciled.has(p.id)
+    }
+    return true
+  })
 
-  if (loading) {
-    return <div className="loading">Loading products...</div>
-  }
+  // ── Summary stats ────────────────────────────────────────────
+  const counted = products.filter(p => parsedQty(p.id) !== null).length
+  const pendingCount = products.filter(p => parsedQty(p.id) !== null && !reconciled.has(p.id)).length
+  const discrepancyCount = products.filter(p => { const v = variance(p); return v !== null && v !== 0 && !reconciled.has(p.id) }).length
+
+  if (loading) return <div className="ir-loading"><FiRefreshCw className="ir-spin" size={28} /><span>Loading products…</span></div>
 
   return (
-    <div className="inventory-reconciliation">
-      {error && <div className="alert alert-error"><FiAlertCircle /> {error}</div>}
-      {success && <div className="alert alert-success"><FiCheck /> {success}</div>}
-
-      {/* Summary Stats */}
-      <div className="summary-stats">
-        <div className="stat-box">
-          <div className="stat-label">Processed</div>
-          <div className="stat-value">{summary.productsProcessed}/{summary.productsTotal}</div>
+    <div className="ir-page">
+      {/* ── Header ── */}
+      <div className="ir-header">
+        <div className="ir-header-left">
+          <h1>Inventory Reconciliation</h1>
+          <p>Count physical stock and adjust system quantities to match reality</p>
         </div>
-        <div className="stat-box success">
-          <div className="stat-label"><FiCheck size={11} /> Matched</div>
-          <div className="stat-value">{summary.matchedCount}</div>
-        </div>
-        <div className="stat-box warning">
-          <div className="stat-label"><FiAlertCircle size={11} /> Discrepancies</div>
-          <div className="stat-value">{summary.discrepancyCount}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">System Qty</div>
-          <div className="stat-value">{summary.totalSystemQty}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Counted Qty</div>
-          <div className="stat-value">{summary.totalCountedQty}</div>
-        </div>
-        <div className={`stat-box ${summary.totalDiscrepancy === 0 ? '' : summary.totalDiscrepancy > 0 ? 'warning' : 'error'}`}>
-          <div className="stat-label">Variance</div>
-          <div className="stat-value">{summary.totalDiscrepancy > 0 ? '+' : ''}{summary.totalDiscrepancy}</div>
+        <div className="ir-header-actions">
+          <button className="ir-btn ir-btn-ghost" onClick={loadProducts} title="Reload products">
+            <FiRefreshCw size={15} /> Reload
+          </button>
+          <button className="ir-btn ir-btn-ghost" onClick={handleExport}>
+            <FiDownload size={15} /> Export CSV
+          </button>
         </div>
       </div>
 
-      {/* Mode Indicator */}
-      <div className="mode-indicator">
-        <span className={`mode-badge ${reconciliationMode === 'count' ? 'active' : ''}`}>
-          1. Count Items
-        </span>
-        <span className="separator">→</span>
-        <span className={`mode-badge ${reconciliationMode === 'review' ? 'active' : ''}`}>
-          2. Review
-        </span>
+      {/* ── Alerts ── */}
+      {error   && <div className="ir-alert ir-alert-error"><FiAlertCircle size={15}/> {error} <button onClick={() => setError('')}><FiX size={13}/></button></div>}
+      {success && <div className="ir-alert ir-alert-success"><FiCheck size={15}/> {success}</div>}
+
+      {/* ── Summary strip ── */}
+      <div className="ir-summary">
+        <div className="ir-stat">
+          <span className="ir-stat-val">{products.length}</span>
+          <span className="ir-stat-lbl">Total Products</span>
+        </div>
+        <div className="ir-stat">
+          <span className="ir-stat-val">{counted}</span>
+          <span className="ir-stat-lbl">Counted</span>
+        </div>
+        <div className={`ir-stat ${discrepancyCount > 0 ? 'ir-stat-warn' : ''}`}>
+          <span className="ir-stat-val">{discrepancyCount}</span>
+          <span className="ir-stat-lbl">Discrepancies</span>
+        </div>
+        <div className={`ir-stat ${reconciled.size > 0 ? 'ir-stat-ok' : ''}`}>
+          <span className="ir-stat-val">{reconciled.size}</span>
+          <span className="ir-stat-lbl">Reconciled</span>
+        </div>
       </div>
 
-      {/* Controls */}
-      <div className="controls">
-        <div className="search-filter">
+      {/* ── Toolbar ── */}
+      <div className="ir-toolbar">
+        <div className="ir-search-wrap">
+          <FiSearch size={15} className="ir-search-icon" />
           <input
-            type="text"
-            placeholder="Search products..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="search-input"
+            className="ir-search"
+            placeholder="Search by product or category…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
           />
-          <select value={filterBy} onChange={(e) => setFilterBy(e.target.value)} className="filter-select">
-            <option value="all">All Items ({products.length})</option>
-            <option value="discrepancies">Discrepancies ({summary.discrepancyCount})</option>
-            <option value="matched">Matched ({summary.matchedCount})</option>
-          </select>
+          {search && <button className="ir-search-clear" onClick={() => setSearch('')}><FiX size={13}/></button>}
         </div>
-
-        <div className="action-buttons">
-          <button onClick={handleReset} className="btn btn-secondary" title="Reset all counts">
-            <FiRefreshCw /> Reset
-          </button>
-          <button onClick={handleExportReport} className="btn btn-secondary" title="Export to CSV">
-            <FiDownload /> Export
-          </button>
-          <button
-            onClick={handleSubmitReconciliation}
-            className={`btn ${reconciliationMode === 'count' ? 'btn-primary' : 'btn-success'}`}
-          >
-            {reconciliationMode === 'count' ? 'Review Discrepancies' : 'Finalize Reconciliation'}
-          </button>
+        <div className="ir-filters">
+          <FiFilter size={14} />
+          {['all','pending','reconciled','discrepancy'].map(f => (
+            <button key={f} className={`ir-chip ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
+              {f === 'all' ? `All (${products.length})` :
+               f === 'pending' ? `To Apply (${pendingCount})` :
+               f === 'reconciled' ? `Done (${reconciled.size})` :
+               `Discrepancy (${discrepancyCount})`}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Product List */}
-      <div className="products-grid">
-        {filteredProducts.length === 0 ? (
-          <div className="empty-state">
-            <FiAlertCircle />
-            <p>No products found matching your filters</p>
+      {/* ── Table ── */}
+      <div className="ir-table-wrap">
+        {filtered.length === 0 ? (
+          <div className="ir-empty">
+            <FiPackage size={42} />
+            <p>No products match your filter</p>
           </div>
         ) : (
-          filteredProducts.map(product => {
-            const data = reconciliationData[product.id] || {}
-            const isMatched = data.counted_qty !== null && data.discrepancy === 0
-            const hasDiscrepancy = data.counted_qty !== null && data.discrepancy !== 0
-            const isUncounted = data.counted_qty === null
+          <table className="ir-table">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Category</th>
+                <th className="ir-num">System Qty</th>
+                <th className="ir-num">Counted Qty</th>
+                <th className="ir-num">Variance</th>
+                <th>Notes</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(product => {
+                const qty = parsedQty(product.id)
+                const v   = qty !== null ? qty - (product.current_quantity || 0) : null
+                const isReconciled = reconciled.has(product.id)
+                const isApplying   = applying.has(product.id)
+                const rowClass = isReconciled ? 'ir-row-done' : v !== null && v !== 0 ? 'ir-row-disc' : v === 0 ? 'ir-row-match' : ''
 
-            return (
-              <div
-                key={product.id}
-                className={`product-card ${isMatched ? 'matched' : hasDiscrepancy ? 'discrepancy' : isUncounted ? 'uncounted' : ''}`}
-              >
-                <div className="product-header">
-                  <div className="product-info">
-                    <h3>{product.name}</h3>
-                    <p className="product-category">{product.category || 'No category'}</p>
-                  </div>
-                  <div className="product-status">
-                    {isMatched && <span className="badge badge-success"><FiCheck /> Matched</span>}
-                    {hasDiscrepancy && <span className="badge badge-warning"><FiAlertCircle /> Variance</span>}
-                    {isUncounted && <span className="badge badge-neutral">Not counted</span>}
-                  </div>
-                </div>
-
-                <div className="product-quantities">
-                  <div className="qty-item">
-                    <label>System Qty</label>
-                    <div className="qty-display">{data.system_qty}</div>
-                  </div>
-                  <div className="qty-item">
-                    <label>Counted Qty</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={data.counted_qty === null ? '' : data.counted_qty}
-                      onChange={(e) => handleCountChange(product.id, e.target.value)}
-                      placeholder="Enter count"
-                      className="qty-input"
-                    />
-                  </div>
-                  {data.counted_qty !== null && (
-                    <div className={`qty-item variance ${data.discrepancy === 0 ? 'matched' : data.discrepancy > 0 ? 'positive' : 'negative'}`}>
-                      <label>Variance</label>
-                      <div className="qty-display">
-                        {data.discrepancy > 0 ? '+' : ''}{data.discrepancy}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="product-notes">
-                  <textarea
-                    placeholder="Notes (e.g., 'Damaged items found', 'System error suspected')"
-                    value={data.notes}
-                    onChange={(e) => handleNotesChange(product.id, e.target.value)}
-                    className="notes-textarea"
-                    rows="2"
-                  />
-                </div>
-              </div>
-            )
-          })
+                return (
+                  <tr key={product.id} className={rowClass}>
+                    <td className="ir-product-name">{product.name}</td>
+                    <td className="ir-category">{product.category || <span className="ir-muted">—</span>}</td>
+                    <td className="ir-num ir-system-qty">{product.current_quantity ?? 0}</td>
+                    <td className="ir-num">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        className={`ir-qty-input ${isReconciled ? 'ir-qty-done' : ''}`}
+                        value={counts[product.id]?.counted_qty ?? ''}
+                        onChange={e => setCountedQty(product.id, e.target.value)}
+                        placeholder="Enter"
+                        disabled={isReconciled}
+                      />
+                    </td>
+                    <td className={`ir-num ir-variance ${v === null ? '' : v === 0 ? 'zero' : v > 0 ? 'pos' : 'neg'}`}>
+                      {v === null ? <span className="ir-muted">—</span> :
+                       v === 0 ? <span className="ir-match-tick"><FiCheck size={13}/></span> :
+                       `${v > 0 ? '+' : ''}${v}`}
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        className="ir-notes-input"
+                        value={counts[product.id]?.notes ?? ''}
+                        onChange={e => setNotes(product.id, e.target.value)}
+                        placeholder="Optional notes…"
+                        disabled={isReconciled}
+                      />
+                    </td>
+                    <td>
+                      {isReconciled
+                        ? <span className="ir-badge ir-badge-done"><FiCheckCircle size={12}/> Reconciled</span>
+                        : qty !== null
+                          ? <span className="ir-badge ir-badge-pending">Counted</span>
+                          : <span className="ir-badge ir-badge-none">Not counted</span>}
+                    </td>
+                    <td>
+                      {!isReconciled && (
+                        <button
+                          className="ir-apply-btn"
+                          disabled={qty === null || isApplying}
+                          onClick={() => handleApply(product)}
+                          title="Apply this count to the database"
+                        >
+                          {isApplying ? <FiRefreshCw size={13} className="ir-spin"/> : <FiCheck size={13}/>}
+                          Apply
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         )}
       </div>
+
+      {/* ── Finalize bar ── */}
+      {pendingCount > 0 && (
+        <div className="ir-finalize-bar">
+          <span>
+            <strong>{pendingCount} product{pendingCount !== 1 ? 's' : ''}</strong> counted but not yet applied to the database.
+          </span>
+          <button
+            className="ir-btn ir-btn-primary"
+            disabled={finalizing}
+            onClick={handleFinalizeAll}
+          >
+            {finalizing
+              ? <><FiRefreshCw size={14} className="ir-spin"/> Applying…</>
+              : <><FiCheckCircle size={14}/> Finalize All ({pendingCount})</>}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
-
-export default InventoryReconciliation

@@ -15,45 +15,35 @@ function CashierSessions() {
   const [dateTo, setDateTo] = useState('')
   const [autoRefresh, setAutoRefresh] = useState(true)
 
-  // Load active shifts
   const loadActiveShifts = async () => {
     try {
-      console.log('Loading active shifts...')
       const shifts = await getActiveShifts()
-      console.log(`Loaded ${shifts?.length || 0} active shifts:`, shifts)
       setActiveShifts(shifts || [])
-    } catch (err) {
-      console.error('Failed to load active shifts:', err)
+    } catch {
       setActiveShifts([])
     }
   }
 
-  // Load shift history
   const loadShiftHistory = async () => {
     try {
-      console.log('Loading shift history with filters:', { filterCashier, filterStatus, dateFrom, dateTo })
-      let from = dateFrom ? new Date(dateFrom).toISOString() : null
-      let to = dateTo ? new Date(new Date(dateTo).getTime() + 86400000).toISOString() : null
-      
-      const shifts = await getAllShifts('closed', from, to)
-      console.log(`Loaded ${shifts?.length || 0} closed shifts, filtering...`)
-      let filtered = shifts || []
-      
+      const from = dateFrom ? new Date(dateFrom).toISOString() : null
+      const to   = dateTo   ? new Date(new Date(dateTo).getTime() + 86400000).toISOString() : null
+      let filtered = (await getAllShifts('closed', from, to)) || []
+
       if (filterCashier) {
-        filtered = filtered.filter(s => 
-          s.cashier_username?.toLowerCase().includes(filterCashier.toLowerCase()) ||
-          s.cashier_display_name?.toLowerCase().includes(filterCashier.toLowerCase())
+        const q = filterCashier.toLowerCase()
+        filtered = filtered.filter(s =>
+          s.cashier_username?.toLowerCase().includes(q) ||
+          s.cashier_display_name?.toLowerCase().includes(q)
         )
       }
-      
+
       if (filterStatus !== 'all') {
         filtered = filtered.filter(s => s.reconciliation_status === filterStatus)
       }
-      
-      console.log(`After filtering: ${filtered.length} shifts`)
+
       setAllShifts(filtered)
-    } catch (err) {
-      console.error('Failed to load shift history:', err)
+    } catch {
       setAllShifts([])
     }
   }

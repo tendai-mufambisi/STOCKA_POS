@@ -1,44 +1,43 @@
 import { useState, useEffect } from 'react'
-import { getAllShifts, getShiftSummary, closeShift, getCurrentShift } from '../database/db'
+import { getAllShifts, getShiftSummary, closeShift } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import './ShiftDashboard.css'
-import { FiClock, FiCheckCircle, FiAlertCircle, FiEye, FiX } from 'react-icons/fi'
+import {
+  FiClock, FiCheckCircle, FiAlertCircle, FiEye, FiX,
+  FiDollarSign, FiShoppingCart, FiChevronLeft, FiCalendar,
+  FiTrendingUp, FiAlertTriangle
+} from 'react-icons/fi'
 
 function ShiftDashboard() {
   const { user } = useAuthStore()
-  const [allShifts, setAllShifts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [allShifts, setAllShifts]     = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [error, setError]             = useState('')
   const [selectedShift, setSelectedShift] = useState(null)
   const [shiftDetail, setShiftDetail] = useState(null)
-  const [closeNotes, setCloseNotes] = useState('')
-  const [endCash, setEndCash] = useState('')
+  const [closeNotes, setCloseNotes]   = useState('')
+  const [endCash, setEndCash]         = useState('')
   const [closingShiftId, setClosingShiftId] = useState(null)
-  const [isClosing, setIsClosing] = useState(false)
-  const [filterStatus, setFilterStatus] = useState('all') // 'all', 'open', 'closed'
-  const [activeTab, setActiveTab] = useState('list') // 'list', 'detail'
+  const [isClosing, setIsClosing]     = useState(false)
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [activeTab, setActiveTab]     = useState('list')
 
-  useEffect(() => {
-    loadShifts()
-  }, [filterStatus])
+  useEffect(() => { loadShifts() }, [filterStatus])
 
   const loadShifts = async () => {
     try {
       setLoading(true)
       const status = filterStatus === 'all' ? null : filterStatus
-      const rawShifts = await getAllShifts(status)
-      // Map database fields to display fields (USD-only)
-      const shifts = rawShifts.map(shift => ({
-        ...shift,
-        cashier_name: shift.cashier_display_name || shift.cashier_username,
-        start_time: shift.started_at,
-        end_time: shift.closed_at,
-        total_sales: shift.total_sales_value || 0
-      }))
-      setAllShifts(shifts)
-    } catch (err) {
+      const raw = await getAllShifts(status)
+      setAllShifts(raw.map(s => ({
+        ...s,
+        cashier_name: s.cashier_display_name || s.cashier_username || 'Unknown',
+        start_time:   s.started_at,
+        end_time:     s.closed_at,
+        total_sales:  s.total_sales_value || 0,
+      })))
+    } catch {
       setError('Failed to load shifts')
-      console.error(err)
     } finally {
       setLoading(false)
     }
@@ -47,33 +46,40 @@ function ShiftDashboard() {
   const handleViewShift = async (shift) => {
     try {
       const summary = await getShiftSummary(shift.id)
-      setShiftDetail(summary)
+      setShiftDetail({
+        ...summary,
+        cashier_name: summary.cashier_display_name || summary.cashier_username,
+        start_time:   summary.started_at,
+        end_time:     summary.closed_at,
+      })
       setSelectedShift(shift)
       setActiveTab('detail')
-    } catch (err) {
+    } catch {
       setError('Failed to load shift details')
-      console.error(err)
     }
   }
 
-  const handleCloseShift = async (shiftId) => {
-    if (!endCash) {
-      setError('Please enter end cash amount')
-      return
-    }
+  const handleBackToList = () => {
+    setActiveTab('list')
+    setSelectedShift(null)
+    setShiftDetail(null)
+    setClosingShiftId(null)
+    setEndCash('')
+    setCloseNotes('')
+  }
 
+  const handleCloseShift = async (shiftId) => {
+    if (!endCash) { setError('Please enter end cash amount'); return }
     setIsClosing(true)
     try {
       const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) }, closeNotes)
-      setError(`✓ Shift closed. Balance: $${result.balance.toFixed(2)}`)
+      const variance = result?.variance ?? 0
+      setError(`✓ Shift closed. Variance: ${variance >= 0 ? '+$' : '-$'}${Math.abs(variance).toFixed(2)}`)
       setCloseNotes('')
       setEndCash('')
       setClosingShiftId(null)
       await loadShifts()
-      if (selectedShift?.id === shiftId) {
-        setSelectedShift(null)
-        setActiveTab('list')
-      }
+      handleBackToList()
     } catch (err) {
       setError(`Failed to close shift: ${err.message}`)
     } finally {
@@ -81,35 +87,24 @@ function ShiftDashboard() {
     }
   }
 
-  const formatTime = (dateString) => {
-    const date = new Date(dateString)
-    return date.toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
-  }
-
-  const formatDate = (dateString) => {
-    const date = new Date(dateString)
-    return date.toLocaleDateString('en-ZA')
-  }
-
-  const getDurationMinutes = (startTime, endTime) => {
-    if (!endTime) {
-      const now = new Date()
-      return Math.round((now - new Date(startTime)) / (1000 * 60))
-    }
-    return Math.round((new Date(endTime) - new Date(startTime)) / (1000 * 60))
-  }
-
-  const formatDuration = (minutes) => {
-    const hours = Math.floor(minutes / 60)
-    const mins = minutes % 60
-    if (hours === 0) return `${mins}m`
-    return `${hours}h ${mins}m`
+  const fmt = {
+    time: (d) => d ? new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—',
+    date: (d) => d ? new Date(d).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—',
+    dur:  (start, end) => {
+      const mins = Math.round((new Date(end || Date.now()) - new Date(start)) / 60000)
+      if (mins < 0) return '—'
+      const h = Math.floor(mins / 60), m = mins % 60
+      return h === 0 ? `${m}m` : `${h}h ${m}m`
+    },
+    initials: (name) => (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2),
+    money:  (n) => `$${Math.abs(n || 0).toFixed(2)}`,
+    signed: (n) => `${(n ?? 0) >= 0 ? '+$' : '-$'}${Math.abs(n ?? 0).toFixed(2)}`,
   }
 
   if (!user || (user.role !== 'Admin' && user.role !== 'Manager')) {
     return (
-      <div className="shift-dashboard-page">
-        <div className="unauthorized">
+      <div className="sd-page">
+        <div className="sd-unauthorized">
           <FiAlertCircle size={48} />
           <h2>Access Denied</h2>
           <p>Only Admins and Managers can view shifts</p>
@@ -118,142 +113,116 @@ function ShiftDashboard() {
     )
   }
 
+  const today = new Date().toDateString()
+  const openCount    = allShifts.filter(s => s.status === 'open').length
+  const closedToday  = allShifts.filter(s => s.status === 'closed' && s.end_time && new Date(s.end_time).toDateString() === today).length
+  const todaySales   = allShifts
+    .filter(s => s.start_time && new Date(s.start_time).toDateString() === today)
+    .reduce((sum, s) => sum + (s.total_sales || 0), 0)
+
   return (
-    <div className="shift-dashboard-page">
-      <div className="dashboard-header">
-        <h1>Shift Management</h1>
-        <div className="header-info">
-          <div className="stat-card">
-            <span className="stat-label">Open Shifts</span>
-            <span className="stat-value">
-              {allShifts.filter(s => s.status === 'open').length}
-            </span>
+    <div className="sd-page">
+
+      {/* ── Summary strip ── */}
+      <div className="sd-summary-strip">
+        <div className="sd-summary-card">
+          <span className="sd-summary-dot open" />
+          <div>
+            <div className="sd-summary-label">Open Shifts</div>
+            <div className="sd-summary-value">{openCount}</div>
           </div>
-          <div className="stat-card">
-            <span className="stat-label">Closed Today</span>
-            <span className="stat-value">
-              {allShifts.filter(s => s.status === 'closed' && new Date(s.end_time).toDateString() === new Date().toDateString()).length}
-            </span>
+        </div>
+        <div className="sd-summary-card">
+          <span className="sd-summary-dot closed" />
+          <div>
+            <div className="sd-summary-label">Closed Today</div>
+            <div className="sd-summary-value">{closedToday}</div>
+          </div>
+        </div>
+        <div className="sd-summary-card">
+          <FiDollarSign size={15} className="sd-summary-icon" />
+          <div>
+            <div className="sd-summary-label">Today's Sales</div>
+            <div className="sd-summary-value">{fmt.money(todaySales)}</div>
           </div>
         </div>
       </div>
 
+      {/* ── Error / success banner ── */}
       {error && (
-        <div className={`message ${error.includes('✓') ? 'success' : 'error'}`}>
+        <div className={`sd-banner ${error.startsWith('✓') ? 'success' : 'error'}`}>
           {error}
           <button onClick={() => setError('')}><FiX size={14} /></button>
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <div className="tab-navigation">
-        <button
-          className={`tab-btn ${activeTab === 'list' ? 'active' : ''}`}
-          onClick={() => setActiveTab('list')}
-        >
+      {/* ── Tabs ── */}
+      <div className="sd-tabs">
+        <button className={`sd-tab ${activeTab === 'list' ? 'active' : ''}`} onClick={() => setActiveTab('list')}>
           All Shifts
         </button>
         {selectedShift && (
-          <button
-            className={`tab-btn ${activeTab === 'detail' ? 'active' : ''}`}
-            onClick={() => setActiveTab('detail')}
-          >
-            Shift Detail
+          <button className={`sd-tab ${activeTab === 'detail' ? 'active' : ''}`} onClick={() => setActiveTab('detail')}>
+            {selectedShift.cashier_name}'s Shift
           </button>
         )}
       </div>
 
-      {/* Shifts List View */}
+      {/* ═══ LIST VIEW ═══ */}
       {activeTab === 'list' && (
-        <div className="shifts-list-container">
-          <div className="filter-bar">
-            <button
-              className={`filter-btn ${filterStatus === 'all' ? 'active' : ''}`}
-              onClick={() => setFilterStatus('all')}
-            >
-              All Shifts
-            </button>
-            <button
-              className={`filter-btn ${filterStatus === 'open' ? 'active' : ''}`}
-              onClick={() => setFilterStatus('open')}
-            >
-              Open
-            </button>
-            <button
-              className={`filter-btn ${filterStatus === 'closed' ? 'active' : ''}`}
-              onClick={() => setFilterStatus('closed')}
-            >
-              Closed
-            </button>
+        <div className="sd-list-card">
+          <div className="sd-filter-bar">
+            {[['all', 'All Shifts'], ['open', 'Open'], ['closed', 'Closed']].map(([val, label]) => (
+              <button key={val} className={`sd-chip ${filterStatus === val ? 'active' : ''}`} onClick={() => setFilterStatus(val)}>
+                {label}
+              </button>
+            ))}
           </div>
 
           {loading ? (
-            <div className="loading">Loading shifts...</div>
+            <div className="sd-empty"><div className="sd-spinner" />Loading shifts…</div>
           ) : allShifts.length === 0 ? (
-            <div className="no-shifts">No shifts found</div>
+            <div className="sd-empty">
+              <FiClock size={40} />
+              <p>No shifts found</p>
+            </div>
           ) : (
-            <div className="shifts-table">
-              <div className="table-header">
-                <div className="col col-cashier">Cashier</div>
-                <div className="col col-date">Date</div>
-                <div className="col col-time">Time</div>
-                <div className="col col-duration">Duration</div>
-                <div className="col col-sales">Sales</div>
-                <div className="col col-balance">Balance</div>
-                <div className="col col-status">Status</div>
-                <div className="col col-actions">Actions</div>
+            <div className="sd-table">
+              <div className="sd-thead">
+                <div className="sd-th c-cashier">Cashier</div>
+                <div className="sd-th c-date">Date</div>
+                <div className="sd-th c-time">Time</div>
+                <div className="sd-th c-dur">Duration</div>
+                <div className="sd-th c-txn">Txns</div>
+                <div className="sd-th c-sales">Sales</div>
+                <div className="sd-th c-status">Status</div>
+                <div className="sd-th c-action" />
               </div>
 
               {allShifts.map(shift => (
-                <div key={shift.id} className="table-row">
-                  <div className="col col-cashier">
-                    <strong>{shift.cashier_name}</strong>
+                <div key={shift.id} className="sd-row" onClick={() => handleViewShift(shift)}>
+                  <div className="sd-td c-cashier">
+                    <div className="sd-avatar">{fmt.initials(shift.cashier_name)}</div>
+                    <span className="sd-cashier-name">{shift.cashier_name}</span>
                   </div>
-                  <div className="col col-date">
-                    {formatDate(shift.start_time)}
+                  <div className="sd-td c-date">{fmt.date(shift.start_time)}</div>
+                  <div className="sd-td c-time">
+                    {fmt.time(shift.start_time)}
+                    {shift.end_time && <> — {fmt.time(shift.end_time)}</>}
                   </div>
-                  <div className="col col-time">
-                    {formatTime(shift.start_time)}
-                    {shift.end_time && ` - ${formatTime(shift.end_time)}`}
+                  <div className="sd-td c-dur">{fmt.dur(shift.start_time, shift.end_time)}</div>
+                  <div className="sd-td c-txn">{shift.total_sales_count || 0}</div>
+                  <div className="sd-td c-sales">
+                    <span className="sd-sales-pill">{fmt.money(shift.total_sales)}</span>
                   </div>
-                  <div className="col col-duration">
-                    {formatDuration(getDurationMinutes(shift.start_time, shift.end_time))}
+                  <div className="sd-td c-status">
+                    {shift.status === 'open'
+                      ? <span className="sd-badge open"><FiClock size={11} /> Open</span>
+                      : <span className="sd-badge closed"><FiCheckCircle size={11} /> Closed</span>
+                    }
                   </div>
-                  <div className="col col-sales">
-                    <span className="sales-badge">
-                      ${(shift.total_sales || 0).toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="col col-balance">
-                    {shift.status === 'closed' ? (
-                      <span className={`balance-badge ${shift.total_sales >= 0 ? 'positive' : 'negative'}`}>
-                        {shift.total_sales >= 0 ? '+' : ''}${(shift.total_sales || 0).toFixed(2)}
-                      </span>
-                    ) : (
-                      <span className="balance-badge pending">Open</span>
-                    )}
-                  </div>
-                  <div className="col col-status">
-                    <span className={`status-badge ${shift.status}`}>
-                      {shift.status === 'open' ? (
-                        <>
-                          <FiClock size={14} /> Open
-                        </>
-                      ) : (
-                        <>
-                          <FiCheckCircle size={14} /> Closed
-                        </>
-                      )}
-                    </span>
-                  </div>
-                  <div className="col col-actions">
-                    <button
-                      className="action-btn view"
-                      onClick={() => handleViewShift(shift)}
-                      title="View details"
-                    >
-                      <FiEye size={16} />
-                    </button>
+                  <div className="sd-td c-action">
+                    <span className="sd-view-btn" title="View details"><FiEye size={15} /></span>
                   </div>
                 </div>
               ))}
@@ -262,186 +231,200 @@ function ShiftDashboard() {
         </div>
       )}
 
-      {/* Shift Detail View */}
+      {/* ═══ DETAIL VIEW ═══ */}
       {activeTab === 'detail' && shiftDetail && (
-        <div className="shift-detail-container">
-          <div className="detail-header">
-            <h2>{shiftDetail.cashier_name}'s Shift</h2>
-            <button
-              className="close-detail-btn"
-              onClick={() => {
-                setActiveTab('list')
-                setSelectedShift(null)
-                setShiftDetail(null)
-              }}
-            >
-              <FiX size={24} />
-            </button>
-          </div>
+        <div className="sd-detail">
 
-          <div className="detail-grid">
-            {/* Shift Info Card */}
-            <div className="detail-card">
-              <h3>Shift Information</h3>
-              <div className="info-row">
-                <span className="label">Date:</span>
-                <span className="value">{formatDate(shiftDetail.start_time)}</span>
+          {/* Hero banner */}
+          <div className="sd-hero">
+            <button className="sd-back-btn" onClick={handleBackToList}>
+              <FiChevronLeft size={17} /> Back to Shifts
+            </button>
+
+            <div className="sd-hero-main">
+              <div className="sd-hero-avatar">{fmt.initials(shiftDetail.cashier_name)}</div>
+              <div className="sd-hero-info">
+                <h2 className="sd-hero-name">{shiftDetail.cashier_name}'s Shift</h2>
+                <div className="sd-hero-meta">
+                  <FiCalendar size={13} />
+                  {fmt.date(shiftDetail.start_time)} &nbsp;·&nbsp;
+                  {fmt.time(shiftDetail.start_time)}
+                  {shiftDetail.end_time && <> — {fmt.time(shiftDetail.end_time)}</>}
+                </div>
               </div>
-              <div className="info-row">
-                <span className="label">Start Time:</span>
-                <span className="value">{formatTime(shiftDetail.start_time)}</span>
-              </div>
-              {shiftDetail.end_time && (
-                <>
-                  <div className="info-row">
-                    <span className="label">End Time:</span>
-                    <span className="value">{formatTime(shiftDetail.end_time)}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="label">Duration:</span>
-                    <span className="value">
-                      {formatDuration(getDurationMinutes(shiftDetail.start_time, shiftDetail.end_time))}
-                    </span>
-                  </div>
-                </>
-              )}
-              <div className="info-row">
-                <span className="label">Status:</span>
-                <span className={`status-badge ${shiftDetail.status}`}>
-                  {shiftDetail.status === 'open' ? 'Open' : 'Closed'}
-                </span>
-              </div>
+              {shiftDetail.status === 'open'
+                ? <span className="sd-badge open lg"><FiClock size={13} /> Active</span>
+                : <span className="sd-badge closed lg"><FiCheckCircle size={13} /> Closed</span>
+              }
             </div>
 
-            {/* Cash Card */}
-            <div className="detail-card">
-              <h3>Cash</h3>
-              <div className="info-row">
-                <span className="label">Opening Float:</span>
-                <span className="value">${shiftDetail.start_float.toFixed(2)}</span>
+            {/* Key metrics row */}
+            <div className="sd-metrics">
+              <div className="sd-metric">
+                <FiClock size={16} className="sd-metric-icon" />
+                <div className="sd-metric-label">Duration</div>
+                <div className="sd-metric-val">{fmt.dur(shiftDetail.start_time, shiftDetail.end_time)}</div>
+              </div>
+              <div className="sd-metric">
+                <FiShoppingCart size={16} className="sd-metric-icon" />
+                <div className="sd-metric-label">Transactions</div>
+                <div className="sd-metric-val">{shiftDetail.sales?.count ?? 0}</div>
+              </div>
+              <div className="sd-metric">
+                <FiDollarSign size={16} className="sd-metric-icon" />
+                <div className="sd-metric-label">Total Sales</div>
+                <div className="sd-metric-val">{fmt.money(shiftDetail.sales?.total)}</div>
               </div>
               {shiftDetail.status === 'closed' && (
-                <>
-                  <div className="info-row">
-                    <span className="label">Closing Float:</span>
-                    <span className="value">${shiftDetail.end_float.toFixed(2)}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="label">Expected Cash:</span>
-                    <span className="value">${shiftDetail.expected_cash.toFixed(2)}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="label">Actual Cash:</span>
-                    <span className="value">${shiftDetail.actual_cash.toFixed(2)}</span>
-                  </div>
-                  <div className="info-row balance-row">
-                    <span className="label">Balance:</span>
-                    <span className={`balance-value ${shiftDetail.balance >= -0.01 ? 'positive' : 'negative'}`}>
-                      {shiftDetail.balance >= 0 ? '+' : ''}${shiftDetail.balance.toFixed(2)}
-                    </span>
-                  </div>
-                  {shiftDetail.is_balanced && (
-                    <div className="balanced-indicator">
-                      <FiCheckCircle size={18} /> Cash Balanced
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Sales Card */}
-            <div className="detail-card">
-              <h3>Sales</h3>
-              <div className="info-row">
-                <span className="label">Transactions:</span>
-                <span className="value">{shiftDetail.sales.count}</span>
-              </div>
-              <div className="info-row">
-                <span className="label">Total Sales:</span>
-                <span className="value sales-total">${shiftDetail.sales.total.toFixed(2)}</span>
-              </div>
-              {shiftDetail.held_count > 0 && (
-                <div className="info-row">
-                  <span className="label">Held Sales:</span>
-                  <span className="value pending">{shiftDetail.held_count}</span>
+                <div className={`sd-metric ${(shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
+                  <FiTrendingUp size={16} className="sd-metric-icon" />
+                  <div className="sd-metric-label">Variance</div>
+                  <div className="sd-metric-val">{fmt.signed(shiftDetail.balance)}</div>
                 </div>
               )}
             </div>
+          </div>
 
-            {/* Expenses Card */}
-            <div className="detail-card">
-              <h3>Expenses</h3>
-              <div className="info-row">
-                <span className="label">Transactions:</span>
-                <span className="value">{shiftDetail.expenses.count}</span>
+          {/* Detail body — two-column grid */}
+          <div className="sd-body-grid">
+
+            {/* Cash reconciliation */}
+            <div className="sd-section-card">
+              <div className="sd-section-header">
+                <FiDollarSign size={15} />
+                Cash Reconciliation
               </div>
-              <div className="info-row">
-                <span className="label">Total Expenses:</span>
-                <span className="value expenses-total">${shiftDetail.expenses.total.toFixed(2)}</span>
+              <table className="sd-recon">
+                <tbody>
+                  <tr>
+                    <td>Opening Float</td>
+                    <td>{fmt.money(shiftDetail.start_float)}</td>
+                  </tr>
+                  <tr>
+                    <td>Sales Revenue</td>
+                    <td className="pos">+{fmt.money(shiftDetail.sales?.total)}</td>
+                  </tr>
+                  {(shiftDetail.expenses?.total ?? 0) > 0 && (
+                    <tr>
+                      <td>Expenses</td>
+                      <td className="neg">-{fmt.money(shiftDetail.expenses?.total)}</td>
+                    </tr>
+                  )}
+                  <tr className="separator">
+                    <td>Expected Cash</td>
+                    <td className="strong">{fmt.money(shiftDetail.expected_cash)}</td>
+                  </tr>
+                  {shiftDetail.status === 'closed' && (
+                    <>
+                      <tr>
+                        <td>Actual Cash Counted</td>
+                        <td>{fmt.money(shiftDetail.actual_cash)}</td>
+                      </tr>
+                      <tr className={`balance-row ${(shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
+                        <td>Variance</td>
+                        <td className="balance-amt">
+                          {fmt.signed(shiftDetail.balance)}
+                          {(shiftDetail.balance ?? 0) >= -0.01 && <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
+                        </td>
+                      </tr>
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Sales & expenses */}
+            <div className="sd-section-card">
+              <div className="sd-section-header">
+                <FiShoppingCart size={15} />
+                Sales &amp; Expenses
               </div>
+              <div className="sd-info-rows">
+                <div className="sd-info-row">
+                  <span>Completed Sales</span>
+                  <span className="strong">{shiftDetail.sales?.count ?? 0}</span>
+                </div>
+                <div className="sd-info-row">
+                  <span>Sales Revenue</span>
+                  <span className="pos">{fmt.money(shiftDetail.sales?.total)}</span>
+                </div>
+                {(shiftDetail.held_count ?? 0) > 0 && (
+                  <div className="sd-info-row">
+                    <span>Held / Pending</span>
+                    <span className="warn">{shiftDetail.held_count}</span>
+                  </div>
+                )}
+                <div className="sd-info-row sep">
+                  <span>Expenses ({shiftDetail.expenses?.count ?? 0})</span>
+                  <span className="neg">{fmt.money(shiftDetail.expenses?.total)}</span>
+                </div>
+              </div>
+
+              {shiftDetail.notes && (
+                <div className="sd-notes">
+                  <div className="sd-notes-label">Notes</div>
+                  <div className="sd-notes-text">{shiftDetail.notes}</div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Close Shift Section */}
+          {/* ── Close shift section (only if still open) ── */}
           {shiftDetail.status === 'open' && (
-            <div className="close-shift-section">
-              <h3>Close Shift</h3>
-              {closingShiftId === shiftDetail.id ? (
-                <div className="close-form">
-                  <div className="form-group">
-                    <label>Closing Cash Amount</label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={endCash}
-                      onChange={(e) => setEndCash(e.target.value)}
-                      placeholder="Enter actual cash in drawer"
-                      className="form-input"
-                      autoFocus
-                    />
+            <div className="sd-close-card">
+              <div className="sd-close-header">
+                <FiAlertTriangle size={16} className="sd-close-icon" />
+                <div>
+                  <div className="sd-close-title">Close This Shift</div>
+                  <div className="sd-close-hint">
+                    Expected cash in drawer: <strong>{fmt.money(shiftDetail.expected_cash)}</strong>
                   </div>
-                  <div className="form-group">
+                </div>
+              </div>
+
+              {closingShiftId === shiftDetail.id ? (
+                <div className="sd-close-form">
+                  <div className="sd-form-row">
+                    <div className="sd-form-group">
+                      <label>Actual cash counted ($)</label>
+                      <input
+                        type="number" step="any"
+                        value={endCash}
+                        onChange={e => setEndCash(e.target.value)}
+                        placeholder="0.00"
+                        className="sd-input"
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+                  <div className="sd-form-group">
                     <label>Notes (optional)</label>
                     <textarea
                       value={closeNotes}
-                      onChange={(e) => setCloseNotes(e.target.value)}
-                      placeholder="Any notes about this shift..."
-                      className="form-textarea"
+                      onChange={e => setCloseNotes(e.target.value)}
+                      placeholder="Any discrepancies or handover notes…"
+                      className="sd-textarea"
                       rows={3}
                     />
                   </div>
-                  <div className="form-actions">
+                  <div className="sd-close-actions">
                     <button
-                      className="btn btn-primary"
+                      className="sd-btn danger"
                       onClick={() => handleCloseShift(shiftDetail.id)}
                       disabled={isClosing || !endCash}
                     >
-                      {isClosing ? 'Closing...' : 'Close Shift'}
+                      {isClosing ? 'Closing…' : 'Confirm & Close Shift'}
                     </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => setClosingShiftId(null)}
-                      disabled={isClosing}
-                    >
+                    <button className="sd-btn ghost" onClick={() => setClosingShiftId(null)} disabled={isClosing}>
                       Cancel
                     </button>
                   </div>
                 </div>
               ) : (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => setClosingShiftId(shiftDetail.id)}
-                >
+                <button className="sd-btn danger outline" onClick={() => setClosingShiftId(shiftDetail.id)}>
                   Close This Shift
                 </button>
               )}
-            </div>
-          )}
-
-          {shiftDetail.notes && (
-            <div className="detail-card">
-              <h3>Notes</h3>
-              <p className="notes-text">{shiftDetail.notes}</p>
             </div>
           )}
         </div>

@@ -154,8 +154,117 @@ function getExpiryReport() {
   return { expired, expiringThisWeek: expiringWeek, expiringThisMonth: expiringMonth }
 }
 
+function importStockReceivings(rows, recordedBy) {
+  const db = getDb()
+  const findProduct    = db.prepare(`SELECT id, name FROM products WHERE LOWER(name) = LOWER(?) LIMIT 1`)
+  const insertProduct  = db.prepare(`INSERT INTO products (name, category, unit, selling_price, reorder_level, current_quantity, description) VALUES (?, '', 'each', 0, 5, 0, '')`)
+  const findSupplier   = db.prepare(`SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) LIMIT 1`)
+  const insertSupplier = db.prepare(`INSERT INTO suppliers (name) VALUES (?)`)
+  const insertReceiving = db.prepare(
+    `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const updateQty      = db.prepare(`UPDATE products SET current_quantity = current_quantity + ? WHERE id = ?`)
+  const insertMovementReceived = db.prepare(
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by) VALUES (?, ?, 'RECEIVED', ?, ?)`
+  )
+  const insertMovementDirect = db.prepare(
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`
+  )
+
+  let inserted = 0, created_products = 0, created_suppliers = 0
+  const errors = []
+
+  const run = db.transaction(() => {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      try {
+        const productName = String(row.product_name || '').trim()
+        if (!productName) { errors.push(`Row ${i + 2}: product name is required`); continue }
+        const qty = parseInt(row.quantity) || 0
+        if (qty <= 0) { errors.push(`Row ${i + 2}: quantity must be > 0`); continue }
+
+        const cpu  = parseFloat(row.cost_per_unit) || 0
+        const date = row.date_received || new Date().toISOString().split('T')[0]
+        const type = String(row.purchase_type || 'supplier').toLowerCase().trim() === 'direct' ? 'direct' : 'supplier'
+        const by   = recordedBy || 'Import'
+
+        let product = findProduct.get(productName)
+        if (!product) {
+          insertProduct.run(productName)
+          product = findProduct.get(productName)
+          created_products++
+        }
+
+        let supplierId = null
+        if (type === 'supplier') {
+          const sName = String(row.supplier_name || '').trim()
+          if (sName) {
+            let supplier = findSupplier.get(sName)
+            if (!supplier) { insertSupplier.run(sName); supplier = findSupplier.get(sName); created_suppliers++ }
+            supplierId = supplier.id
+          }
+        }
+
+        const totalValue = qty * cpu
+        if (type === 'supplier') {
+          insertReceiving.run(supplierId, product.id, date, 0, 0, qty, 0, cpu, totalValue, by)
+          updateQty.run(qty, product.id)
+          insertMovementReceived.run(product.id, product.name, qty, by)
+        } else {
+          insertReceiving.run(null, product.id, date, 1, qty, qty, totalValue, cpu, totalValue, by)
+          updateQty.run(qty, product.id)
+          insertMovementDirect.run(product.id, product.name, qty, row.notes || '', by)
+        }
+        inserted++
+      } catch (err) {
+        errors.push(`Row ${i + 2}: ${err.message}`)
+      }
+    }
+  })
+
+  run()
+  return { inserted, created_products, created_suppliers, errors }
+}
+
+function reconcileProduct(productId, countedQty, notes, recordedBy) {
+  const db = getDb()
+  const product = getProductById(productId)
+  if (!product) throw new Error(`Product not found`)
+  const adjustment = countedQty - (product.current_quantity || 0)
+  db.transaction(() => {
+    db.prepare(`UPDATE products SET current_quantity = ? WHERE id = ?`).run(countedQty, productId)
+    db.prepare(
+      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?)`
+    ).run(productId, product.name, adjustment, notes || '', recordedBy || 'System')
+  })()
+  return { product_id: productId, product_name: product.name, previous_qty: product.current_quantity || 0, new_qty: countedQty, adjustment }
+}
+
+function reconcileProducts(adjustments, recordedBy) {
+  const db = getDb()
+  const updateQty = db.prepare(`UPDATE products SET current_quantity = ? WHERE id = ?`)
+  const insertMovement = db.prepare(
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?)`
+  )
+  const getProduct = db.prepare(`SELECT id, name, current_quantity FROM products WHERE id = ?`)
+  const results = []
+  db.transaction(() => {
+    for (const adj of adjustments) {
+      const product = getProduct.get(adj.product_id)
+      if (!product) continue
+      const adjustment = adj.counted_qty - (product.current_quantity || 0)
+      updateQty.run(adj.counted_qty, adj.product_id)
+      insertMovement.run(adj.product_id, product.name, adjustment, adj.notes || '', recordedBy || 'System')
+      results.push({ product_id: adj.product_id, product_name: product.name, previous_qty: product.current_quantity || 0, new_qty: adj.counted_qty, adjustment })
+    }
+  })()
+  return results
+}
+
 module.exports = {
   addStockReceiving, getStockReceivings, getStockReceivingById, getAllPurchaseHistory,
   recordDirectPurchase, getDeadStockProducts, getRestockNeeded, getProductSalesVelocity,
-  getExpiringProducts, getExpiredProducts, getExpiryReport
+  getExpiringProducts, getExpiredProducts, getExpiryReport, importStockReceivings,
+  reconcileProduct, reconcileProducts
 }

@@ -372,6 +372,44 @@
   padding: 0;
 }
 
+/* ── Role selection cards ──────────────────────────────────── */
+.role-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.role-card {
+  display: flex;
+  align-items: flex-start;
+  text-align: left;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 2px solid #e0e0e0;
+  background: #fff;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+}
+
+.role-card:hover {
+  border-color: #a5d6a7;
+  background: #f6fbf6;
+}
+
+.role-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #333;
+  margin-bottom: 2px;
+}
+
+.role-card-desc {
+  font-size: 13px;
+  color: #666;
+}
+
 /* ── Success screen ────────────────────────────────────────── */
 .setup-success-icon {
   width: 72px;

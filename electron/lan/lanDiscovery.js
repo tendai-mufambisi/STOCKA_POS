@@ -1,5 +1,6 @@
 const dgram = require('dgram')
 const os = require('os')
+const logger = require('../logger')
 
 const DISCOVERY_PORT = 7820
 const BEACON_INTERVAL_MS = 5000
@@ -20,15 +21,20 @@ function startBeacon(serverPort, shopName) {
   const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
   let timer = null
 
-  socket.on('error', () => {}) // ignore "port in use" etc.
+  socket.on('error', (err) => {
+    logger.warn(`[LAN Discovery] Beacon socket error: ${err.code || err.message} — satellites will need to enter the IP manually since Auto-Detect relies on this broadcast`)
+  })
 
   socket.bind(() => {
     try { socket.setBroadcast(true) } catch (_) {}
     const ip = getLocalIp()
+    logger.info(`[LAN Discovery] Beacon broadcasting on UDP ${DISCOVERY_PORT} — advertising ${ip}:${serverPort}`)
     const send = () => {
       try {
         const msg = Buffer.from(JSON.stringify({ stocka: true, ip, port: serverPort, shopName }))
-        socket.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255', () => {})
+        socket.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255', (err) => {
+          if (err) logger.warn(`[LAN Discovery] Beacon send failed: ${err.code || err.message}`)
+        })
       } catch (_) {}
     }
     send()
@@ -54,11 +60,15 @@ function scanForServers(timeoutMs = 5000) {
       } catch (_) {}
     })
 
-    socket.on('error', () => resolve([...found.values()]))
+    socket.on('error', (err) => {
+      logger.warn(`[LAN Discovery] Scan socket error: ${err.code || err.message} — this can happen if UDP port ${DISCOVERY_PORT} is blocked or already bound by another process`)
+      resolve([...found.values()])
+    })
 
     socket.bind(DISCOVERY_PORT, () => {
       setTimeout(() => {
         try { socket.close() } catch (_) {}
+        logger.info(`[LAN Discovery] Scan finished — found ${found.size} server(s)`)
         resolve([...found.values()])
       }, timeoutMs)
     })

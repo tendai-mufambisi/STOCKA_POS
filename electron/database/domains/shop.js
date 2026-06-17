@@ -53,6 +53,22 @@ function updateShop(id, shopData) {
   )
 }
 
+// Updates only printer-related columns — intentionally local-only so each
+// machine keeps its own printer config regardless of LAN mode.
+function updateShopPrinterSettings(data) {
+  getDb().prepare(
+    `UPDATE shops SET
+      printer_name = ?, printer_port = ?,
+      auto_print = ?, print_duplicate = ?, receipt_width_mm = ?`
+  ).run(
+    data.printer_name || null,
+    data.printer_port || null,
+    data.auto_print !== undefined ? data.auto_print : 1,
+    data.print_duplicate !== undefined ? data.print_duplicate : 0,
+    data.receipt_width_mm || 58
+  )
+}
+
 function resetOwnerPin(username, newPin) {
   const db = getDb()
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username)
@@ -62,4 +78,4 @@ function resetOwnerPin(username, newPin) {
   return true
 }
 
-module.exports = { getShop, initializeShop, updateShop, resetOwnerPin }
+module.exports = { getShop, initializeShop, updateShop, updateShopPrinterSettings, resetOwnerPin }

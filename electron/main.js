@@ -165,7 +165,7 @@ ipcMain.handle('printer:print-by-name', async (event, printerName, receiptData, 
     return { success: false, error: 'No printer configured. Go to Settings → Printer, scan and save a printer.' }
   }
   logger.info(`🖨️ [PRINT-BY-NAME] Printing to "${printerName}"`)
-  const result = rawPrintReceipt(printerName, receiptData, shopInfo, isDuplicate)
+  const result = await rawPrintReceipt(printerName, receiptData, shopInfo, isDuplicate)
   if (result.success) logger.info('✅ [PRINT-BY-NAME] Success')
   else logger.error('❌ [PRINT-BY-NAME] ' + result.error)
   return result

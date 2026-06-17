@@ -206,6 +206,14 @@
 
 .pos-product:hover:not(:disabled) { background: #f8fafc; }
 
+.pos-product--selected {
+  background: #f0fdf4 !important;
+  box-shadow: inset 4px 0 0 #2e7d32, 0 1px 6px rgba(46,125,50,0.12);
+  border-bottom-color: #d1fae5 !important;
+}
+.pos-product--selected .pos-product-name { color: #166534; }
+.pos-product--selected .pos-product-add  { background: #2e7d32; color: white; }
+
 .pos-product:disabled {
   opacity: 0.45;
   cursor: not-allowed;

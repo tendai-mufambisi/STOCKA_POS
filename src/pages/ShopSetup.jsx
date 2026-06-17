@@ -76,8 +76,173 @@ function StepDots({ current, total }) {
   )
 }
 
+// ── Computer role selection (first screen) ───────────────────────────────────
+const ROLES = [
+  { key: 'standalone', title: 'Single Computer', desc: 'This is the only computer running Stocka for this shop.' },
+  { key: 'main', title: 'Main Computer', desc: "This machine will hold the shop's data. Other tills (satellites) connect to it over WiFi." },
+  { key: 'satellite', title: 'Satellite Till', desc: 'Connect this computer to a Main computer that is already set up, and mirror its data.' },
+]
+
+function RoleScreen({ onSelect }) {
+  return (
+    <div className="shop-setup-page">
+      <div className="setup-container">
+        <div className="setup-header">
+          <img className="setup-header-logo" src={fullLogo} alt="Stocka" />
+          <h1 className="setup-header-title">How will this computer be used?</h1>
+          <p className="setup-header-sub">You can change this later in Settings → Network / LAN Sync.</p>
+        </div>
+        <div className="role-cards">
+          {ROLES.map(r => (
+            <button key={r.key} type="button" className="role-card" onClick={() => onSelect(r.key)}>
+              <div>
+                <div className="role-card-title">{r.title}</div>
+                <div className="role-card-desc">{r.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Satellite: connect to an existing Main computer and mirror its data ─────
+function SatelliteConnectScreen({ onBack, onConnected }) {
+  const [ip, setIp] = useState('')
+  const [port, setPort] = useState(7821)
+  const [code, setCode] = useState('')
+  const [discovering, setDiscovering] = useState(false)
+  const [discovered, setDiscovered] = useState([])
+  const [connecting, setConnecting] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [error, setError] = useState('')
+
+  const lan = window.stocka?.lan
+
+  const handleDiscover = async () => {
+    if (!lan) return
+    setDiscovering(true)
+    setDiscovered([])
+    setError('')
+    try {
+      const res = await lan.discover()
+      setDiscovered(res?.servers || [])
+      if (!res?.servers?.length) setError('No Main computers found. Make sure it is running and on the same WiFi.')
+    } catch (e) {
+      setError('Discovery failed: ' + e.message)
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const handleConnect = async () => {
+    if (!ip.trim()) { setError("Enter the Main computer's IP address."); return }
+    if (code.trim().length !== 6) { setError('Enter the 6-digit pairing code shown on the Main computer.'); return }
+    setConnecting(true)
+    setError('')
+    try {
+      const res = await lan.pairAndConnect({ serverIp: ip.trim(), serverPort: parseInt(port) || 7821, code: code.trim() })
+      if (res?.ok) {
+        setConnected(true)
+        setTimeout(onConnected, 1200)
+      } else {
+        setError(res?.error || 'Pairing failed.')
+      }
+    } catch (e) {
+      setError(e.message || 'Pairing failed.')
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  if (connected) {
+    return (
+      <div className="shop-setup-page">
+        <div className="setup-container setup-container--centered">
+          <img className="setup-success-icon" src={iconPng} alt="Stocka" />
+          <h1 className="setup-success-title">Connected!</h1>
+          <p className="setup-success-sub">This till now has a full copy of the shop's data.</p>
+          <p className="setup-success-sub faded">Taking you to login...</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="shop-setup-page">
+      <div className="setup-container">
+        <div className="setup-header">
+          <img className="setup-header-logo" src={fullLogo} alt="Stocka" />
+          <h1 className="setup-header-title">Connect to the Main Computer</h1>
+          <p className="setup-header-sub">
+            Set up the Main computer first — it shows a pairing code in Settings → Network / LAN Sync.
+          </p>
+        </div>
+
+        <div className="setup-form">
+          <div className="form-group">
+            <label>Main Computer IP Address</label>
+            <div className="form-row" style={{ gridTemplateColumns: '1fr auto' }}>
+              <input
+                type="text"
+                placeholder="192.168.1.100"
+                value={ip}
+                onChange={e => { setIp(e.target.value); setError('') }}
+                autoFocus
+              />
+              <button type="button" className="setup-back-btn" onClick={handleDiscover} disabled={discovering}>
+                {discovering ? 'Scanning…' : 'Auto-Detect'}
+              </button>
+            </div>
+          </div>
+
+          {discovered.length > 0 && (
+            <div className="form-group">
+              {discovered.map((s, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className="setup-skip-btn"
+                  style={{ marginBottom: '6px', textAlign: 'left' }}
+                  onClick={() => { setIp(s.ip); setPort(s.port || 7821) }}
+                >
+                  {s.shopName || 'Stocka'} — {s.ip}:{s.port}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="form-group">
+            <label>Pairing Code</label>
+            <input
+              type="text"
+              placeholder="123456"
+              value={code}
+              onChange={e => { setCode(e.target.value.replace(/\D/g, '').slice(0, 6)); setError('') }}
+              inputMode="numeric"
+              maxLength={6}
+            />
+            <small className="form-hint">Shown on the Main computer's Network / LAN Sync settings.</small>
+          </div>
+
+          {error && <div className="error-msg">{error}</div>}
+
+          <div className="setup-button-group">
+            <button className="setup-back-btn" onClick={onBack} disabled={connecting}>← Back</button>
+            <button className="setup-submit-btn" onClick={handleConnect} disabled={connecting}>
+              {connecting ? 'Connecting & mirroring data…' : 'Connect'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ──────────────────────────────────────────────────────────
 function ShopSetup({ onSetupComplete }) {
+  const [role, setRole] = useState(null) // null | 'standalone' | 'main' | 'satellite'
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -164,6 +329,12 @@ function ShopSetup({ onSetupComplete }) {
         useAuthStore.getState().setUser(user)
       }
 
+      // Main computer for a multi-till shop — switch on the LAN server now so
+      // satellites can pair against it as soon as this finishes.
+      if (role === 'main' && window.stocka?.lan) {
+        try { await window.stocka.lan.saveConfig({ mode: 'server', serverPort: 7821 }) } catch (_) {}
+      }
+
       setDone(true)
       onSetupComplete()
       setTimeout(() => { window.location.hash = '#/dashboard' }, 800)
@@ -175,6 +346,21 @@ function ShopSetup({ onSetupComplete }) {
     }
   }
 
+  // ── Role selection (first screen) ──
+  if (role === null) {
+    return <RoleScreen onSelect={setRole} />
+  }
+
+  // ── Satellite: separate connect flow, never touches the wizard below ──
+  if (role === 'satellite') {
+    return (
+      <SatelliteConnectScreen
+        onBack={() => setRole(null)}
+        onConnected={() => { onSetupComplete(); window.location.hash = '#/login' }}
+      />
+    )
+  }
+
   // ── Success screen ──
   if (done) {
     return (
@@ -183,6 +369,11 @@ function ShopSetup({ onSetupComplete }) {
           <img className="setup-success-icon" src={iconPng} alt="Stocka" />
           <h1 className="setup-success-title">You're all set!</h1>
           <p className="setup-success-sub">Welcome, {ownerName}.</p>
+          {role === 'main' && (
+            <p className="setup-success-sub">
+              Connect satellite tills any time from Settings → Network / LAN Sync.
+            </p>
+          )}
           <p className="setup-success-sub faded">Opening your dashboard...</p>
         </div>
       </div>
@@ -270,6 +461,7 @@ function ShopSetup({ onSetupComplete }) {
                 Next →
               </button>
             </div>
+            <p className="setup-note"><button className="setup-back-link" onClick={() => setRole(null)}>← Change computer role</button></p>
           </div>
         )}
 

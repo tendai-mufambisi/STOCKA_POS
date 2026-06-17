@@ -10,7 +10,8 @@ export default function LanStatusBar() {
     lan.getStatus().then(setStatus).catch(() => {})
 
     const off = lan.onStatusChange?.((s) => setStatus(s))
-    return () => { try { off?.() } catch (_) {} }
+    const poll = setInterval(() => { lan.getStatus().then(setStatus).catch(() => {}) }, 5000)
+    return () => { try { off?.() } catch (_) {}; clearInterval(poll) }
   }, [])
 
   if (!status || status.mode === 'standalone') return null

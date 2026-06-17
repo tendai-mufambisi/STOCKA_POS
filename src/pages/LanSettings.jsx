@@ -7,6 +7,15 @@ const MODES = {
   client:     { label: 'Satellite Computer', desc: 'This cashier machine connects to the Main computer over WiFi.' },
 }
 
+function formatCountdown(expiresAt) {
+  if (!expiresAt) return ''
+  const ms = expiresAt - Date.now()
+  if (ms <= 0) return 'expired'
+  const mins = Math.floor(ms / 60000)
+  const secs = Math.floor((ms % 60000) / 1000)
+  return `${mins}:${String(secs).padStart(2, '0')}`
+}
+
 export default function LanSettings() {
   const [config, setConfig]       = useState(null)
   const [status, setStatus]       = useState(null)
@@ -18,6 +27,15 @@ export default function LanSettings() {
   const [saving, setSaving]       = useState(false)
   const [msg, setMsg]             = useState(null) // { type: 'ok'|'err', text }
   const [failureLog, setFailureLog] = useState([])
+
+  // Pairing (Main computer side)
+  const [pairingInfo, setPairingInfo] = useState(null) // { code, expiresAt }
+  const [pairingTick, setPairingTick] = useState(0)     // forces countdown re-render
+
+  // Pairing (Satellite side)
+  const [pairCode, setPairCode]   = useState('')
+  const [pairing, setPairing]     = useState(false)
+  const [resyncing, setResyncing] = useState(false)
 
   const lan = window.stocka?.lan
 
@@ -33,6 +51,14 @@ export default function LanSettings() {
     } catch (_) {}
   }, [lan])
 
+  const loadPairingInfo = useCallback(async () => {
+    if (!lan) return
+    try {
+      const res = await lan.getPairingInfo()
+      if (res?.ok) setPairingInfo(res.info)
+    } catch (_) {}
+  }, [lan])
+
   useEffect(() => {
     loadStatus()
     const off = lan?.onStatusChange?.((s) => setStatus(s))
@@ -40,20 +66,26 @@ export default function LanSettings() {
     return () => { try { off?.(); off2?.() } catch (_) {} }
   }, [loadStatus, lan])
 
+  // Keep the pairing PIN (and its countdown) fresh while in Main computer mode
+  useEffect(() => {
+    if (mode !== 'server' || !status?.isRunning) return
+    loadPairingInfo()
+    const timer = setInterval(() => {
+      loadPairingInfo()
+      setPairingTick(t => t + 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [mode, status?.isRunning, loadPairingInfo])
+
   const handleSave = async () => {
     if (!lan) return
-    if (mode === 'client' && !serverIp.trim()) {
-      setMsg({ type: 'err', text: 'Enter the Main computer\'s IP address.' })
-      return
-    }
     setSaving(true)
     setMsg(null)
     try {
       const res = await lan.saveConfig({ mode, serverIp: serverIp.trim() || null, serverPort: parseInt(serverPort) || 7821 })
       if (res?.ok) {
         setStatus(res.status)
-        setMsg({ type: 'ok', text: mode === 'server' ? 'Server started — other computers can now connect.'
-          : mode === 'client' ? 'Connected to Main computer.'
+        setMsg({ type: 'ok', text: mode === 'server' ? 'Server starting — other computers can now connect.'
           : 'Switched to standalone mode.' })
       }
     } catch (e) {
@@ -88,7 +120,62 @@ export default function LanSettings() {
     }
   }
 
+  const handleRegenerateCode = async () => {
+    if (!lan) return
+    try {
+      const res = await lan.regeneratePairingCode()
+      if (res?.ok) setPairingInfo(res.info)
+    } catch (_) {}
+  }
+
+  const handlePairAndConnect = async () => {
+    if (!lan) return
+    if (!serverIp.trim()) { setMsg({ type: 'err', text: "Enter the Main computer's IP address." }); return }
+    if (pairCode.trim().length !== 6) { setMsg({ type: 'err', text: 'Enter the 6-digit pairing code shown on the Main computer.' }); return }
+    setPairing(true)
+    setMsg(null)
+    try {
+      const res = await lan.pairAndConnect({
+        serverIp: serverIp.trim(),
+        serverPort: parseInt(serverPort) || 7821,
+        code: pairCode.trim(),
+      })
+      if (res?.ok) {
+        setStatus(res.status)
+        setPairCode('')
+        await loadStatus()
+        setMsg({ type: 'ok', text: `Paired with "${res.shopName}". All data has been mirrored to this computer.` })
+      } else {
+        setMsg({ type: 'err', text: res?.error || 'Pairing failed.' })
+      }
+    } catch (e) {
+      setMsg({ type: 'err', text: e.message || 'Pairing failed.' })
+    } finally {
+      setPairing(false)
+    }
+  }
+
+  const handleForceResync = async () => {
+    if (!lan) return
+    setResyncing(true)
+    setMsg(null)
+    try {
+      const res = await lan.forceResync()
+      if (res?.ok) {
+        setStatus(res.status)
+        setMsg({ type: 'ok', text: 'Full resync complete — local data now mirrors the Main computer exactly.' })
+      } else {
+        setMsg({ type: 'err', text: res?.error || 'Resync failed.' })
+      }
+    } catch (e) {
+      setMsg({ type: 'err', text: e.message || 'Resync failed.' })
+    } finally {
+      setResyncing(false)
+    }
+  }
+
   const localIp = status?.ip
+  const isPaired = mode === 'client' && !!config?.hasSecret && status?.mode === 'client'
 
   return (
     <div className="lan-settings">
@@ -151,6 +238,8 @@ export default function LanSettings() {
                 </div>
               )}
             </>
+          ) : status?.starting ? (
+            <div className="lan-server-offline">Starting server…</div>
           ) : (
             <div className="lan-server-offline">Server not running — click Save to start it.</div>
           )}
@@ -167,14 +256,22 @@ export default function LanSettings() {
             />
           </div>
 
-          {config?.hasSecret && (
+          {status?.isRunning && (
             <div className="lan-secret-box">
-              <div className="lan-secret-title">Pairing secret</div>
-              <div className="lan-secret-desc">
-                A shared secret is automatically generated and stored in<br />
-                <code>%AppData%\Stocka\lan_config.json</code><br />
-                Copy this file to each satellite machine to pair them.
-              </div>
+              <div className="lan-secret-title">Pairing code for new satellites</div>
+              {pairingInfo ? (
+                <>
+                  <div className="lan-pairing-code">{pairingInfo.code}</div>
+                  <div className="lan-secret-desc">
+                    On the satellite computer, choose "Satellite Computer", enter this code,
+                    and it will connect and mirror this shop's data automatically.
+                    Expires in <strong>{formatCountdown(pairingInfo.expiresAt)}</strong>
+                  </div>
+                </>
+              ) : (
+                <div className="lan-secret-desc">Code expired or not yet generated.</div>
+              )}
+              <button className="lan-regen-btn" onClick={handleRegenerateCode}>Generate new code</button>
             </div>
           )}
         </div>
@@ -185,7 +282,7 @@ export default function LanSettings() {
         <div className="lan-client-card">
           <div className="lan-card-title">Main Computer Connection</div>
 
-          {status?.mode === 'client' && (
+          {isPaired && (
             <div className="lan-status-row">
               <span className={`lan-status-dot ${status.clientOnline ? 'online' : 'offline'}`} />
               <span>
@@ -244,15 +341,47 @@ export default function LanSettings() {
             />
           </div>
 
-          <div className="lan-pair-warning">
-            Copy <code>%AppData%\Stocka\lan_config.json</code> from the Main computer to this machine before connecting — it contains the shared pairing secret.
-          </div>
+          {!isPaired ? (
+            <>
+              <div className="lan-ip-field" style={{ marginTop: '12px' }}>
+                <label className="lan-ip-label">Pairing Code (shown on Main computer)</label>
+                <input
+                  type="text"
+                  value={pairCode}
+                  onChange={e => setPairCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="123456"
+                  className="lan-ip-input"
+                  inputMode="numeric"
+                  maxLength={6}
+                />
+              </div>
+              <button className="lan-save-btn" onClick={handlePairAndConnect} disabled={pairing}>
+                {pairing ? 'Pairing & mirroring data…' : 'Pair & Connect'}
+              </button>
+              <div className="lan-pair-warning">
+                Pairing will replace any existing products, users and sales on this computer with
+                a copy of the Main computer's data. Use this only when first connecting this till.
+              </div>
+            </>
+          ) : (
+            <div className="lan-resync-box">
+              <button className="lan-regen-btn" onClick={handleForceResync} disabled={resyncing}>
+                {resyncing ? 'Resyncing…' : 'Force Full Resync'}
+              </button>
+              <div className="lan-secret-desc">
+                Wipes local data and re-mirrors everything from the Main computer. Use this if this
+                till's data looks out of sync and "Sync Now" doesn't fix it.
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <button className="lan-save-btn" onClick={handleSave} disabled={saving}>
-        {saving ? 'Applying...' : 'Save & Apply'}
-      </button>
+      {mode !== 'client' && (
+        <button className="lan-save-btn" onClick={handleSave} disabled={saving}>
+          {saving ? 'Applying...' : 'Save & Apply'}
+        </button>
+      )}
 
       {failureLog.length > 0 && (
         <div className="lan-failures">

@@ -81,6 +81,73 @@
 .sidebar.expanded .logo-icon-wrap { opacity: 0; transform: scale(0.8); pointer-events: none; }
 .sidebar.expanded .logo-full-wrap  { opacity: 1; transform: scale(1); }
 
+/* ── Sales / POS CTA ─────────────────────────────────────── */
+.sidebar-pos-cta-wrap {
+  padding: 10px 10px 6px;
+  flex-shrink: 0;
+}
+
+.sidebar-pos-cta {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  height: 50px;
+  background: rgba(255,255,255,0.14);
+  border: 1.5px solid rgba(255,255,255,0.38);
+  border-radius: 12px;
+  color: white;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  white-space: nowrap;
+  letter-spacing: 0.15px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+}
+
+.sidebar-pos-cta:hover {
+  background: rgba(255,255,255,0.26);
+  border-color: rgba(255,255,255,0.6);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25), 0 0 18px rgba(255,255,255,0.12);
+}
+
+.sidebar-pos-cta.active {
+  background: white;
+  color: #1b5e20;
+  border-color: white;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.28);
+}
+
+.pos-cta-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 50px;
+  transition: transform 0.18s ease;
+}
+
+.sidebar-pos-cta:hover .pos-cta-icon,
+.sidebar-pos-cta.active .pos-cta-icon {
+  transform: scale(1.15);
+}
+
+.pos-cta-label {
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sidebar.expanded .pos-cta-label {
+  opacity: 1;
+  transition: opacity 0.2s ease 0.1s;
+}
+
 /* ── Nav ─────────────────────────────────────────────────── */
 .sidebar-nav {
   flex: 1;
@@ -270,6 +337,13 @@
   white-space: nowrap;
 }
 
+.user-shop {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
 /* Footer action buttons */
 .footer-actions {
   display: flex;
@@ -329,6 +403,63 @@
   transform: translateY(-1px);
 }
 
+/* ── Logout inline confirmation ──────────────────────────── */
+.logout-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+.logout-confirm-text {
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.logout-confirm-btns {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.lc-btn {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.lc-shift {
+  background: rgba(255,255,255,0.18);
+  color: white;
+}
+.lc-shift:hover { background: rgba(255,255,255,0.28); }
+
+.lc-out {
+  background: #ef4444;
+  color: white;
+}
+.lc-out:hover { background: #dc2626; }
+
+.lc-cancel {
+  flex: 0;
+  padding: 5px 9px;
+  background: transparent;
+  color: rgba(255,255,255,0.5);
+  border: 1px solid rgba(255,255,255,0.2) !important;
+}
+.lc-cancel:hover { color: white; background: rgba(255,255,255,0.1); }
+
 /* Button labels fade in with sidebar */
 .btn-label {
   white-space: nowrap;
@@ -376,6 +507,17 @@
   color: #0f172a;
 }
 
+.main-header-shop {
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--green-dark, #2e7d32);
+}
+
+.main-header-divider {
+  margin: 0 8px;
+  color: #cbd5e1;
+}
+
 .header-left {
   flex: 1;
 }
@@ -419,6 +561,12 @@
   color: var(--text-secondary);
   font-size: 14px;
   margin-top: 4px;
+}
+
+.page-header-shop {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--green-dark);
 }
 
 .stats-grid {
@@ -803,6 +951,33 @@
   border-radius: 3px;
   transition: width 0.3s;
 }
+
+.sync-failure-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fff7ed;
+  color: #92400e;
+  border: 1px solid #fed7aa;
+  padding: 11px 14px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sync-failure-banner span { flex: 1; }
+.sync-failure-banner button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #92400e;
+  opacity: 0.6;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+  margin-top: 1px;
+}
+.sync-failure-banner button:hover { opacity: 1; }
 
 @media (max-width: 1200px) {
   .actions-grid { grid-template-columns: repeat(2, 1fr); }

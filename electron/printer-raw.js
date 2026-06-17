@@ -1,7 +1,7 @@
 const fs   = require('fs')
 const path = require('path')
 const os   = require('os')
-const { execSync } = require('child_process')
+const { exec } = require('child_process')
 
 // In a packaged app __dirname is inside the read-only app.asar, so we must
 // resolve the PS1 script from the unpacked resources and write the temp
@@ -122,21 +122,27 @@ function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
 }
 
 function printReceipt(printerName, receipt, shopInfo, isDuplicate) {
-  const bytes = buildReceiptBytes(receipt, shopInfo || {}, isDuplicate || false)
-  fs.writeFileSync(TMP_FILE, bytes)
-  try {
-    const out = execSync(
+  return new Promise((resolve) => {
+    const bytes = buildReceiptBytes(receipt, shopInfo || {}, isDuplicate || false)
+    try { fs.writeFileSync(TMP_FILE, bytes) } catch (e) {
+      return resolve({ success: false, error: 'Failed to write temp file: ' + e.message })
+    }
+    exec(
       `powershell -NoProfile -ExecutionPolicy Bypass -File "${PS_SCRIPT}" -FilePath "${TMP_FILE}" -PrinterName "${printerName}"`,
-      { encoding: 'utf8', timeout: 15000 }
+      { encoding: 'utf8', timeout: 20000 },
+      (err, stdout, stderr) => {
+        try { fs.unlinkSync(TMP_FILE) } catch (_) {}
+        if (err) {
+          const msg = ((stdout || '') + (stderr || '') + (err.message || '')).trim()
+          return resolve({ success: false, error: msg })
+        }
+        if (!stdout.includes('PRINT_OK')) {
+          return resolve({ success: false, error: stdout.trim() || 'Unknown print error' })
+        }
+        resolve({ success: true })
+      }
     )
-    if (!out.includes('PRINT_OK')) throw new Error(out.trim())
-    return { success: true }
-  } catch (e) {
-    const msg = ((e.stdout || '') + (e.stderr || '') + (e.message || '')).trim()
-    return { success: false, error: msg }
-  } finally {
-    try { fs.unlinkSync(TMP_FILE) } catch (_) {}
-  }
+  })
 }
 
 module.exports = { printReceipt, buildReceiptBytes }
