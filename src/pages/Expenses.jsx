@@ -4,7 +4,7 @@ import ConfirmModal from '../components/ConfirmModal'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
-import { FiPlus, FiX, FiEdit2, FiTrash2, FiDollarSign, FiCalendar, FiTag } from 'react-icons/fi'
+import { FiPlus, FiX, FiEdit2, FiTrash2, FiDollarSign, FiCalendar, FiTag, FiBriefcase } from 'react-icons/fi'
 import './Expenses.css'
 
 function Expenses() {
@@ -23,6 +23,7 @@ function Expenses() {
     amount: '',
     category: 'Other',
     date: new Date().toISOString().split('T')[0],
+    payment_method: 'Cash',
     notes: ''
   })
 
@@ -93,6 +94,7 @@ function Expenses() {
         amount: '',
         category: 'Other',
         date: new Date().toISOString().split('T')[0],
+        payment_method: 'Cash',
         notes: ''
       })
       setEditingId(null)
@@ -181,6 +183,7 @@ function Expenses() {
               amount: '',
               category: 'Other',
               date: new Date().toISOString().split('T')[0],
+              payment_method: 'Cash',
               notes: ''
             })
           }
@@ -219,6 +222,12 @@ function Expenses() {
                 </select>
               </div>
               <div className="form-group">
+                <label>Payment Method</label>
+                <select name="payment_method" value={formData.payment_method} onChange={handleChange}>
+                  <option value="Cash">Cash</option>
+                </select>
+              </div>
+              <div className="form-group">
                 <label>Date</label>
                 <input type="date" name="date" value={formData.date} onChange={handleChange} />
               </div>
@@ -244,6 +253,7 @@ function Expenses() {
                 <th>Date</th>
                 <th>Description</th>
                 <th>Category</th>
+                <th>Paid Via</th>
                 <th>Amount</th>
                 <th>Notes</th>
                 <th>Actions</th>
@@ -255,6 +265,14 @@ function Expenses() {
                   <td>{new Date(e.date).toLocaleDateString('en-ZW')}</td>
                   <td>{e.description}</td>
                   <td><span className="category-badge">{e.category}</span></td>
+                  <td>
+                    <span style={{
+                      display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                      background: '#dcfce7', color: '#15803d'
+                    }}>
+                      <FiBriefcase size={10} style={{ verticalAlign: 'middle' }} /> Cash
+                    </span>
+                  </td>
                   <td className="amount">${e.amount?.toFixed(2)}</td>
                   <td className="notes">{e.notes}</td>
                   <td>

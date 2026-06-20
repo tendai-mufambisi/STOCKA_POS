@@ -1,7 +1,7 @@
-import { FiSun, FiAlertCircle } from 'react-icons/fi'
+import { FiSunrise, FiAlertCircle, FiBriefcase, FiX } from 'react-icons/fi'
 import './EodClosedModal.css'
 
-export default function EodClosedModal({ date, closedBy, onDismiss }) {
+export default function EodClosedModal({ date, closedBy, onDismiss, onCloseShift }) {
   const fmtDate = date
     ? new Date(date + 'T00:00:00').toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     : 'today'
@@ -18,12 +18,21 @@ export default function EodClosedModal({ date, closedBy, onDismiss }) {
           {closedBy ? ` by ${closedBy}` : ''}.
         </p>
         <p className="eod-modal-sub">
-          No more sales can be processed. Please finish any active sale and log out.
+          No more sales can be processed. Please count your cash drawer, hand over your float to the manager, and close your shift.
         </p>
-        <button className="eod-modal-btn" onClick={onDismiss}>
-          <FiSun size={15} />
-          Understood
-        </button>
+
+        <div className="eod-modal-actions">
+          {onCloseShift && (
+            <button className="eod-modal-btn eod-modal-btn-primary" onClick={onCloseShift}>
+              <FiBriefcase size={15} />
+              Submit Cash &amp; Close Shift
+            </button>
+          )}
+          <button className="eod-modal-btn eod-modal-btn-ghost" onClick={onDismiss}>
+            <FiX size={14} />
+            Dismiss
+          </button>
+        </div>
       </div>
     </div>
   )

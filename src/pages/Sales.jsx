@@ -19,7 +19,8 @@ import { useSaleStore } from '../store/useSaleStore'
 import './Sales.css'
 import {
   FiSearch, FiPackage, FiShoppingCart, FiTrash2, FiPause,
-  FiCheck, FiX, FiChevronLeft, FiAlertTriangle, FiTag
+  FiCheck, FiX, FiChevronLeft, FiAlertTriangle, FiTag,
+  FiBriefcase, FiCreditCard, FiSmartphone
 } from 'react-icons/fi'
 
 function FlyParticle({ startX, startY, endX, endY, onDone }) {
@@ -71,11 +72,10 @@ function Sales() {
   const [recalledSaleId, setRecalledSaleId] = useState(null)
 
   // ── Checkout state ────────────────────────────────
-  const [checkoutStep, setCheckoutStep]               = useState(null) // null | 'paymentSelect' | 'cashTendered'
-  const [paymentMethod, setPaymentMethod]             = useState('Cash') // 'Cash' | 'USD' | 'Split'
-  const [checkoutCashTendered, setCheckoutCashTendered] = useState('') // Cash tendered (Cash or USD mode)
-  const [splitCashAmt, setSplitCashAmt]               = useState('') // Split: Cash portion
-  const [splitUsdAmt, setSplitUsdAmt]                 = useState('') // Split: USD portion
+  const [checkoutStep, setCheckoutStep]               = useState(null) // null | 'paymentSelect' | 'cashTendered' | 'splitTendered'
+  const [paymentMethod, setPaymentMethod]             = useState('Cash')
+  const [checkoutCashTendered, setCheckoutCashTendered] = useState('')
+  const [splitCashAmt, setSplitCashAmt]               = useState('')
   const [isProcessing, setIsProcessing]               = useState(false)
 
   // ── UI state ──────────────────────────────────────
@@ -171,7 +171,8 @@ function Sales() {
       // Escape: close whatever is open
       if (e.key === 'Escape') {
         e.preventDefault()
-        if (checkoutStep === 'cashTendered') { setCheckoutStep('paymentSelect'); setCheckoutCashTendered(''); setSplitCashAmt(''); setSplitUsdAmt('') }
+        if (checkoutStep === 'cashTendered') { setCheckoutStep('paymentSelect'); setCheckoutCashTendered('') }
+        else if (checkoutStep === 'splitTendered') { setCheckoutStep('paymentSelect'); setSplitCashAmt('') }
         else if (checkoutStep === 'paymentSelect') { setCheckoutStep(null) }
         else if (showVoidModal) { setShowVoidModal(false); setVoidSaleId(null); setVoidReason('') }
         else if (showHeldPanel) setShowHeldPanel(false)
@@ -181,14 +182,14 @@ function Sales() {
       // Enter in cash input: complete sale
       if (e.key === 'Enter' && checkoutStep === 'cashTendered' && tag === 'INPUT') {
         e.preventDefault()
-        if (paymentMethod === 'Split') {
-          const c = parseFloat(splitCashAmt) || 0
-          const u = parseFloat(splitUsdAmt) || 0
-          if (Math.abs(c + u - cartTotal) < 0.005 && !isProcessing) handleCompleteCheckout()
-        } else {
-          const amt = parseFloat(checkoutCashTendered)
-          if (!isNaN(amt) && amt >= cartTotal && !isProcessing) handleCompleteCheckout()
-        }
+        const amt = parseFloat(checkoutCashTendered)
+        if (!isNaN(amt) && amt >= cartTotal && !isProcessing) handleCompleteCheckout()
+        return
+      }
+      if (e.key === 'Enter' && checkoutStep === 'splitTendered' && tag === 'INPUT') {
+        e.preventDefault()
+        const cash = parseFloat(splitCashAmt) || 0
+        if (cash > 0 && cash < cartTotal && !isProcessing) handleCompleteSplitCheckout()
         return
       }
 
@@ -406,113 +407,113 @@ function Sales() {
     }
     setCheckoutStep('paymentSelect')
     setCheckoutCashTendered('')
-    setSplitCashAmt('')
-    setSplitUsdAmt('')
     setMessage({ text: '', type: '' })
   }
 
   const handleSelectPaymentMethod = (method) => {
     setPaymentMethod(method)
-    setCheckoutCashTendered('')
-    setSplitCashAmt('')
-    setSplitUsdAmt('')
-    setCheckoutStep('cashTendered')
+    if (method === 'Cash') {
+      setCheckoutStep('cashTendered')
+    } else if (method === 'Split') {
+      setSplitCashAmt('')
+      setCheckoutStep('splitTendered')
+    } else {
+      // Transfer — complete immediately, no tendering needed
+      handleCompleteCheckoutDirect(method)
+    }
   }
 
   const handleBackNavigation = () => {
-    if (checkoutStep === 'cashTendered') {
+    if (checkoutStep === 'cashTendered' || checkoutStep === 'splitTendered') {
       setCheckoutStep('paymentSelect')
       setCheckoutCashTendered('')
       setSplitCashAmt('')
-      setSplitUsdAmt('')
     } else {
       setCheckoutStep(null)
     }
   }
 
-  const handleCompleteCheckout = async () => {
-    let cashAmt = 0, usdAmt = 0, cashTendered = 0, changeGiven = 0
-
-    if (paymentMethod === 'Cash') {
-      const validation = validateCurrency(checkoutCashTendered, 'Cash amount')
-      if (!validation.valid) { flash(validation.error); return }
-      cashTendered = parseFloat(checkoutCashTendered)
-      if (cashTendered < cartTotal) { flash('Insufficient cash tendered'); return }
-      cashAmt = cartTotal
-      usdAmt = 0
-      changeGiven = Math.max(0, cashTendered - cartTotal)
-    } else if (paymentMethod === 'USD') {
-      const validation = validateCurrency(checkoutCashTendered, 'USD amount')
-      if (!validation.valid) { flash(validation.error); return }
-      cashTendered = parseFloat(checkoutCashTendered)
-      if (cashTendered < cartTotal) { flash('Insufficient USD tendered'); return }
-      usdAmt = cartTotal
-      cashAmt = 0
-      changeGiven = Math.max(0, cashTendered - cartTotal)
-    } else {
-      // Split
-      const c = parseFloat(splitCashAmt) || 0
-      const u = parseFloat(splitUsdAmt) || 0
-      if (Math.abs(c + u - cartTotal) > 0.005) { flash(`Split amounts must total $${cartTotal.toFixed(2)}`); return }
-      cashAmt = c
-      usdAmt = u
-      cashTendered = c + u
-      changeGiven = 0
+  const finaliseSale = async (method, cashTendered, changeGiven, cashPortion = null, transferPortion = null) => {
+    const paymentData = {
+      payment_method: method,
+      cash_amount: cashPortion !== null ? cashPortion : cartTotal,
+      usd_amount: transferPortion !== null ? transferPortion : 0,
+      cash_tendered: cashTendered,
+      change_given: changeGiven,
+    }
+    const saleBase = {
+      cashier: user.username,
+      total: cartTotal,
+      shift_id: currentShift?.id || null,
+      ...paymentData,
     }
 
+    let saleId
+    if (recalledSaleId) {
+      saleId = await completeHeldSale(recalledSaleId, paymentData, currentShift?.id || null)
+      setRecalledSaleId(null)
+    } else {
+      saleId = await addSale(saleBase, cart)
+    }
+
+    let receiptData = { ...saleBase, id: saleId, items: cart, created_at: new Date().toISOString() }
+    try {
+      const lastReceipt = await getLastReceiptNumber()
+      const receiptNumber = generateReceiptNumber(getNextReceiptCounter(lastReceipt))
+      await updateSaleReceiptNumber(saleId, receiptNumber)
+      receiptData = { ...receiptData, receipt_number: receiptNumber }
+    } catch { /* don't block on receipt number failure */ }
+
+    setLastSale({ id: saleId, total: cartTotal, change: changeGiven, paymentMethod: method, timestamp: new Date() })
+    setShowConfirmation(true)
+    setCheckoutStep(null)
+    setCheckoutCashTendered('')
+    setSplitCashAmt('')
+    setCart([])
+    setSearch('')
+    loadProducts()
+    loadHeldSales()
+
+    if (printerSettings?.auto_print && shopInfo) {
+      const printOpts = { printerName: printerSettings.printer_name || '', portPath: printerSettings.printer_port || '' }
+      printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: false }).catch(() => {})
+      if (printerSettings.print_duplicate === 1) {
+        printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: true }).catch(() => {})
+      }
+    }
+  }
+
+  // Cash payment — validates tendered amount
+  const handleCompleteCheckout = async () => {
+    const validation = validateCurrency(checkoutCashTendered, 'Cash amount')
+    if (!validation.valid) { flash(validation.error); return }
+    const tendered = parseFloat(checkoutCashTendered)
+    if (tendered < cartTotal) { flash('Insufficient cash tendered'); return }
     setIsProcessing(true)
     try {
-      const paymentData = {
-        payment_method: paymentMethod,
-        cash_amount: cashAmt,
-        usd_amount: usdAmt,
-        cash_tendered: cashTendered,
-        change_given: changeGiven,
-      }
-      const saleBase = {
-        cashier: user.username,
-        total: cartTotal,
-        shift_id: currentShift?.id || null,
-        ...paymentData,
-      }
+      await finaliseSale('Cash', tendered, Math.max(0, tendered - cartTotal))
+    } catch { flash('Failed to complete sale') }
+    finally { setIsProcessing(false) }
+  }
 
-      let saleId
-      if (recalledSaleId) {
-        saleId = await completeHeldSale(recalledSaleId, paymentData, currentShift?.id || null)
-        setRecalledSaleId(null)
-      } else {
-        saleId = await addSale(saleBase, cart)
-      }
+  // Transfer — no tendering required
+  const handleCompleteCheckoutDirect = async (method) => {
+    setIsProcessing(true)
+    try {
+      await finaliseSale(method, cartTotal, 0)
+    } catch { flash('Failed to complete sale') }
+    finally { setIsProcessing(false) }
+  }
 
-      // Build receipt data + assign receipt number
-      let receiptData = { ...saleBase, id: saleId, items: cart, created_at: new Date().toISOString() }
-      try {
-        const lastReceipt = await getLastReceiptNumber()
-        const receiptNumber = generateReceiptNumber(getNextReceiptCounter(lastReceipt))
-        await updateSaleReceiptNumber(saleId, receiptNumber)
-        receiptData = { ...receiptData, receipt_number: receiptNumber }
-      } catch { /* don't block on receipt number failure */ }
-
-      // ── Update UI immediately — sale is done ──
-      setLastSale({ id: saleId, total: cartTotal, change: changeGiven, paymentMethod, timestamp: new Date() })
-      setShowConfirmation(true)
-      setCheckoutStep(null)
-      setCheckoutCashTendered('')
-      setSplitCashAmt('')
-      setSplitUsdAmt('')
-      setCart([])
-      setSearch('')
-      loadProducts()
-      loadHeldSales()
-
-      // ── Print in background after UI is already updated ──
-      if (printerSettings?.auto_print && shopInfo) {
-        const printOpts = { printerName: printerSettings.printer_name || '', portPath: printerSettings.printer_port || '' }
-        printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: false }).catch(() => {})
-        if (printerSettings.print_duplicate === 1) {
-          printReceipt(receiptData, shopInfo, { ...printOpts, isDuplicate: true }).catch(() => {})
-        }
-      }
+  // Split — cash portion entered, transfer covers the rest
+  const handleCompleteSplitCheckout = async () => {
+    const cash = parseFloat(splitCashAmt)
+    if (isNaN(cash) || cash <= 0) { flash('Enter the cash amount'); return }
+    if (cash >= cartTotal) { flash('Cash covers the full amount — use Cash payment instead'); return }
+    const transfer = parseFloat((cartTotal - cash).toFixed(2))
+    setIsProcessing(true)
+    try {
+      await finaliseSale('Split', cash, 0, cash, transfer)
     } catch { flash('Failed to complete sale') }
     finally { setIsProcessing(false) }
   }
@@ -612,11 +613,6 @@ function Sales() {
   const changeAmount   = Math.max(0, tenderedNum - cartTotal)
   const isInsufficient = checkoutCashTendered !== '' && tenderedNum < cartTotal
 
-  // Split validation
-  const splitCash = parseFloat(splitCashAmt) || 0
-  const splitUsd  = parseFloat(splitUsdAmt)  || 0
-  const splitTotal = splitCash + splitUsd
-  const splitValid = Math.abs(splitTotal - cartTotal) < 0.005
 
   if (loading) {
     return (
@@ -981,35 +977,47 @@ function Sales() {
         </div>
       </div>
 
-      {/* ── Step 1: Payment method select ── */}
+      {/* ── Payment method selection ── */}
       {checkoutStep === 'paymentSelect' && (
-        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) setCheckoutStep(null) }}>
+        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
           <div className="pay-modal">
-            <div className="pay-modal-top">
-              <div className="pay-modal-label">Amount Due</div>
+            <div className="pay-modal-top pay-modal-top--cash">
+              <div className="pay-modal-label">Select Payment Method</div>
               <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
             </div>
             <div className="pay-modal-body">
-              <div className="pay-method-label">Select Payment Method</div>
+              <div className="pay-method-label">How is the customer paying?</div>
               <div className="pay-method-row">
-                <button className="pay-method-btn pay-method-cash" onClick={() => handleSelectPaymentMethod('Cash')}>
-                  <span className="pay-method-icon">💵</span>
-                  <span className="pay-method-name">Cash</span>
-                  <span className="pay-method-sub">ZWG / Local</span>
+                <button
+                  className="pay-method-btn pay-method-cash"
+                  onClick={() => handleSelectPaymentMethod('Cash')}
+                  disabled={isProcessing}
+                >
+                  <div className="pay-method-icon"><FiBriefcase size={26} color="#16a34a" /></div>
+                  <div className="pay-method-name">Cash</div>
+                  <div className="pay-method-sub">Count change</div>
                 </button>
-                <button className="pay-method-btn pay-method-usd" onClick={() => handleSelectPaymentMethod('USD')}>
-                  <span className="pay-method-icon">💲</span>
-                  <span className="pay-method-name">USD</span>
-                  <span className="pay-method-sub">US Dollars</span>
+                <button
+                  className="pay-method-btn pay-method-transfer"
+                  onClick={() => handleSelectPaymentMethod('Transfer')}
+                  disabled={isProcessing}
+                >
+                  <div className="pay-method-icon"><FiCreditCard size={26} color="#1d4ed8" /></div>
+                  <div className="pay-method-name">Transfer</div>
+                  <div className="pay-method-sub">EcoCash / Card</div>
                 </button>
-                <button className="pay-method-btn pay-method-split" onClick={() => handleSelectPaymentMethod('Split')}>
-                  <span className="pay-method-icon">⚡</span>
-                  <span className="pay-method-name">Split</span>
-                  <span className="pay-method-sub">Cash + USD</span>
+                <button
+                  className="pay-method-btn pay-method-split"
+                  onClick={() => handleSelectPaymentMethod('Split')}
+                  disabled={isProcessing}
+                >
+                  <div className="pay-method-icon"><FiSmartphone size={26} color="#b45309" /></div>
+                  <div className="pay-method-name">Split</div>
+                  <div className="pay-method-sub">Cash + Transfer</div>
                 </button>
               </div>
               <div className="pay-actions" style={{ marginTop: 16 }}>
-                <button className="pay-cancel-btn" onClick={() => setCheckoutStep(null)}>
+                <button className="pay-cancel-btn" onClick={handleBackNavigation} style={{ width: '100%' }}>
                   <FiChevronLeft size={15} /> Cancel
                 </button>
               </div>
@@ -1018,126 +1026,66 @@ function Sales() {
         </div>
       )}
 
-      {/* ── Step 2: Amount entry ── */}
+      {/* ── Cash tendered ── */}
       {checkoutStep === 'cashTendered' && (
         <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
           <div className="pay-modal">
-            <div className={`pay-modal-top pay-modal-top--${paymentMethod.toLowerCase()}`}>
-              <div className="pay-modal-label">
-                {paymentMethod === 'Cash' ? 'Cash Payment' : paymentMethod === 'USD' ? 'USD Payment' : 'Split Payment'}
-              </div>
+            <div className="pay-modal-top pay-modal-top--cash">
+              <div className="pay-modal-label">Cash Payment</div>
               <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
             </div>
 
             <div className="pay-modal-body">
-              {paymentMethod !== 'Split' ? (
-                <>
-                  {/* Quick amount buttons */}
-                  <div className="pay-quick-label">Quick {paymentMethod === 'USD' ? 'USD' : 'Cash'}</div>
-                  <div className="pay-quick-row">
-                    {quickAmounts.map(({ label, value, isExact }) => (
-                      <button
-                        key={label}
-                        className={`pay-quick-btn ${isExact ? 'exact' : ''}`}
-                        onClick={() => setCheckoutCashTendered(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+              {/* Quick amount buttons */}
+              <div className="pay-quick-label">Quick Cash</div>
+              <div className="pay-quick-row">
+                {quickAmounts.map(({ label, value, isExact }) => (
+                  <button
+                    key={label}
+                    className={`pay-quick-btn ${isExact ? 'exact' : ''}`}
+                    onClick={() => setCheckoutCashTendered(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-                  <div className="pay-input-label">{paymentMethod === 'USD' ? 'USD Tendered' : 'Cash Tendered'}</div>
-                  <div className="pay-input-wrap">
-                    <span className="pay-input-symbol">$</span>
-                    <input
-                      ref={cashInputRef}
-                      type="number"
-                      className="pay-cash-input"
-                      placeholder="0.00"
-                      value={checkoutCashTendered}
-                      onChange={e => setCheckoutCashTendered(e.target.value)}
-                      onClick={e => e.target.select()}
-                      step="any"
-                      min="0"
-                    />
-                  </div>
+              <div className="pay-input-label">Cash Tendered</div>
+              <div className="pay-input-wrap">
+                <span className="pay-input-symbol">$</span>
+                <input
+                  ref={cashInputRef}
+                  type="number"
+                  className="pay-cash-input"
+                  placeholder="0.00"
+                  value={checkoutCashTendered}
+                  onChange={e => setCheckoutCashTendered(e.target.value)}
+                  onClick={e => e.target.select()}
+                  step="any"
+                  min="0"
+                />
+              </div>
 
-                  {checkoutCashTendered !== '' && (
-                    <div className={`pay-change ${isInsufficient ? 'insufficient' : ''}`}>
-                      <span className="pay-change-label">{isInsufficient ? 'Short by' : 'Change'}</span>
-                      <span className="pay-change-value">
-                        {isInsufficient
-                          ? `$${(cartTotal - tenderedNum).toFixed(2)}`
-                          : `$${changeAmount.toFixed(2)}`}
-                      </span>
-                    </div>
-                  )}
-                </>
-              ) : (
-                /* Split payment inputs */
-                <>
-                  <div className="pay-split-hint">Enter amounts that add up to <strong>${cartTotal.toFixed(2)}</strong></div>
-                  <div className="pay-split-row">
-                    <div className="pay-split-field">
-                      <div className="pay-input-label">Cash (ZWG)</div>
-                      <div className="pay-input-wrap">
-                        <span className="pay-input-symbol">$</span>
-                        <input
-                          ref={cashInputRef}
-                          type="number"
-                          className="pay-cash-input"
-                          placeholder="0.00"
-                          value={splitCashAmt}
-                          onChange={e => setSplitCashAmt(e.target.value)}
-                          onClick={e => e.target.select()}
-                          step="any"
-                          min="0"
-                        />
-                      </div>
-                    </div>
-                    <div className="pay-split-field">
-                      <div className="pay-input-label">USD</div>
-                      <div className="pay-input-wrap">
-                        <span className="pay-input-symbol">$</span>
-                        <input
-                          type="number"
-                          className="pay-cash-input"
-                          placeholder="0.00"
-                          value={splitUsdAmt}
-                          onChange={e => setSplitUsdAmt(e.target.value)}
-                          onClick={e => e.target.select()}
-                          step="any"
-                          min="0"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <div className={`pay-change ${splitCashAmt || splitUsdAmt ? (splitValid ? '' : 'insufficient') : ''}`}>
-                    <span className="pay-change-label">Total entered</span>
-                    <span className="pay-change-value">
-                      ${splitTotal.toFixed(2)}
-                      {(splitCashAmt || splitUsdAmt) && (splitValid
-                        ? <span style={{ marginLeft: 6, color: '#4caf50', fontSize: 12 }}>✓</span>
-                        : <span style={{ marginLeft: 6, color: '#f44336', fontSize: 12 }}> (need ${cartTotal.toFixed(2)})</span>
-                      )}
-                    </span>
-                  </div>
-                </>
+              {checkoutCashTendered !== '' && (
+                <div className={`pay-change ${isInsufficient ? 'insufficient' : ''}`}>
+                  <span className="pay-change-label">{isInsufficient ? 'Short by' : 'Change'}</span>
+                  <span className="pay-change-value">
+                    {isInsufficient
+                      ? `$${(cartTotal - tenderedNum).toFixed(2)}`
+                      : `$${changeAmount.toFixed(2)}`}
+                  </span>
+                </div>
               )}
 
               {/* Actions */}
               <div className="pay-actions">
                 <button className="pay-cancel-btn" onClick={handleBackNavigation}>
-                  <FiChevronLeft size={15} /> Back
+                  <FiChevronLeft size={15} /> Cancel
                 </button>
                 <button
                   className="pay-complete-btn"
                   onClick={() => handleCompleteCheckout()}
-                  disabled={
-                    isProcessing ||
-                    (paymentMethod !== 'Split' && (!checkoutCashTendered || isInsufficient)) ||
-                    (paymentMethod === 'Split' && !splitValid)
-                  }
+                  disabled={isProcessing || !checkoutCashTendered || isInsufficient}
                 >
                   {isProcessing ? 'Processing…' : 'Complete Sale'}
                   {!isProcessing && <span className="pay-enter-hint">↵</span>}
@@ -1148,6 +1096,61 @@ function Sales() {
         </div>
       )}
 
+      {/* ── Split tendered ── */}
+      {checkoutStep === 'splitTendered' && (() => {
+        const cash = parseFloat(splitCashAmt) || 0
+        const transfer = parseFloat((cartTotal - cash).toFixed(2))
+        const splitValid = cash > 0 && cash < cartTotal
+        return (
+          <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
+            <div className="pay-modal">
+              <div className="pay-modal-top pay-modal-top--split">
+                <div className="pay-modal-label">Split Payment</div>
+                <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
+              </div>
+              <div className="pay-modal-body">
+                <div className="pay-input-label">Cash Amount</div>
+                <div className="pay-input-wrap">
+                  <span className="pay-input-symbol">$</span>
+                  <input
+                    type="number"
+                    className="pay-cash-input"
+                    placeholder="0.00"
+                    value={splitCashAmt}
+                    onChange={e => setSplitCashAmt(e.target.value)}
+                    onClick={e => e.target.select()}
+                    step="any"
+                    min="0"
+                    autoFocus
+                  />
+                </div>
+                {splitCashAmt !== '' && (
+                  <div className="pay-change" style={{ color: splitValid ? '#1d4ed8' : '#dc2626' }}>
+                    <span className="pay-change-label">
+                      {cash <= 0 ? 'Enter cash amount' : cash >= cartTotal ? 'Use Cash payment instead' : 'Transfer'}
+                    </span>
+                    {splitValid && <span className="pay-change-value">${transfer.toFixed(2)}</span>}
+                  </div>
+                )}
+                <div className="pay-actions">
+                  <button className="pay-cancel-btn" onClick={handleBackNavigation}>
+                    <FiChevronLeft size={15} /> Back
+                  </button>
+                  <button
+                    className="pay-complete-btn"
+                    onClick={handleCompleteSplitCheckout}
+                    disabled={isProcessing || !splitValid}
+                  >
+                    {isProcessing ? 'Processing…' : 'Complete Sale'}
+                    {!isProcessing && <span className="pay-enter-hint">↵</span>}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* ── Sale success flash ── */}
       {showConfirmation && lastSale && (
         <div className="sale-success-overlay">
@@ -1157,7 +1160,11 @@ function Sales() {
             </div>
             <div className="sale-success-title">Sale Complete!</div>
             <div className="sale-success-pay-badge">
-              {lastSale.paymentMethod === 'USD' ? '💲 USD' : lastSale.paymentMethod === 'Split' ? '⚡ Split' : '💵 Cash'}
+              {lastSale.paymentMethod === 'Transfer'
+                ? <><FiCreditCard size={12} /> Transfer</>
+                : lastSale.paymentMethod === 'Split'
+                  ? <><FiSmartphone size={12} /> Split</>
+                  : <><FiBriefcase size={12} /> Cash</>}
             </div>
             <div className="sale-success-amounts">
               <div className="sale-success-amount">

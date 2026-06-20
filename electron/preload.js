@@ -174,6 +174,9 @@ contextBridge.exposeInMainWorld('stocka', {
     getAll:          ()    => invoke('domain:notifications:getAll'),
     clearForProduct: (id)  => invoke('domain:notifications:clearForProduct', id),
     markRead:        (id)  => invoke('domain:notifications:markRead', id),
+    markAllRead:     ()    => invoke('domain:notifications:markAllRead'),
+    delete:          (id)  => invoke('domain:notifications:delete', id),
+    deleteAllRead:   ()    => invoke('domain:notifications:deleteAllRead'),
   },
 
   // ── REPORTS ───────────────────────────────────────────────

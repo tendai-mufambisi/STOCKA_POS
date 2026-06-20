@@ -25,6 +25,7 @@ function getStatus() {
   const isRunning = _server !== null && _server.listening
   const clients = getConnectedClients()
   const clientStatus = _clientMod ? _clientMod.getClientStatus() : null
+  const rawQueue = _queue ? _queue.peek() : []
   return {
     mode:        cfg.mode,
     isRunning,
@@ -32,7 +33,8 @@ function getStatus() {
     port:        cfg.serverPort || DEFAULT_PORT,
     clientCount: clients.length,
     clients,
-    queueSize:   _queue ? _queue.size() : 0,
+    queueSize:   rawQueue.length,
+    queueItems:  rawQueue.map(item => ({ id: item.id, channel: item.channel, timestamp: item.timestamp })),
     serverIp:    cfg.serverIp || null,
     clientOnline: clientStatus?.online ?? null,
     lastSync:    clientStatus?.lastSync ?? null,

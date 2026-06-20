@@ -136,7 +136,7 @@ export const formatReceiptForPosPrinter = (receiptData, shopInfo = {}, isDuplica
 
     {
       type: 'text',
-      value: `Payment: ${receiptData.payment_method || 'USD Cash'}`,
+      value: `Payment: ${receiptData.payment_method || 'Cash'}`,
       options: { align: 'center' }
     },
 

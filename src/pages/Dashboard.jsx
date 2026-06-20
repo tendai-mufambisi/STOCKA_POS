@@ -30,6 +30,7 @@ import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
 import ShiftForceClosedModal from '../components/ShiftForceClosedModal'
 import EodClosedModal from '../components/EodClosedModal'
+import SignOutModal from '../components/SignOutModal'
 import { useShiftGuard } from '../hooks/useShiftGuard'
 
 import {
@@ -53,7 +54,8 @@ import {
   FiArrowRight,
   FiUsers,
   FiList,
-  FiFileText
+  FiFileText,
+  FiX
 } from 'react-icons/fi'
 
 
@@ -68,7 +70,7 @@ function Dashboard() {
   const [shopSettings, setShopSettings] = useState(null)
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [showSignOutModal, setShowSignOutModal] = useState(false)
 
   // App update state
   const [updateInfo, setUpdateInfo] = useState(null)   // { version, releaseCount }
@@ -133,7 +135,7 @@ function Dashboard() {
     try {
       const shift = await getCurrentShift(user?.username)
       setCurrentShift(shift)
-      if (!shift && user?.role?.toLowerCase() === 'cashier') {
+      if (!shift) {
         setShowOpeningFloatModal(true)
       }
     } catch (err) {
@@ -145,11 +147,6 @@ function Dashboard() {
     getShop().then(s => setShopSettings(s)).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    if (!showLogoutConfirm) return
-    const t = setTimeout(() => setShowLogoutConfirm(false), 6000)
-    return () => clearTimeout(t)
-  }, [showLogoutConfirm])
 
   const handleOpeningFloatSubmit = async (floatData) => {
     setIsStartingShift(true)
@@ -164,9 +161,6 @@ function Dashboard() {
     }
   }
 
-  const handleOpeningFloatCancel = () => {
-    setShowOpeningFloatModal(false)
-  }
 
   const handleCloseShiftClick = async () => {
     if (!currentShift) return
@@ -179,8 +173,12 @@ function Dashboard() {
       const summary = await getShiftSummary(currentShift.id)
       enriched = {
         ...currentShift,
-        total_sales_value: summary.total_sales,
+        total_sales:       summary.total_sales,
+        cash_sales:        summary.cash_sales,
+        transfer_sales:    summary.transfer_sales,
         total_expenses:    summary.total_expenses,
+        expected_cash:     summary.expected_cash,
+        expected_transfer: summary.expected_transfer,
       }
     } catch { /* fall back to raw shift if summary fails */ }
     setClosingShiftData(enriched)
@@ -206,19 +204,12 @@ function Dashboard() {
     setShowClosingFloatModal(false)
   }
 
-  const handleLogout = () => {
-    performLogout()
-  }
-
   const performLogout = async () => {
     try {
-      // If user is a cashier with an active shift, close it first
-      if (user?.role === 'Cashier' && user?.current_shift_id) {
+      // Close any active shift on logout (all roles)
+      if (user?.current_shift_id) {
         try {
-          // Close the shift with zero cash (will be auto-calculated as short)
-          const closingFloat = {
-            closing_cash: 0
-          }
+          const closingFloat = { closing_cash: 0 }
           await closeShift(user.current_shift_id, closingFloat, 'Shift auto-closed on logout')
         } catch (err) {
           console.warn('Could not close shift on logout:', err)
@@ -381,7 +372,6 @@ function Dashboard() {
       case 'credit-card': return <FiCreditCard {...iconProps} />
       case 'bar-chart-2': return <FiBarChart2 {...iconProps} />
       case 'clock': return <FiClock {...iconProps} />
-      case 'map-pin': return <FiMapPin {...iconProps} />
       case 'calendar': return <FiCalendar {...iconProps} />
       case 'settings': return <FiSettings {...iconProps} />
       case 'list': return <FiList {...iconProps} />
@@ -535,7 +525,7 @@ function Dashboard() {
   return (
     <div className="dashboard-layout">
       <aside
-        className={`sidebar ${(sidebarExpanded || showLogoutConfirm) ? 'expanded' : 'collapsed'}`}
+        className={`sidebar ${sidebarExpanded ? 'expanded' : 'collapsed'}`}
         onMouseEnter={() => setSidebarExpanded(true)}
         onMouseLeave={() => { setSidebarExpanded(false) }}
       >
@@ -601,44 +591,14 @@ function Dashboard() {
           <LanStatusBar />
 
           <div className="footer-actions">
-            {currentShift && !showLogoutConfirm && (
-              <button
-                className="footer-action-btn shift-btn"
-                onClick={handleCloseShiftClick}
-                disabled={isClosingShift}
-                title={!sidebarExpanded ? (isClosingShift ? 'Closing shift…' : 'Close My Shift') : ''}
-              >
-                <span className="footer-btn-icon"><FiLogOut size={18} /></span>
-                <span className="btn-label">{isClosingShift ? 'Closing…' : 'Close Shift'}</span>
-              </button>
-            )}
-            {showLogoutConfirm ? (
-              <div className="logout-confirm">
-                <span className="logout-confirm-text">
-                  {currentShift ? 'Close shift or sign out?' : 'Sign out?'}
-                </span>
-                <div className="logout-confirm-btns">
-                  {currentShift && (
-                    <button className="lc-btn lc-shift" onClick={() => { setShowLogoutConfirm(false); handleCloseShiftClick() }}>
-                      Close Shift
-                    </button>
-                  )}
-                  <button className="lc-btn lc-out" onClick={() => { setShowLogoutConfirm(false); handleLogout() }}>
-                    Sign Out
-                  </button>
-                  <button className="lc-btn lc-cancel" onClick={() => setShowLogoutConfirm(false)}>✕</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                className="footer-action-btn logout-btn"
-                onClick={() => setShowLogoutConfirm(true)}
-                title={!sidebarExpanded ? 'Sign Out' : ''}
-              >
-                <span className="footer-btn-icon"><FiLogOut size={18} /></span>
-                <span className="btn-label">Sign Out</span>
-              </button>
-            )}
+            <button
+              className="footer-action-btn logout-btn"
+              onClick={() => setShowSignOutModal(true)}
+              title={!sidebarExpanded ? 'Sign Out' : ''}
+            >
+              <span className="footer-btn-icon"><FiLogOut size={18} /></span>
+              <span className="btn-label">Sign Out</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -731,8 +691,16 @@ function Dashboard() {
         <OpeningFloatModal
           user={user}
           onConfirm={handleOpeningFloatSubmit}
-          onCancel={handleOpeningFloatCancel}
           isLoading={isStartingShift}
+        />
+      )}
+
+      {showSignOutModal && (
+        <SignOutModal
+          hasShift={!!currentShift}
+          onCloseShift={() => { setShowSignOutModal(false); handleCloseShiftClick() }}
+          onSignOutOnly={() => { setShowSignOutModal(false); performLogout() }}
+          onStay={() => setShowSignOutModal(false)}
         />
       )}
       {showClosingFloatModal && (closingShiftData || currentShift) && (
@@ -754,6 +722,7 @@ function Dashboard() {
           date={eodClosed.date}
           closedBy={eodClosed.closedBy}
           onDismiss={() => setEodClosed(null)}
+          onCloseShift={currentShift ? () => { setEodClosed(null); handleCloseShiftClick() } : null}
         />
       )}
     </div>
@@ -1063,7 +1032,7 @@ function ComingSoon({ page }) {
 
   return (
     <div className="coming-soon">
-      <div className="coming-icon">{renderIcon('plus', 64)}</div>
+      <div className="coming-icon"><FiPlus size={64} /></div>
       <h2>{labels[page] || page}</h2>
       <p>This module is being built. Check back soon!</p>
     </div>

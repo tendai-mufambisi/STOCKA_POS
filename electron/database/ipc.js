@@ -157,6 +157,9 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:notifications:getAll',          h('domain:notifications:getAll',          notifications.getAllNotifications))
   ipcMain.handle('domain:notifications:clearForProduct', h('domain:notifications:clearForProduct', notifications.clearNotificationsForProduct))
   ipcMain.handle('domain:notifications:markRead',        h('domain:notifications:markRead',        notifications.markNotificationAsRead))
+  ipcMain.handle('domain:notifications:markAllRead',     h('domain:notifications:markAllRead',     notifications.markAllNotificationsAsRead))
+  ipcMain.handle('domain:notifications:delete',          h('domain:notifications:delete',          notifications.deleteNotification))
+  ipcMain.handle('domain:notifications:deleteAllRead',   h('domain:notifications:deleteAllRead',   notifications.deleteAllReadNotifications))
 
   // ── REPORTS ──
   ipcMain.handle('domain:reports:getDashboard',        h('domain:reports:getDashboard',        reports.getDashboardStats))

@@ -190,7 +190,7 @@ export const validateUsername = (username) => {
     return { valid: false, error: 'Username must be at least 3 characters' }
   }
   
-  if (!/^[a-zA-Z0-9_\-]+$/.test(username)) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
     return { valid: false, error: 'Username can only contain letters, numbers, underscores, and hyphens' }
   }
   
@@ -205,7 +205,7 @@ export const validateUsername = (username) => {
 export const validatePhone = (phone) => {
   if (!phone) return { valid: true, error: '' } // Allow empty if not required
   
-  const phoneRegex = /^[\d\-\+\s\(\)]{7,}$/
+  const phoneRegex = /^[\d\-+\s()]{7,}$/
   if (!phoneRegex.test(phone)) {
     return { valid: false, error: 'Please enter a valid phone number' }
   }

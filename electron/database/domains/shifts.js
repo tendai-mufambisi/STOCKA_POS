@@ -10,20 +10,18 @@ function getShiftById(shiftId) {
 function startShift(userData, openingFloat, branchId = null) {
   const db = getDb()
   const openingCash = typeof openingFloat === 'object'
-    ? (openingFloat.opening_cash ?? openingFloat.opening_usd_cash ?? 0)
+    ? (openingFloat.opening_cash ?? 0)
     : (parseFloat(openingFloat) || 0)
-  const openingUsd = typeof openingFloat === 'object'
-    ? (openingFloat.opening_usd ?? 0)
-    : 0
 
   const startedAt = new Date().toISOString()
   const { lastInsertRowid: shiftId } = db.prepare(
-    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at) VALUES (?, ?, ?, 'open', ?, ?, ?)`
-  ).run(userData.username, userData.name || userData.username, branchId, openingCash, openingUsd, startedAt)
+    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at)
+     VALUES (?, ?, ?, 'open', ?, 0, ?)`
+  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt)
 
   if (!shiftId) throw new Error('Failed to get shift ID after insert')
   db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
-  try { logAuditAction(userData.username, 'SHIFT_OPENED', 'SHIFT', String(shiftId), `Shift opened — Cash: $${openingCash.toFixed(2)}, USD: $${openingUsd.toFixed(2)}`) } catch (_) {}
+  try { logAuditAction(userData.username, 'SHIFT_OPENED', 'SHIFT', String(shiftId), `Shift opened — Opening float: $${openingCash.toFixed(2)}`) } catch (_) {}
   return getShiftById(shiftId)
 }
 
@@ -38,61 +36,49 @@ function closeShift(shiftId, closingFloat, notes = '') {
   const shift = getShiftById(shiftId)
   if (!shift) throw new Error('Shift not found')
 
-  // Always compute from actual DB rows — never rely on the denormalized counter
   const salesTotal = db.prepare(
     `SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
   ).get(shiftId)?.total || 0
 
-  // Payment-method-specific sales totals
-  const cashSalesTotal = db.prepare(
-    `SELECT COALESCE(SUM(cash_amount), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
-  ).get(shiftId)?.total || 0
-  const usdSalesTotal = db.prepare(
-    `SELECT COALESCE(SUM(usd_amount), 0) as total FROM sales WHERE shift_id = ? AND status = 'completed'`
+  const expensesTotal = db.prepare(
+    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`
   ).get(shiftId)?.total || 0
 
-  // Expenses split by payment method
-  const cashExpenses = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ? AND (payment_method = 'Cash' OR payment_method IS NULL OR payment_method = '')`
-  ).get(shiftId)?.total || 0
-  const usdExpenses = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ? AND payment_method = 'USD'`
-  ).get(shiftId)?.total || 0
+  // Only cash-received amounts count toward expected cash in drawer
+  const cashSalesOnly = db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as t FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Cash'`
+  ).get(shiftId)?.t || 0
+  const splitCashPortion = db.prepare(
+    `SELECT COALESCE(SUM(cash_amount), 0) as t FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
+  ).get(shiftId)?.t || 0
 
   const closingCash = typeof closingFloat === 'object'
     ? (closingFloat.closing_cash || 0)
     : (parseFloat(closingFloat) || 0)
-  const closingUsd = typeof closingFloat === 'object'
-    ? (closingFloat.closing_usd || 0)
-    : 0
 
-  const expectedCash = (shift.opening_cash || 0) + cashSalesTotal - cashExpenses
-  const expectedUsd  = (shift.opening_usd  || 0) + usdSalesTotal  - usdExpenses
-
-  const cashVariance = closingCash - expectedCash
-  const usdVariance  = closingUsd  - expectedUsd
-  const totalVariance = cashVariance + usdVariance
+  const expectedCash = (shift.opening_cash || 0) + cashSalesOnly + splitCashPortion - expensesTotal
+  const variance = closingCash - expectedCash
 
   let reconciliationStatus = 'balanced'
-  if (Math.abs(totalVariance) > 0.01) reconciliationStatus = totalVariance > 0 ? 'over' : 'short'
+  if (Math.abs(variance) > 0.01) reconciliationStatus = variance > 0 ? 'over' : 'short'
 
   const closedAt = new Date().toISOString()
   db.prepare(
-    `UPDATE shifts SET closing_cash = ?, closing_usd = ?, variance = ?, usd_variance = ?,
+    `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
      reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',
      total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed')
      WHERE id = ?`
-  ).run(closingCash, closingUsd, cashVariance, usdVariance, reconciliationStatus, notes, closedAt, salesTotal, shiftId, shiftId)
+  ).run(closingCash, variance, reconciliationStatus, notes, closedAt, salesTotal, shiftId, shiftId)
   db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
   try {
     logAuditAction(shift.cashier_username, 'SHIFT_CLOSED', 'SHIFT', String(shiftId),
-      `Shift closed — ${reconciliationStatus} (Cash variance: $${cashVariance.toFixed(2)}, USD variance: $${usdVariance.toFixed(2)})`)
+      `Shift closed — ${reconciliationStatus} (Variance: $${variance.toFixed(2)})`)
   } catch (_) {}
 
   const durationHours = (new Date(closedAt) - new Date(shift.started_at)) / (1000 * 60 * 60)
   try {
     createNotification({ type: 'SHIFT_CLOSED', message: `Cashier ${shift.cashier_username} closed shift — Status: ${reconciliationStatus.toUpperCase()}` })
-    if (totalVariance < -5) createNotification({ type: 'SHIFT_SHORTAGE', message: `⚠️ Cashier ${shift.cashier_username} short by $${Math.abs(totalVariance).toFixed(2)}` })
+    if (variance < -5) createNotification({ type: 'SHIFT_SHORTAGE', message: `⚠️ Cashier ${shift.cashier_username} short by $${Math.abs(variance).toFixed(2)}` })
     if (durationHours > 10) createNotification({ type: 'SHIFT_LONG', message: `⏱️ Cashier ${shift.cashier_username} on shift for ${Math.floor(durationHours)}h ${Math.round((durationHours % 1) * 60)}m` })
   } catch (_) {}
 
@@ -137,9 +123,7 @@ function getShiftSummary(shiftId) {
   const db = getDb()
 
   const salesRow = db.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total,
-            COALESCE(SUM(cash_amount), 0) as cash_total,
-            COALESCE(SUM(usd_amount), 0) as usd_total
+    `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total
      FROM sales WHERE shift_id = ? AND status = 'completed'`
   ).get(shiftId) || {}
   const heldRow = db.prepare(
@@ -148,31 +132,38 @@ function getShiftSummary(shiftId) {
   const expRow = db.prepare(
     `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ?`
   ).get(shiftId) || {}
-  const cashExpRow = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ? AND (payment_method = 'Cash' OR payment_method IS NULL OR payment_method = '')`
+
+  // ── Payment-method breakdown ──────────────────────────────
+  const cashSalesOnly = db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as t FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Cash'`
+  ).get(shiftId)?.t || 0
+
+  const transferSalesOnly = db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as t FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method IN ('Transfer','Swipe','EcoCash','USD')`
+  ).get(shiftId)?.t || 0
+
+  const splitRow = db.prepare(
+    `SELECT COALESCE(SUM(cash_amount), 0) as cash_part, COALESCE(SUM(usd_amount), 0) as transfer_part, COALESCE(SUM(total), 0) as total
+     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
   ).get(shiftId) || {}
-  const usdExpRow = db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE shift_id = ? AND payment_method = 'USD'`
-  ).get(shiftId) || {}
 
-  const salesTotal = salesRow.total || 0
-  const cashSalesTotal = salesRow.cash_total || 0
-  const usdSalesTotal  = salesRow.usd_total  || 0
-  const expensesTotal  = expRow.total || 0
-  const cashExpenses   = cashExpRow.total || 0
-  const usdExpenses    = usdExpRow.total  || 0
+  // Cash in drawer  = cash sales + cash portion of split sales
+  const cashSales     = cashSalesOnly + (splitRow.cash_part || 0)
+  // Transfer receipts = transfer sales + transfer portion of split sales
+  const transferSales = transferSalesOnly + (splitRow.transfer_part || 0)
 
-  const openingCash = shift.opening_cash || 0
-  const openingUsd  = shift.opening_usd  || 0
-  const closingCash = shift.closing_cash || 0
-  const closingUsd  = shift.closing_usd  || 0
+  const salesTotal    = salesRow.total || 0
+  const expensesTotal = expRow.total || 0
+  const openingCash   = shift.opening_cash || 0
+  const closingCash   = shift.closing_cash || 0
 
-  const expectedCash = openingCash + cashSalesTotal - cashExpenses
-  const expectedUsd  = openingUsd  + usdSalesTotal  - usdExpenses
+  // Expected cash in drawer accounts for cash-only payments
+  const expectedCash     = openingCash + cashSales - expensesTotal
+  // Expected transfer is purely electronic — informational
+  const expectedTransfer = transferSales
 
-  const cashVariance = shift.status === 'closed' ? (shift.variance    || 0) : (closingCash - expectedCash)
-  const usdVariance  = shift.status === 'closed' ? (shift.usd_variance || 0) : (closingUsd  - expectedUsd)
-  const balance = cashVariance + usdVariance
+  const variance = shift.status === 'closed' ? (shift.variance || 0) : (closingCash - expectedCash)
+  const balance  = variance
 
   const durationMinutes = shift.closed_at
     ? Math.floor((new Date(shift.closed_at) - new Date(shift.started_at)) / 60000)
@@ -180,29 +171,30 @@ function getShiftSummary(shiftId) {
 
   return {
     ...shift,
-    start_float:     openingCash,
-    start_float_usd: openingUsd,
-    end_float:       closingCash,
-    end_float_usd:   closingUsd,
-    expected_cash:   expectedCash,
-    expected_usd:    expectedUsd,
-    actual_cash:     closingCash,
-    actual_usd:      closingUsd,
-    cash_variance:   cashVariance,
-    usd_variance:    usdVariance,
+    start_float:        openingCash,
+    end_float:          closingCash,
+    // Payment breakdown
+    cash_sales:         cashSales,
+    transfer_sales:     transferSales,
+    // Expectations
+    expected_cash:      expectedCash,
+    expected_transfer:  expectedTransfer,
+    actual_cash:        closingCash,
+    cash_variance:      variance,
     balance,
-    total_sales:       salesTotal,
-    cash_sales:        cashSalesTotal,
-    usd_sales:         usdSalesTotal,
-    total_expenses:    expensesTotal,
-    cash_expenses:     cashExpenses,
-    usd_expenses:      usdExpenses,
+    // Totals
+    total_sales:        salesTotal,
+    total_expenses:     expensesTotal,
+    cash_expenses:      expensesTotal,
     sales: { count: salesRow.count || 0, total: salesTotal },
     expenses: { count: expRow.count || 0, total: expensesTotal },
-    held_count:      heldRow.count || 0,
-    sales_count:     salesRow.count || 0,
-    duration_minutes: durationMinutes,
-    is_balanced: Math.abs(balance) < 0.01
+    held_count:         heldRow.count || 0,
+    sales_count:        salesRow.count || 0,
+    duration_minutes:   durationMinutes,
+    is_balanced:        Math.abs(balance) < 0.01,
+    // Legacy zero fields kept for backward compat
+    start_float_usd: 0, end_float_usd: 0, expected_usd: 0, actual_usd: 0, usd_variance: 0,
+    usd_sales: 0, usd_expenses: 0,
   }
 }
 

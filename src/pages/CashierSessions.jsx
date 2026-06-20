@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react'
-import { getActiveShifts, getShiftById, getSalesByShift, getShiftSummary } from '../database/db'
+import { getActiveShifts, getSalesByShift, getShiftSummary } from '../database/db'
 import { useLanSync } from '../hooks/useLanSync'
 import './CashierSessions.css'
-import { FiClock, FiEye, FiRefreshCw, FiX, FiCheckCircle, FiAlertCircle, FiInfo } from 'react-icons/fi'
+import {
+  FiClock, FiEye, FiRefreshCw, FiX,
+  FiCheckCircle, FiAlertCircle, FiInfo,
+} from 'react-icons/fi'
 import ReceiptModal from '../components/ReceiptModal'
 
 function CashierSessions() {
@@ -57,7 +60,7 @@ function CashierSessions() {
   return (
     <div className="cashier-sessions">
       <div className="sessions-header">
-        <h1>Cashier Sessions</h1>
+        <h1>Active Sessions</h1>
         <div className="header-actions">
           <label>
             <input
@@ -78,50 +81,19 @@ function CashierSessions() {
           <div className="empty-state">
             <FiClock size={48} />
             <h2>No Active Sessions</h2>
-            <p>No cashiers are currently clocked in</p>
+            <p>No staff members are currently clocked in</p>
           </div>
         ) : (
           <div className="shifts-grid">
-            {activeShifts.map(shift => {
-              const totalExpected_usd = (shift.opening_cash || 0) + (shift.total_sales_value || 0)
-              return (
-                <div key={shift.id} className="shift-card active-card">
-                  <div className="card-header">
-                    <h3>{shift.cashier_display_name || shift.cashier_username}</h3>
-                    <span className="status-badge live"><span className="live-dot" />Live</span>
-                  </div>
-                  <div className="card-body">
-                    <div className="info-row">
-                      <span className="label">Started:</span>
-                      <span className="value">{formatTime(shift.started_at)}</span>
-                    </div>
-                    <div className="info-row">
-                      <span className="label">Duration:</span>
-                      <span className="value">{getShiftDuration(shift)}</span>
-                    </div>
-                    <div className="info-row">
-                      <span className="label">Transactions:</span>
-                      <span className="value">{shift.total_sales_count || 0}</span>
-                    </div>
-                    <div className="info-row">
-                      <span className="label">Total Sales:</span>
-                      <span className="value">${(shift.total_sales_value || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="payment-breakdown">
-                      <h4>USD Cash Expected:</h4>
-                      <div className="bd-amount">
-                        <div>${totalExpected_usd.toFixed(2)}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="card-footer">
-                    <button className="btn btn-primary btn-block" onClick={() => setSelectedShift(shift)}>
-                      <FiEye size={16} /> View Details
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
+            {activeShifts.map(shift => (
+              <ShiftCard
+                key={shift.id}
+                shift={shift}
+                formatTime={formatTime}
+                getShiftDuration={getShiftDuration}
+                onView={() => setSelectedShift(shift)}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -132,6 +104,53 @@ function CashierSessions() {
           onClose={() => setSelectedShift(null)}
         />
       )}
+    </div>
+  )
+}
+
+function ShiftCard({ shift, formatTime, getShiftDuration, onView }) {
+  const roleColor = { Admin: '#7c3aed', Manager: '#1d4ed8', Cashier: '#15803d' }[shift.cashier_role] || '#374151'
+
+  return (
+    <div className="shift-card active-card">
+      <div className="card-header">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <h3>{shift.cashier_display_name || shift.cashier_username}</h3>
+          {shift.cashier_role && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: roleColor }}>{shift.cashier_role}</span>
+          )}
+        </div>
+        <span className="status-badge live"><span className="live-dot" />Live</span>
+      </div>
+      <div className="card-body">
+        <div className="info-row">
+          <span className="label">Started:</span>
+          <span className="value">{formatTime(shift.started_at)}</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Duration:</span>
+          <span className="value">{getShiftDuration(shift)}</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Transactions:</span>
+          <span className="value">{shift.total_sales_count || 0}</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Total Sales:</span>
+          <span className="value">${(shift.total_sales_value || 0).toFixed(2)}</span>
+        </div>
+        <div className="payment-breakdown">
+          <h4>Opening Float</h4>
+          <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: '#16a34a' }}>
+            ${(shift.opening_cash || 0).toFixed(2)}
+          </div>
+        </div>
+      </div>
+      <div className="card-footer">
+        <button className="btn btn-primary btn-block" onClick={onView}>
+          <FiEye size={16} /> View Details
+        </button>
+      </div>
     </div>
   )
 }
@@ -158,12 +177,13 @@ function ShiftDetailModal({ shift, onClose }) {
     return new Date(dateString).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
   }
 
-  // Use balance from getShiftSummary (computed from actual sales rows, never stale)
-  const status = shiftData.reconciliation_status
-  const variance = shiftData.balance ?? shiftData.variance ?? 0
-  const isZero = Math.abs(variance) < 0.01
+  const status   = shiftData.reconciliation_status
+  const variance = shiftData.cash_variance ?? shiftData.variance ?? 0
 
-  const statusLabel = status === 'balanced'
+  const varClass = (v) => Math.abs(v) < 0.01 ? 'zero' : v > 0 ? 'positive' : 'negative'
+  const varSign  = (v) => v > 0 ? '+' : v < 0 ? '-' : ''
+
+  const statusLabel = !status ? '' : status === 'balanced'
     ? 'Balanced'
     : status === 'short'
       ? `Short — $${Math.abs(variance).toFixed(2)}`
@@ -178,7 +198,10 @@ function ShiftDetailModal({ shift, onClose }) {
         <div className="shift-modal-header">
           <div>
             <h2>Shift Report: {shiftData.cashier_display_name || shiftData.cashier_username}</h2>
-            <p>{new Date(shiftData.started_at).toLocaleDateString('en-ZA')}</p>
+            <p style={{ margin: 0, fontSize: 12, color: '#888' }}>
+              {shiftData.cashier_role && <strong style={{ marginRight: 8 }}>{shiftData.cashier_role}</strong>}
+              {new Date(shiftData.started_at).toLocaleDateString('en-ZA')}
+            </p>
           </div>
           <button className="shift-modal-close" onClick={onClose}><FiX size={16} /></button>
         </div>
@@ -207,19 +230,27 @@ function ShiftDetailModal({ shift, onClose }) {
           <table className="recon-table">
             <thead>
               <tr>
-                <th>Payment Method</th>
-                <th>Expected</th>
-                <th>Actual</th>
+                <th>Opening Float</th>
+                <th>Cash Sales</th>
+                <th>Transfer Sales</th>
+                <th>Expenses</th>
+                <th>Exp. Cash</th>
+                <th>Exp. Transfer</th>
+                <th>Counted</th>
                 <th>Variance</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>USD Cash</td>
-                <td>${(shiftData.expected_cash ?? (shiftData.opening_cash || 0) + (shiftData.total_sales_value || 0)).toFixed(2)}</td>
-                <td>${(shiftData.closing_cash || 0).toFixed(2)}</td>
-                <td className={`recon-variance ${isZero ? 'zero' : variance > 0 ? 'positive' : 'negative'}`}>
-                  {variance > 0 ? '+' : variance < 0 ? '-' : ''}${Math.abs(variance).toFixed(2)}
+                <td>${(shiftData.start_float ?? shiftData.opening_cash ?? 0).toFixed(2)}</td>
+                <td>${(shiftData.cash_sales ?? 0).toFixed(2)}</td>
+                <td style={{ color: '#1d4ed8' }}>${(shiftData.transfer_sales ?? 0).toFixed(2)}</td>
+                <td>${(shiftData.total_expenses ?? shiftData.cash_expenses ?? 0).toFixed(2)}</td>
+                <td>${(shiftData.expected_cash ?? 0).toFixed(2)}</td>
+                <td style={{ color: '#1d4ed8' }}>${(shiftData.expected_transfer ?? 0).toFixed(2)}</td>
+                <td>${(shiftData.actual_cash ?? shiftData.closing_cash ?? 0).toFixed(2)}</td>
+                <td className={`recon-variance ${varClass(variance)}`}>
+                  {varSign(variance)}${Math.abs(variance).toFixed(2)}
                 </td>
               </tr>
             </tbody>
@@ -227,7 +258,7 @@ function ShiftDetailModal({ shift, onClose }) {
 
           {shiftData.notes && (
             <div className="cashier-notes-box">
-              <span className="notes-label">Cashier Notes</span>
+              <span className="notes-label">Notes</span>
               <span className="notes-text">{shiftData.notes}</span>
             </div>
           )}
@@ -245,7 +276,7 @@ function ShiftDetailModal({ shift, onClose }) {
                 <div className="cs-txn-head">
                   <span>Receipt #</span>
                   <span>Time</span>
-                  <span>Items</span>
+                  <span>Method</span>
                   <span>Total</span>
                   <span />
                 </div>
@@ -255,7 +286,7 @@ function ShiftDetailModal({ shift, onClose }) {
                     <span className="cs-txn-time">
                       {new Date(sale.created_at).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    <span>{(sale.items || []).length} item{(sale.items || []).length !== 1 ? 's' : ''}</span>
+                    <span style={{ fontSize: 11 }}>{sale.payment_method || 'Cash'}</span>
                     <span className="cs-txn-total">${(sale.total || 0).toFixed(2)}</span>
                     <span className="cs-txn-eye"><FiEye size={14} /></span>
                   </div>

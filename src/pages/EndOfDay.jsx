@@ -39,7 +39,7 @@ export default function EndOfDay() {
   const [todaysRecord, setTodaysRecord] = useState(null)
   const [allRecords, setAllRecords] = useState([])
   const [shifts, setShifts]         = useState([])   // [{...shift, summary:{}}]
-  const [cashInputs, setCashInputs] = useState({})   // {shiftId: string}
+  const [cashInputs, setCashInputs] = useState({})     // {shiftId: string}
   const [notes, setNotes]           = useState('')
   const [closing, setClosing]       = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -76,14 +76,14 @@ export default function EndOfDay() {
 
       setShifts(withSummaries)
 
-      // Pre-fill cash inputs: open shifts get empty, closed shifts pre-fill with their closing_cash
-      const inputs = {}
+      // Pre-fill inputs for already-closed shifts
+      const cashIn = {}
       for (const s of withSummaries) {
         if (s.status === 'closed' && s.closing_cash != null) {
-          inputs[s.id] = s.closing_cash.toFixed(2)
+          cashIn[s.id] = s.closing_cash.toFixed(2)
         }
       }
-      setCashInputs(inputs)
+      setCashInputs(cashIn)
     } catch {
       setError('Failed to load end of day data')
     } finally {
@@ -97,9 +97,11 @@ export default function EndOfDay() {
   const openShifts   = shifts.filter(s => s.status === 'open')
   const closedShifts = shifts.filter(s => s.status === 'closed')
 
-  const totalSales    = shifts.reduce((sum, s) => sum + (s.summary?.total_sales    || 0), 0)
-  const totalExpenses = shifts.reduce((sum, s) => sum + (s.summary?.total_expenses || 0), 0)
-  const totalExpected = shifts.reduce((sum, s) => sum + (s.summary?.expected_cash  || 0), 0)
+  const totalSales            = shifts.reduce((sum, s) => sum + (s.summary?.total_sales       || 0), 0)
+  const totalExpenses         = shifts.reduce((sum, s) => sum + (s.summary?.total_expenses    || 0), 0)
+  const totalExpected         = shifts.reduce((sum, s) => sum + (s.summary?.expected_cash     || 0), 0)
+  const totalExpectedTransfer = shifts.reduce((sum, s) => sum + (s.summary?.expected_transfer || 0), 0)
+
   const totalReceived = shifts.reduce((sum, s) => {
     const v = parseFloat(cashInputs[s.id])
     return sum + (isNaN(v) ? 0 : v)
@@ -108,8 +110,8 @@ export default function EndOfDay() {
   const dayVarStatus  = varianceStatus(totalVariance)
 
   const allOpenInputted = openShifts.every(s => {
-    const v = parseFloat(cashInputs[s.id])
-    return !isNaN(v) && cashInputs[s.id] !== ''
+    const c = parseFloat(cashInputs[s.id])
+    return cashInputs[s.id] !== '' && !isNaN(c)
   })
   const canClose = openShifts.length === 0 || allOpenInputted
 
@@ -123,30 +125,25 @@ export default function EndOfDay() {
     setError('')
     try {
       // 1. Force-close all still-open shifts with the admin-entered cash
-      if (openShifts.length > 0) {
-        const closingData = openShifts.map(s => ({
+      const shiftsToClose = openShifts.filter(s => s.cashier_username !== user?.username)
+      if (shiftsToClose.length > 0) {
+        const closingData = shiftsToClose.map(s => ({
           shiftId:     s.id,
           closingCash: parseFloat(cashInputs[s.id]) || 0,
         }))
         await closeAllOpenShifts(closingData, 'Closed by End of Day')
       }
 
-      // 2. Recompute totals after closes (use inputs as source of truth for actual cash)
-      const actualCash = shifts.reduce((sum, s) => {
-        const v = parseFloat(cashInputs[s.id])
-        return sum + (isNaN(v) ? 0 : v)
-      }, 0)
-      const diff   = actualCash - totalExpected
+      // 2. Save EOD record
+      const diff   = totalReceived - totalExpected
       const status = Math.abs(diff) < 0.01 ? 'Balanced' : diff > 0 ? 'Overage' : 'Shortage'
-
-      // 3. Save EOD record
       await addEndOfDay({
         date:           today,
         cashier:        user?.username || 'System',
         total_sales:    totalSales,
         total_expenses: totalExpenses,
         expected_cash:  totalExpected,
-        actual_cash:    actualCash,
+        actual_cash:    totalReceived,
         difference:     diff,
         status,
         notes,
@@ -206,6 +203,15 @@ export default function EndOfDay() {
             <div className="eod-stat-value">{fmt.money(totalExpected)}</div>
           </div>
         </div>
+        {totalExpectedTransfer > 0 && (
+          <div className="eod-stat" style={{ borderColor: '#bfdbfe' }}>
+            <FiDollarSign size={15} className="eod-stat-icon" style={{ color: '#1d4ed8' }} />
+            <div>
+              <div className="eod-stat-label" style={{ color: '#1d4ed8' }}>Expected Transfer</div>
+              <div className="eod-stat-value" style={{ color: '#1d4ed8' }}>{fmt.money(totalExpectedTransfer)}</div>
+            </div>
+          </div>
+        )}
         <div className="eod-stat">
           <FiUsers size={15} className="eod-stat-icon" />
           <div>
@@ -219,10 +225,19 @@ export default function EndOfDay() {
       </div>
 
       {/* ══════════════════════════════════════════════════════
-          ACTIVE STATE — day not yet closed
+          ACTIVE STATE — day not yet closed, OR new shifts opened after close
          ══════════════════════════════════════════════════════ */}
-      {!todaysRecord ? (
+      {(!todaysRecord || openShifts.length > 0) ? (
         <div className="eod-active">
+
+          {/* Banner when day was previously closed but a new session opened */}
+          {todaysRecord && openShifts.length > 0 && (
+            <div className="eod-warn-banner" style={{ background: '#eff6ff', borderColor: '#3b82f6', color: '#1e40af' }}>
+              <FiAlertTriangle size={14} />
+              <strong>Day was already closed.</strong>
+              &nbsp;A new cashier session has been opened since. Close the day again to update the record.
+            </div>
+          )}
 
           {shifts.length === 0 ? (
             <div className="eod-no-shifts">
@@ -255,8 +270,8 @@ export default function EndOfDay() {
                   <CashierRow
                     key={shift.id}
                     shift={shift}
-                    inputVal={cashInputs[shift.id] || ''}
-                    onChange={val => setCashInputs(prev => ({ ...prev, [shift.id]: val }))}
+                    cashVal={cashInputs[shift.id] || ''}
+                    onCashChange={val => setCashInputs(prev => ({ ...prev, [shift.id]: val }))}
                   />
                 ))}
               </div>
@@ -428,12 +443,14 @@ export default function EndOfDay() {
 }
 
 // ─── CashierRow ────────────────────────────────────────────────────────────────
-function CashierRow({ shift, inputVal, onChange }) {
-  const s       = shift.summary || {}
-  const parsed  = parseFloat(inputVal)
-  const variance = inputVal !== '' && !isNaN(parsed) ? parsed - (s.expected_cash || 0) : null
-  const varSt   = varianceStatus(variance)
-  const isOpen  = shift.status === 'open'
+function CashierRow({ shift, cashVal, onCashChange }) {
+  const s      = shift.summary || {}
+  const isOpen = shift.status === 'open'
+
+  const parsedCash    = parseFloat(cashVal)
+  const totalExpected = s.expected_cash || 0
+  const totalVariance = cashVal !== '' ? (isNaN(parsedCash) ? null : parsedCash - totalExpected) : null
+  const varSt = varianceStatus(totalVariance)
 
   return (
     <div className={`eod-cr ${isOpen ? 'eod-cr-open' : 'eod-cr-closed'}`}>
@@ -464,13 +481,15 @@ function CashierRow({ shift, inputVal, onChange }) {
       {/* Metrics grid */}
       <div className="eod-cr-metrics">
         <div className="eod-cr-m">
-          <span className="eod-cr-ml">Opening Float</span>
-          <span className="eod-cr-mv">{fmt.money(shift.opening_cash)}</span>
+          <span className="eod-cr-ml">Cash Sales</span>
+          <span className="eod-cr-mv pos">{fmt.money(s.cash_sales)}</span>
         </div>
-        <div className="eod-cr-m">
-          <span className="eod-cr-ml">Sales</span>
-          <span className="eod-cr-mv pos">{fmt.money(s.total_sales)}</span>
-        </div>
+        {(s.transfer_sales || 0) > 0 && (
+          <div className="eod-cr-m">
+            <span className="eod-cr-ml" style={{ color: '#1d4ed8' }}>Transfer Sales</span>
+            <span className="eod-cr-mv" style={{ color: '#1d4ed8' }}>{fmt.money(s.transfer_sales)}</span>
+          </div>
+        )}
         {(s.total_expenses || 0) > 0 && (
           <div className="eod-cr-m">
             <span className="eod-cr-ml">Expenses</span>
@@ -481,9 +500,15 @@ function CashierRow({ shift, inputVal, onChange }) {
           <span className="eod-cr-ml">Expected Cash</span>
           <span className="eod-cr-mv">{fmt.money(s.expected_cash)}</span>
         </div>
+        {(s.expected_transfer || 0) > 0 && (
+          <div className="eod-cr-m">
+            <span className="eod-cr-ml" style={{ color: '#1d4ed8' }}>Expected Transfer</span>
+            <span className="eod-cr-mv" style={{ color: '#1d4ed8' }}>{fmt.money(s.expected_transfer)}</span>
+          </div>
+        )}
       </div>
 
-      {/* Cash input (open) or closed summary */}
+      {/* Input (open) or closed summary */}
       {isOpen ? (
         <div className="eod-cr-input-area">
           <label>Cash collected from cashier</label>
@@ -491,35 +516,34 @@ function CashierRow({ shift, inputVal, onChange }) {
             <div className="eod-cr-input-wrap">
               <span className="eod-cr-prefix">$</span>
               <input
-                type="number"
-                step="any"
-                min="0"
-                value={inputVal}
-                onChange={e => onChange(e.target.value)}
+                type="number" step="any" min="0"
+                value={cashVal}
+                onChange={e => onCashChange(e.target.value)}
                 placeholder="0.00"
                 className="eod-cr-input"
                 autoComplete="off"
               />
             </div>
-            {variance !== null && (
-              <div className={`eod-cr-var ${varSt}`}>
-                {varSt === 'balanced' && <><FiCheckCircle size={12} /> Balanced</>}
-                {varSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(variance)} over</>}
-                {varSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(variance)} short</>}
-              </div>
-            )}
           </div>
+          {totalVariance !== null && (
+            <div className={`eod-cr-var ${varSt}`} style={{ marginTop: 6 }}>
+              {varSt === 'balanced' && <><FiCheckCircle size={12} /> Balanced</>}
+              {varSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(totalVariance)} over</>}
+              {varSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(totalVariance)} short</>}
+            </div>
+          )}
         </div>
       ) : (
         <div className="eod-cr-settled">
           <div className="eod-cr-settled-row">
-            <span>Cash submitted by cashier</span>
+            <span>Cash submitted</span>
             <span className="eod-cr-settled-amt">{fmt.money(shift.closing_cash)}</span>
           </div>
           <div className={`eod-cr-settled-row var ${shift.reconciliation_status || ''}`}>
             <span>Variance</span>
             <span className={(shift.variance || 0) >= 0 ? 'pos' : 'neg'}>
-              {(shift.variance || 0) > 0 ? '+' : ''}{fmt.money(shift.variance)}
+              {(shift.variance || 0) > 0 ? '+' : ''}
+              {fmt.money(shift.variance || 0)}
               {' '}
               <span className="eod-cr-settled-label">
                 {shift.reconciliation_status === 'balanced' ? '(Balanced)' :
@@ -553,8 +577,11 @@ function BreakdownRow({ shift }) {
       </div>
 
       <div className="eod-br-metrics">
-        <span><em>Sales</em> {fmt.money(s.total_sales)}</span>
-        <span><em>Expected</em> {fmt.money(s.expected_cash)}</span>
+        <span><em>Cash Sales</em> {fmt.money(s.cash_sales)}</span>
+        {(s.transfer_sales || 0) > 0 && (
+          <span style={{ color: '#1d4ed8' }}><em>Transfer</em> {fmt.money(s.transfer_sales)}</span>
+        )}
+        <span><em>Exp. Cash</em> {fmt.money(s.expected_cash)}</span>
         <span><em>Collected</em> {fmt.money(shift.closing_cash)}</span>
       </div>
 

@@ -22,4 +22,20 @@ function markNotificationAsRead(id) {
   getDb().prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').run(id)
 }
 
-module.exports = { createNotification, getActiveNotifications, getAllNotifications, clearNotificationsForProduct, markNotificationAsRead }
+function markAllNotificationsAsRead() {
+  getDb().prepare('UPDATE notifications SET is_read = 1').run()
+}
+
+function deleteNotification(id) {
+  getDb().prepare('DELETE FROM notifications WHERE id = ?').run(id)
+}
+
+function deleteAllReadNotifications() {
+  getDb().prepare('DELETE FROM notifications WHERE is_read = 1').run()
+}
+
+module.exports = {
+  createNotification, getActiveNotifications, getAllNotifications,
+  clearNotificationsForProduct, markNotificationAsRead,
+  markAllNotificationsAsRead, deleteNotification, deleteAllReadNotifications,
+}

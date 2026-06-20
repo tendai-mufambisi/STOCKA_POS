@@ -152,16 +152,15 @@ function Reports() {
     const totalProfit = totalRevenue - totalCOGS - totalExpenses
 
     // Payment breakdown
-    const breakdown = {
-      'USD Cash': 0,
-      'ZWG Cash': 0,
-      'Swipe': 0,
-      'EcoCash': 0
-    }
+    const breakdown = { 'Cash': 0, 'Transfer': 0, 'Split': 0 }
     daySales.forEach(s => {
-      const method = s.payment_method || 'USD Cash'
-      if (breakdown.hasOwnProperty(method)) {
-        breakdown[method] += s.total || 0
+      const method = s.payment_method || 'Cash'
+      if (method === 'Cash' || method === 'USD Cash' || method === 'ZWG Cash' || method === 'USD') {
+        breakdown['Cash'] += s.total || 0
+      } else if (method === 'Transfer' || method === 'Swipe' || method === 'EcoCash') {
+        breakdown['Transfer'] += s.total || 0
+      } else if (method === 'Split') {
+        breakdown['Split'] += s.total || 0
       }
     })
     const paymentData = Object.entries(breakdown).map(([name, value]) => ({ name, value: parseFloat(value.toFixed(2)) }))
@@ -198,15 +197,14 @@ function Reports() {
     rangedSales.forEach(s => {
       const date = new Date(s.created_at).toLocaleDateString('en-ZW')
       if (!dayData[date]) {
-        dayData[date] = { date, revenue: 0, count: 0, usd: 0, zwg: 0, swipe: 0, ecocash: 0 }
+        dayData[date] = { date, revenue: 0, count: 0, cash: 0, transfer: 0, split: 0 }
       }
       dayData[date].revenue += s.total || 0
       dayData[date].count += 1
-      const method = s.payment_method || 'USD Cash'
-      if (method === 'USD Cash') dayData[date].usd += s.total || 0
-      else if (method === 'ZWG Cash') dayData[date].zwg += s.total || 0
-      else if (method === 'Swipe') dayData[date].swipe += s.total || 0
-      else if (method === 'EcoCash') dayData[date].ecocash += s.total || 0
+      const method = s.payment_method || 'Cash'
+      if (method === 'Cash' || method === 'USD Cash' || method === 'ZWG Cash' || method === 'USD') dayData[date].cash += s.total || 0
+      else if (method === 'Transfer' || method === 'Swipe' || method === 'EcoCash') dayData[date].transfer += s.total || 0
+      else if (method === 'Split') dayData[date].split += s.total || 0
     })
 
     const data = Object.values(dayData)
@@ -220,10 +218,9 @@ function Reports() {
     })
 
     const paymentData = [
-      { name: 'USD Cash', value: parseFloat(rangedSales.filter(s => s.payment_method === 'USD Cash' || !s.payment_method).reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
-      { name: 'ZWG Cash', value: parseFloat(rangedSales.filter(s => s.payment_method === 'ZWG Cash').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
-      { name: 'Swipe', value: parseFloat(rangedSales.filter(s => s.payment_method === 'Swipe').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
-      { name: 'EcoCash', value: parseFloat(rangedSales.filter(s => s.payment_method === 'EcoCash').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) }
+      { name: 'Cash', value: parseFloat(rangedSales.filter(s => !s.payment_method || s.payment_method === 'Cash' || s.payment_method === 'USD Cash' || s.payment_method === 'ZWG Cash' || s.payment_method === 'USD').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
+      { name: 'Transfer', value: parseFloat(rangedSales.filter(s => s.payment_method === 'Transfer' || s.payment_method === 'Swipe' || s.payment_method === 'EcoCash').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
+      { name: 'Split', value: parseFloat(rangedSales.filter(s => s.payment_method === 'Split').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) }
     ]
 
     setPaymentBreakdown(paymentData)
@@ -242,15 +239,14 @@ function Reports() {
     filteredSales.forEach(s => {
       const cashier = s.cashier || 'System'
       if (!cashierData[cashier]) {
-        cashierData[cashier] = { cashier, total: 0, count: 0, usd: 0, zwg: 0, swipe: 0, ecocash: 0 }
+        cashierData[cashier] = { cashier, total: 0, count: 0, cash: 0, transfer: 0, split: 0 }
       }
       cashierData[cashier].total += s.total || 0
       cashierData[cashier].count += 1
-      const method = s.payment_method || 'USD Cash'
-      if (method === 'USD Cash') cashierData[cashier].usd += s.total || 0
-      else if (method === 'ZWG Cash') cashierData[cashier].zwg += s.total || 0
-      else if (method === 'Swipe') cashierData[cashier].swipe += s.total || 0
-      else if (method === 'EcoCash') cashierData[cashier].ecocash += s.total || 0
+      const method = s.payment_method || 'Cash'
+      if (method === 'Cash' || method === 'USD Cash' || method === 'ZWG Cash' || method === 'USD') cashierData[cashier].cash += s.total || 0
+      else if (method === 'Transfer' || method === 'Swipe' || method === 'EcoCash') cashierData[cashier].transfer += s.total || 0
+      else if (method === 'Split') cashierData[cashier].split += s.total || 0
     })
 
     const data = Object.values(cashierData).map(c => ({
@@ -427,7 +423,7 @@ function Reports() {
         return {
           'Time': row.time || '',
           'Amount': `$${parseFloat(row.total || 0).toFixed(2)}`,
-          'Payment Method': row.payment_method || 'USD Cash',
+          'Payment Method': row.payment_method || 'Cash',
           'Cashier': row.cashier || 'System'
         }
       } else if (reportType === 'date-range-sales') {
@@ -435,10 +431,9 @@ function Reports() {
           'Date': row.date,
           'Revenue': `$${parseFloat(row.revenue).toFixed(2)}`,
           'Transactions': row.count,
-          'USD Cash': `$${parseFloat(row.usd).toFixed(2)}`,
-          'ZWG Cash': `$${parseFloat(row.zwg).toFixed(2)}`,
-          'Swipe': `$${parseFloat(row.swipe).toFixed(2)}`,
-          'EcoCash': `$${parseFloat(row.ecocash).toFixed(2)}`
+          'Cash': `$${parseFloat(row.cash).toFixed(2)}`,
+          'Transfer': `$${parseFloat(row.transfer).toFixed(2)}`,
+          'Split': `$${parseFloat(row.split).toFixed(2)}`
         }
       } else if (reportType === 'cashier-performance') {
         return {
@@ -446,10 +441,9 @@ function Reports() {
           'Total Sales': `$${parseFloat(row.total).toFixed(2)}`,
           'Transactions': row.count,
           'Avg Transaction': `$${parseFloat(row.avgTransaction).toFixed(2)}`,
-          'USD Cash': `$${parseFloat(row.usd).toFixed(2)}`,
-          'ZWG Cash': `$${parseFloat(row.zwg).toFixed(2)}`,
-          'Swipe': `$${parseFloat(row.swipe).toFixed(2)}`,
-          'EcoCash': `$${parseFloat(row.ecocash).toFixed(2)}`
+          'Cash': `$${parseFloat(row.cash).toFixed(2)}`,
+          'Transfer': `$${parseFloat(row.transfer).toFixed(2)}`,
+          'Split': `$${parseFloat(row.split).toFixed(2)}`
         }
       } else if (reportType === 'best-selling') {
         return {
@@ -666,10 +660,9 @@ function Reports() {
                     <th>Date</th>
                     <th>Revenue</th>
                     <th>Transactions</th>
-                    <th>USD Cash</th>
-                    <th>ZWG Cash</th>
-                    <th>Swipe</th>
-                    <th>EcoCash</th>
+                    <th>Cash</th>
+                    <th>Transfer</th>
+                    <th>Split</th>
                   </>
                 )}
                 {reportType === 'cashier-performance' && (
@@ -678,10 +671,9 @@ function Reports() {
                     <th>Total Sales</th>
                     <th>Transactions</th>
                     <th>Avg Transaction</th>
-                    <th>USD Cash</th>
-                    <th>ZWG Cash</th>
-                    <th>Swipe</th>
-                    <th>EcoCash</th>
+                    <th>Cash</th>
+                    <th>Transfer</th>
+                    <th>Split</th>
                   </>
                 )}
                 {reportType === 'best-selling' && (
@@ -721,7 +713,7 @@ function Reports() {
                     <>
                       <td>{row.time || ''}</td>
                       <td>${parseFloat(row.total || 0).toFixed(2)}</td>
-                      <td>{row.payment_method || 'USD Cash'}</td>
+                      <td>{row.payment_method || 'Cash'}</td>
                       <td>{row.cashier || 'System'}</td>
                       <td>
                         {row.id && printerSettings?.printer_port && (
@@ -741,10 +733,9 @@ function Reports() {
                       <td>{row.date}</td>
                       <td>${parseFloat(row.revenue).toFixed(2)}</td>
                       <td>{row.count}</td>
-                      <td>${parseFloat(row.usd).toFixed(2)}</td>
-                      <td>${parseFloat(row.zwg).toFixed(2)}</td>
-                      <td>${parseFloat(row.swipe).toFixed(2)}</td>
-                      <td>${parseFloat(row.ecocash).toFixed(2)}</td>
+                      <td>${parseFloat(row.cash).toFixed(2)}</td>
+                      <td>${parseFloat(row.transfer).toFixed(2)}</td>
+                      <td>${parseFloat(row.split).toFixed(2)}</td>
                     </>
                   )}
                   {reportType === 'cashier-performance' && (
@@ -753,10 +744,9 @@ function Reports() {
                       <td>${parseFloat(row.total).toFixed(2)}</td>
                       <td>{row.count}</td>
                       <td>${parseFloat(row.avgTransaction).toFixed(2)}</td>
-                      <td>${parseFloat(row.usd).toFixed(2)}</td>
-                      <td>${parseFloat(row.zwg).toFixed(2)}</td>
-                      <td>${parseFloat(row.swipe).toFixed(2)}</td>
-                      <td>${parseFloat(row.ecocash).toFixed(2)}</td>
+                      <td>${parseFloat(row.cash).toFixed(2)}</td>
+                      <td>${parseFloat(row.transfer).toFixed(2)}</td>
+                      <td>${parseFloat(row.split).toFixed(2)}</td>
                     </>
                   )}
                   {reportType === 'best-selling' && (

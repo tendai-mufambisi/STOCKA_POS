@@ -83,10 +83,10 @@ function ShiftDashboard() {
   }
 
   const handleCloseShift = async (shiftId) => {
-    if (!endCash) { setError('Please enter end cash amount'); return }
+    if (!endCash) { setError('Please enter the cash counted'); return }
     setIsClosing(true)
     try {
-      const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) }, closeNotes)
+      const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) || 0 }, closeNotes)
       const variance = result?.variance ?? 0
       setError(`✓ Shift closed. Variance: ${variance >= 0 ? '+$' : '-$'}${Math.abs(variance).toFixed(2)}`)
       setCloseNotes('')
@@ -330,7 +330,7 @@ function ShiftDashboard() {
             <div className="sd-section-card">
               <div className="sd-section-header">
                 <FiDollarSign size={15} />
-                Cash Reconciliation
+                Reconciliation
               </div>
               <table className="sd-recon">
                 <tbody>
@@ -339,33 +339,42 @@ function ShiftDashboard() {
                     <td>{fmt.money(shiftDetail.start_float)}</td>
                   </tr>
                   <tr>
-                    <td>Sales Revenue</td>
-                    <td className="pos">+{fmt.money(shiftDetail.sales?.total)}</td>
+                    <td>Cash Sales</td>
+                    <td className="pos">+{fmt.money(shiftDetail.cash_sales)}</td>
                   </tr>
-                  {(shiftDetail.expenses?.total ?? 0) > 0 && (
+                  {(shiftDetail.transfer_sales ?? 0) > 0 && (
                     <tr>
-                      <td>Expenses</td>
-                      <td className="neg">-{fmt.money(shiftDetail.expenses?.total)}</td>
+                      <td style={{ color: '#1d4ed8' }}>Transfer Sales</td>
+                      <td style={{ color: '#1d4ed8' }}>{fmt.money(shiftDetail.transfer_sales)}</td>
                     </tr>
+                  )}
+                  {(shiftDetail.total_expenses ?? 0) > 0 && (
+                    <tr><td>Expenses</td><td className="neg">−{fmt.money(shiftDetail.total_expenses)}</td></tr>
                   )}
                   <tr className="separator">
                     <td>Expected Cash</td>
                     <td className="strong">{fmt.money(shiftDetail.expected_cash)}</td>
                   </tr>
+                  {(shiftDetail.expected_transfer ?? 0) > 0 && (
+                    <tr className="separator">
+                      <td style={{ color: '#1d4ed8' }}>Expected Transfer</td>
+                      <td className="strong" style={{ color: '#1d4ed8' }}>{fmt.money(shiftDetail.expected_transfer)}</td>
+                    </tr>
+                  )}
                   {shiftDetail.status === 'closed' && (
-                    <>
-                      <tr>
-                        <td>Actual Cash Counted</td>
-                        <td>{fmt.money(shiftDetail.actual_cash)}</td>
-                      </tr>
-                      <tr className={`balance-row ${(shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
-                        <td>Variance</td>
-                        <td className="balance-amt">
-                          {fmt.signed(shiftDetail.balance)}
-                          {(shiftDetail.balance ?? 0) >= -0.01 && <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
-                        </td>
-                      </tr>
-                    </>
+                    <tr>
+                      <td>Cash Counted</td>
+                      <td>{fmt.money(shiftDetail.actual_cash)}</td>
+                    </tr>
+                  )}
+                  {shiftDetail.status === 'closed' && (
+                    <tr className={`balance-row ${(shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
+                      <td>Cash Variance</td>
+                      <td className="balance-amt">
+                        {fmt.signed(shiftDetail.balance)}
+                        {(shiftDetail.balance ?? 0) >= -0.01 && <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>
@@ -465,7 +474,10 @@ function ShiftDashboard() {
                 <div>
                   <div className="sd-close-title">Close This Shift</div>
                   <div className="sd-close-hint">
-                    Expected cash in drawer: <strong>{fmt.money(shiftDetail.expected_cash)}</strong>
+                    Expected Cash: <strong>{fmt.money(shiftDetail.expected_cash)}</strong>
+                    {(shiftDetail.expected_transfer ?? 0) > 0 && (
+                      <> &nbsp;·&nbsp; Expected Transfer: <strong style={{ color: '#1d4ed8' }}>{fmt.money(shiftDetail.expected_transfer)}</strong></>
+                    )}
                   </div>
                 </div>
               </div>
@@ -474,7 +486,7 @@ function ShiftDashboard() {
                 <div className="sd-close-form">
                   <div className="sd-form-row">
                     <div className="sd-form-group">
-                      <label>Actual cash counted ($)</label>
+                      <label>Cash counted ($)</label>
                       <input
                         type="number" step="any"
                         value={endCash}

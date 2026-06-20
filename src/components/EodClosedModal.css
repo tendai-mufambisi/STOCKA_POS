@@ -56,6 +56,13 @@
   line-height: 1.5;
 }
 
+.eod-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
 .eod-modal-btn {
   display: flex;
   align-items: center;
@@ -63,8 +70,6 @@
   gap: 8px;
   width: 100%;
   padding: 13px 0;
-  background: #d97706;
-  color: #fff;
   border: none;
   border-radius: 10px;
   font-size: 0.95rem;
@@ -73,6 +78,14 @@
   transition: background 0.15s;
 }
 
-.eod-modal-btn:hover {
-  background: #b45309;
+.eod-modal-btn-primary {
+  background: #d97706;
+  color: #fff;
 }
+.eod-modal-btn-primary:hover { background: #b45309; }
+
+.eod-modal-btn-ghost {
+  background: #f3f4f6;
+  color: #374151;
+}
+.eod-modal-btn-ghost:hover { background: #e5e7eb; }

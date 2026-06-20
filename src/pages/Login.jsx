@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { FiCheckCircle } from 'react-icons/fi'
+import { FiCheckCircle, FiArrowLeft, FiChevronRight } from 'react-icons/fi'
 import { getUsers, getShop, loginUser, resetOwnerPin } from '../database/db'
 import iconPng from '../assets/icon.png'
 import fullLogo from '../assets/full_logo.png'
@@ -547,14 +547,40 @@ function LeftPanel({ shopName, clock }) {
   )
 }
 
+// ── Outer shell — must live at module level so its identity is stable.
+// Defining it inside Login causes React to remount it on every clock tick.
+function Shell({ shopName, clock, children }) {
+  return (
+    <div style={{
+      display: 'flex', height: '100vh', overflow: 'hidden',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      animation: 'fadeIn 0.35s ease',
+    }}>
+      <LeftPanel shopName={shopName} clock={clock} />
+      <div style={{
+        flex: 1, background: '#fff',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        padding: '32px 48px', overflowY: 'auto',
+      }}>
+        {children}
+      </div>
+      <style>{`
+        @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-6px)} 40%,80%{transform:translateX(6px)} }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes spin { to{transform:rotate(360deg)} }
+      `}</style>
+    </div>
+  )
+}
+
 // ── Main Login component ─────────────────────────────────────────────────────
-function Login() {
-  // In development (npm run dev), skip the PIN entirely
-  if (import.meta.env.DEV) return <DevLogin />
+function LoginImpl() {
 
   const [users, setUsers] = useState([])
   const [shopName, setShopName] = useState('Stocka')
   const [selectedUser, setSelectedUser] = useState(null)
+  const [step, setStep] = useState('select') // 'select' | 'pin'
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [shake, setShake] = useState(false)
@@ -570,7 +596,11 @@ function Login() {
         const activeUsers = (usersData || []).filter(u => u.is_active)
         setUsers(activeUsers)
         if (shop?.name) setShopName(shop.name)
-        if (activeUsers.length === 1) setSelectedUser(activeUsers[0])
+        // Single user — skip account selection, go straight to PIN
+        if (activeUsers.length === 1) {
+          setSelectedUser(activeUsers[0])
+          setStep('pin')
+        }
       } catch (err) {
         console.error('Login load error:', err)
       } finally {
@@ -585,17 +615,31 @@ function Login() {
     return () => clearInterval(tick)
   }, [])
 
-  // Physical keyboard support
+  // Physical keyboard support — only active on the PIN step
   useEffect(() => {
     const handleKey = (e) => {
-      if (showForgotPin || loading) return
+      if (showForgotPin || loading || step !== 'pin') return
       if (e.key >= '0' && e.key <= '9') handleDigit(e.key)
       else if (e.key === 'Backspace') handleBackspace()
       else if (e.key === 'Escape') handleClear()
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [pin, selectedUser, loading, showForgotPin])
+  }, [pin, selectedUser, loading, showForgotPin, step])
+
+  const handleSelectUser = (u) => {
+    setSelectedUser(u)
+    setPin('')
+    setError('')
+    setStep('pin')
+  }
+
+  const handleBack = () => {
+    setSelectedUser(null)
+    setPin('')
+    setError('')
+    setStep('select')
+  }
 
   const handleDigit = (d) => {
     if (!selectedUser || loading) return
@@ -606,15 +650,8 @@ function Login() {
     if (next.length === 4) attemptLogin(next)
   }
 
-  const handleBackspace = () => {
-    setPin((p) => p.slice(0, -1))
-    setError('')
-  }
-
-  const handleClear = () => {
-    setPin('')
-    setError('')
-  }
+  const handleBackspace = () => { setPin(p => p.slice(0, -1)); setError('') }
+  const handleClear = () => { setPin(''); setError('') }
 
   const attemptLogin = async (enteredPin) => {
     if (!selectedUser) return
@@ -648,207 +685,180 @@ function Login() {
     setTimeout(() => attemptLogin(newPin), 1400)
   }
 
-  const handleSetupRedirect = () => {
-    window.location.hash = '#/setup'
-  }
-
+  // ── Loading ──────────────────────────────────────────────────────────────────
   if (dataLoading) {
     return (
-      <div style={{
-        display: 'flex', height: '100vh', overflow: 'hidden',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}>
-        <LeftPanel shopName={shopName} clock={clock} />
-        <div style={{
-          flex: 1, background: '#fff',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{
-              width: '36px', height: '36px',
-              border: '3px solid #e8f5e9',
-              borderTopColor: '#2e7d32',
-              borderRadius: '50%',
-              animation: 'spin 0.8s linear infinite',
-              margin: '0 auto 14px',
-            }} />
-            <p style={{ color: '#ccc', fontSize: '14px', margin: 0 }}>Loading...</p>
-          </div>
+      <Shell shopName={shopName} clock={clock}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: '36px', height: '36px',
+            border: '3px solid #e8f5e9', borderTopColor: '#2e7d32',
+            borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+            margin: '0 auto 14px',
+          }} />
+          <p style={{ color: '#ccc', fontSize: '14px', margin: 0 }}>Loading...</p>
         </div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
+      </Shell>
     )
   }
 
-  // No users — first run, redirect to setup
-  if (!dataLoading && users.length === 0) {
+  // ── No users — first run ─────────────────────────────────────────────────────
+  if (users.length === 0) {
     return (
-      <div style={{
-        display: 'flex', height: '100vh', overflow: 'hidden',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}>
-        <LeftPanel shopName="Stocka" clock={clock} />
-        <div style={{
-          flex: 1, background: '#fff',
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center',
-          padding: '48px',
-        }}>
-          <div style={{ width: '100%', maxWidth: '320px', textAlign: 'center' }}>
-            <img src={fullLogo} alt="Stocka" style={{ height: '44px', objectFit: 'contain', display: 'block', margin: '0 auto 24px' }} />
-            <h2 style={{ margin: '0 0 8px', fontSize: '22px', fontWeight: 700, color: '#1a1a1a' }}>
-              Welcome to Stocka
-            </h2>
-            <p style={{ color: '#aaa', margin: '0 0 36px', fontSize: '14px', lineHeight: 1.6 }}>
-              Smart Retail Management for Zimbabwe.<br />Let's set up your shop to get started.
-            </p>
-            <button
-              onClick={handleSetupRedirect}
-              style={{
-                width: '100%', padding: '15px',
-                background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
-                color: '#fff', border: 'none', borderRadius: '12px',
-                fontSize: '16px', fontWeight: 600, cursor: 'pointer',
-                boxShadow: '0 4px 16px rgba(46,125,50,0.3)',
-                transition: 'all 0.2s',
-              }}
-            >
-              Set Up My Shop
-            </button>
-            <p style={{ margin: '28px 0 0', fontSize: '12px', color: '#ddd' }}>
-              v1.0.0 — Proudly Zimbabwean
-</p>
-          </div>
+      <Shell shopName={shopName} clock={clock}>
+        <div style={{ width: '100%', maxWidth: '320px', textAlign: 'center' }}>
+          <img src={fullLogo} alt="Stocka" style={{ height: '44px', objectFit: 'contain', display: 'block', margin: '0 auto 24px' }} />
+          <h2 style={{ margin: '0 0 8px', fontSize: '22px', fontWeight: 700, color: '#1a1a1a' }}>Welcome to Stocka</h2>
+          <p style={{ color: '#aaa', margin: '0 0 36px', fontSize: '14px', lineHeight: 1.6 }}>
+            Smart Retail Management for Zimbabwe.<br />Let's set up your shop to get started.
+          </p>
+          <button
+            onClick={() => { window.location.hash = '#/setup' }}
+            style={{
+              width: '100%', padding: '15px',
+              background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
+              color: '#fff', border: 'none', borderRadius: '12px',
+              fontSize: '16px', fontWeight: 600, cursor: 'pointer',
+              boxShadow: '0 4px 16px rgba(46,125,50,0.3)',
+            }}
+          >
+            Set Up My Shop
+          </button>
+          <p style={{ margin: '28px 0 0', fontSize: '12px', color: '#ddd' }}>v1.0.0 — Proudly Zimbabwean</p>
         </div>
-      </div>
+      </Shell>
     )
   }
 
-  return (
-    <div style={{
-      display: 'flex',
-      height: '100vh',
-      overflow: 'hidden',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      animation: 'fadeIn 0.35s ease',
-    }}>
-      {/* LEFT — Branding panel */}
-      <LeftPanel shopName={shopName} clock={clock} />
-
-      {/* RIGHT — Sign-in panel */}
-      <div style={{
-        flex: 1,
-        background: '#fff',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '32px 48px',
-        overflowY: 'auto',
-      }}>
+  // ── STEP 1: Account selection ────────────────────────────────────────────────
+  if (step === 'select') {
+    return (
+      <Shell shopName={shopName} clock={clock}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
+          <h2 style={{ margin: '0 0 4px', fontSize: '26px', fontWeight: 700, color: '#1a1a1a' }}>Sign in as</h2>
+          <p style={{ margin: '0 0 28px', fontSize: '14px', color: '#bbb' }}>Choose an account to continue</p>
 
-          <h2 style={{ margin: '0 0 4px', fontSize: '26px', fontWeight: 700, color: '#1a1a1a' }}>
-            Sign in
-          </h2>
-          <p style={{ margin: '0 0 28px', fontSize: '14px', color: '#bbb' }}>
-            {users.length > 1 ? 'Select your account and enter your PIN' : 'Enter your PIN to continue'}
-          </p>
-
-          {/* Multi-user selector */}
-          {users.length > 1 && (
-            <div style={{
-              display: 'flex', gap: '10px',
-              justifyContent: 'center', flexWrap: 'wrap',
-              marginBottom: '28px',
-            }}>
-              {users.map((u) => (
-                <UserChip
-                  key={u.id}
-                  user={u}
-                  selected={selectedUser?.id === u.id}
-                  onClick={() => { setSelectedUser(u); setPin(''); setError('') }}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Single user display */}
-          {users.length === 1 && selectedUser && (
-            <div style={{ textAlign: 'center', marginBottom: '28px' }}>
-              <div style={{
-                width: '60px', height: '60px', borderRadius: '50%',
-                background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
-                color: '#fff', fontSize: '22px', fontWeight: 700,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                margin: '0 auto 10px',
-                boxShadow: '0 6px 20px rgba(46,125,50,0.3)',
-              }}>
-                {selectedUser.username.slice(0, 2).toUpperCase()}
-              </div>
-              <p style={{ margin: 0, fontSize: '17px', fontWeight: 600, color: '#1a1a1a' }}>
-                {selectedUser.username}
-              </p>
-              <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#bbb' }}>
-                {selectedUser.role}
-              </p>
-            </div>
-          )}
-
-          {/* No-selection hint */}
-          {!selectedUser && users.length > 1 && (
-            <p style={{ color: '#ccc', fontSize: '13px', textAlign: 'center', marginBottom: '28px' }}>
-              Select who is signing in
-            </p>
-          )}
-
-          {/* PIN dots + pad */}
-          {selectedUser && (
-            <>
-              <PinDots value={pin} shake={shake} />
-
-              {error && (
-                <p style={{
-                  color: '#e53935', fontSize: '13px',
-                  textAlign: 'center', margin: '-16px 0 18px',
-                  fontWeight: 500,
-                }}>
-                  {error}
-                </p>
-              )}
-
-              <PinPad
-                onDigit={handleDigit}
-                onBackspace={handleBackspace}
-                onClear={handleClear}
-                disabled={loading || pin.length >= 4}
-              />
-
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {users.map(u => (
               <button
-                onClick={() => setShowForgotPin(true)}
+                key={u.id}
+                onClick={() => handleSelectUser(u)}
                 style={{
-                  display: 'block', margin: '22px auto 0',
-                  background: 'none', border: 'none',
-                  color: '#ccc', cursor: 'pointer',
-                  fontSize: '13px', textDecoration: 'underline',
-                  textDecorationColor: '#e0e0e0',
-                  transition: 'color 0.15s',
+                  display: 'flex', alignItems: 'center', gap: '14px',
+                  padding: '14px 16px',
+                  background: '#fafafa', border: '1.5px solid #ebebeb',
+                  borderRadius: '14px', cursor: 'pointer',
+                  textAlign: 'left', transition: 'all 0.15s',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = '#2e7d32' }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = '#ccc' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = '#a5d6a7'; e.currentTarget.style.background = '#f5faf5' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = '#ebebeb'; e.currentTarget.style.background = '#fafafa' }}
               >
-                Forgot PIN?
+                <div style={{
+                  width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0,
+                  background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
+                  color: '#fff', fontSize: '16px', fontWeight: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: '0 3px 10px rgba(46,125,50,0.25)',
+                }}>
+                  {u.username.slice(0, 2).toUpperCase()}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>{u.username}</div>
+                  <div style={{ fontSize: '12px', color: '#bbb', marginTop: '2px' }}>{u.role}</div>
+                </div>
+                <FiChevronRight size={18} color="#ccc" />
               </button>
-            </>
-          )}
+            ))}
+          </div>
 
-          <p style={{ margin: '28px 0 0', fontSize: '11px', color: '#e0e0e0', textAlign: 'center' }}>
+          <p style={{ margin: '32px 0 0', fontSize: '11px', color: '#e0e0e0', textAlign: 'center' }}>
             v1.0.0 — Proudly Zimbabwean
           </p>
         </div>
+      </Shell>
+    )
+  }
+
+  // ── STEP 2: PIN entry ────────────────────────────────────────────────────────
+  return (
+    <Shell shopName={shopName} clock={clock}>
+      <div style={{ width: '100%', maxWidth: '300px' }}>
+
+        {/* Back link — only when multiple accounts exist */}
+        {users.length > 1 && (
+          <button
+            onClick={handleBack}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: '#bbb', fontSize: '13px', marginBottom: '28px', padding: 0,
+              transition: 'color 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#2e7d32' }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#bbb' }}
+          >
+            <FiArrowLeft size={14} /> Back to accounts
+          </button>
+        )}
+
+        {/* Selected user */}
+        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+          <div style={{
+            width: '64px', height: '64px', borderRadius: '50%',
+            background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
+            color: '#fff', fontSize: '22px', fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 12px',
+            boxShadow: '0 6px 20px rgba(46,125,50,0.3)',
+          }}>
+            {selectedUser.username.slice(0, 2).toUpperCase()}
+          </div>
+          <p style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
+            {selectedUser.username}
+          </p>
+          <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#bbb' }}>
+            {selectedUser.role}
+          </p>
+        </div>
+
+        <PinDots value={pin} shake={shake} />
+
+        {error && (
+          <p style={{
+            color: '#e53935', fontSize: '13px',
+            textAlign: 'center', margin: '-16px 0 18px', fontWeight: 500,
+          }}>
+            {error}
+          </p>
+        )}
+
+        <PinPad
+          onDigit={handleDigit}
+          onBackspace={handleBackspace}
+          onClear={handleClear}
+          disabled={loading || pin.length >= 4}
+        />
+
+        <button
+          onClick={() => setShowForgotPin(true)}
+          style={{
+            display: 'block', margin: '22px auto 0',
+            background: 'none', border: 'none',
+            color: '#ccc', cursor: 'pointer',
+            fontSize: '13px', textDecoration: 'underline',
+            textDecorationColor: '#e0e0e0', transition: 'color 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = '#2e7d32' }}
+          onMouseLeave={e => { e.currentTarget.style.color = '#ccc' }}
+        >
+          Forgot PIN?
+        </button>
+
+        <p style={{ margin: '28px 0 0', fontSize: '11px', color: '#e0e0e0', textAlign: 'center' }}>
+          v1.0.0 — Proudly Zimbabwean
+        </p>
       </div>
 
-      {/* Forgot PIN modal */}
       {showForgotPin && (
         <ForgotPinModal
           selectedUser={selectedUser}
@@ -856,23 +866,13 @@ function Login() {
           onReset={handleForgotPinReset}
         />
       )}
-
-      <style>{`
-        @keyframes shake {
-          0%, 100% { transform: translateX(0); }
-          20%, 60% { transform: translateX(-6px); }
-          40%, 80% { transform: translateX(6px); }
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(6px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
-    </div>
+    </Shell>
   )
+}
+
+function Login() {
+  if (import.meta.env.DEV) return <DevLogin />
+  return <LoginImpl />
 }
 
 export default Login
