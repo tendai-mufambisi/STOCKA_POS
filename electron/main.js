@@ -877,7 +877,7 @@ function setupAutoUpdater() {
     }
 
     runCheck()
-    setInterval(runCheck, 4 * 60 * 60 * 1000)
+    setInterval(runCheck, 15 * 60 * 1000)
 
     autoUpdater.on('update-available', (info) => {
       // releaseNotes is an array when the user is multiple versions behind
