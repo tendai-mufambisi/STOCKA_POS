@@ -1,19 +1,25 @@
 import { useState, useEffect, useRef } from 'react'
+import { useLanSync } from '../hooks/useLanSync'
+import ConfirmModal from '../components/ConfirmModal'
 import {
   getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts,
   getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale,
   getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber
 } from '../database/db'
+import { updateProduct } from '../database/domains/products'
+import { logAuditAction } from '../database/domains/audit'
+import { createNotification } from '../database/domains/notifications'
 import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
 import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
+import { useSaleStore } from '../store/useSaleStore'
 import './Sales.css'
 import {
   FiSearch, FiPackage, FiShoppingCart, FiTrash2, FiPause,
-  FiCheck, FiX, FiChevronLeft, FiAlertTriangle
+  FiCheck, FiX, FiChevronLeft, FiAlertTriangle, FiTag
 } from 'react-icons/fi'
 
 function FlyParticle({ startX, startY, endX, endY, onDone }) {
@@ -49,6 +55,7 @@ function FlyParticle({ startX, startY, endX, endY, onDone }) {
 function Sales() {
   const { user }         = useAuthStore()
   const { currentShift } = useShiftStore()
+  const { setSaleInProgress, pendingForceClose } = useSaleStore()
 
   // ── Product & Cart state ─────────────────────────
   const [products, setProducts]           = useState([])
@@ -60,11 +67,15 @@ function Sales() {
   // ── Held sales state ─────────────────────────────
   const [heldSales, setHeldSales]         = useState([])
   const [showHeldPanel, setShowHeldPanel] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(null) // heldSaleId
   const [recalledSaleId, setRecalledSaleId] = useState(null)
 
   // ── Checkout state ────────────────────────────────
-  const [checkoutStep, setCheckoutStep]               = useState(null) // null | 'cashTendered'
-  const [checkoutCashTendered, setCheckoutCashTendered] = useState('')
+  const [checkoutStep, setCheckoutStep]               = useState(null) // null | 'paymentSelect' | 'cashTendered'
+  const [paymentMethod, setPaymentMethod]             = useState('Cash') // 'Cash' | 'USD' | 'Split'
+  const [checkoutCashTendered, setCheckoutCashTendered] = useState('') // Cash tendered (Cash or USD mode)
+  const [splitCashAmt, setSplitCashAmt]               = useState('') // Split: Cash portion
+  const [splitUsdAmt, setSplitUsdAmt]                 = useState('') // Split: USD portion
   const [isProcessing, setIsProcessing]               = useState(false)
 
   // ── UI state ──────────────────────────────────────
@@ -75,6 +86,11 @@ function Sales() {
   const [voidSaleId, setVoidSaleId]             = useState(null)
   const [isHoldingForNav, setIsHoldingForNav]   = useState(false)
   const [voidReason, setVoidReason]             = useState('')
+
+  // ── No-price modal state ──────────────────────────
+  const [priceRequiredProduct, setPriceRequiredProduct] = useState(null)
+  const [priceInput, setPriceInput]             = useState('')
+  const [isSavingPrice, setIsSavingPrice]       = useState(false)
 
   // ── Printer & shop state ──────────────────────────
   const [shopInfo, setShopInfo]           = useState(null)
@@ -110,12 +126,15 @@ function Sales() {
     loadShopInfo()
   }, [])
 
+  // Reload product prices whenever data syncs (satellite: lan:synced; main: lan:data-changed)
+  useLanSync(() => loadProducts())
+
   // Auto-focus cash input when modal opens
   useEffect(() => {
     if (checkoutStep === 'cashTendered') {
       setTimeout(() => cashInputRef.current?.focus(), 80)
     }
-  }, [checkoutStep])
+  }, [checkoutStep, paymentMethod])
 
   // Auto-close confirmation, then return focus to search
   useEffect(() => {
@@ -127,6 +146,11 @@ function Sales() {
       return () => clearTimeout(t)
     }
   }, [showConfirmation])
+
+  // Keep the global sale-in-progress flag in sync so shift-guard can check it
+  useEffect(() => {
+    setSaleInProgress(cart.length > 0 || checkoutStep !== null)
+  }, [cart.length, checkoutStep, setSaleInProgress])
 
   // Scroll the keyboard-selected product into view whenever it changes
   useEffect(() => {
@@ -147,7 +171,8 @@ function Sales() {
       // Escape: close whatever is open
       if (e.key === 'Escape') {
         e.preventDefault()
-        if (checkoutStep) { setCheckoutStep(null); setCheckoutCashTendered('') }
+        if (checkoutStep === 'cashTendered') { setCheckoutStep('paymentSelect'); setCheckoutCashTendered(''); setSplitCashAmt(''); setSplitUsdAmt('') }
+        else if (checkoutStep === 'paymentSelect') { setCheckoutStep(null) }
         else if (showVoidModal) { setShowVoidModal(false); setVoidSaleId(null); setVoidReason('') }
         else if (showHeldPanel) setShowHeldPanel(false)
         return
@@ -156,9 +181,13 @@ function Sales() {
       // Enter in cash input: complete sale
       if (e.key === 'Enter' && checkoutStep === 'cashTendered' && tag === 'INPUT') {
         e.preventDefault()
-        const amt = parseFloat(checkoutCashTendered)
-        if (!isNaN(amt) && amt >= cartTotal && !isProcessing) {
-          handleCompleteCheckout(checkoutCashTendered)
+        if (paymentMethod === 'Split') {
+          const c = parseFloat(splitCashAmt) || 0
+          const u = parseFloat(splitUsdAmt) || 0
+          if (Math.abs(c + u - cartTotal) < 0.005 && !isProcessing) handleCompleteCheckout()
+        } else {
+          const amt = parseFloat(checkoutCashTendered)
+          if (!isNaN(amt) && amt >= cartTotal && !isProcessing) handleCompleteCheckout()
         }
         return
       }
@@ -277,7 +306,9 @@ function Sales() {
   const addToCart = (product) => {
     if (product.current_quantity <= 0) { flash(`"${product.name}" is out of stock`); return }
     if (!product.selling_price || product.selling_price <= 0) {
-      flash(`"${product.name}" has no price — update it in Products first`); return
+      setPriceRequiredProduct(product)
+      setPriceInput('')
+      return
     }
     const existing = cart.find(i => i.product_id === product.id)
     if (existing) {
@@ -304,6 +335,46 @@ function Sales() {
         searchRef.current.select()
       }
     }, 0)
+  }
+
+  const handleSetPriceConfirm = async () => {
+    const price = parseFloat(priceInput)
+    if (!price || price <= 0) return
+    const product = priceRequiredProduct
+    setIsSavingPrice(true)
+    try {
+      await updateProduct(product.id, {
+        name:          product.name,
+        category:      product.category || null,
+        supplier_id:   product.supplier_id || null,
+        unit:          product.unit || 'each',
+        selling_price: price,
+        reorder_level: product.reorder_level || 5,
+        description:   product.description || '',
+        image_data:    product.image_data || null,
+      })
+      await createNotification({
+        type: 'PRICE_SET',
+        message: `${user?.username || 'Cashier'} set the selling price of "${product.name}" to $${price.toFixed(2)} via the Sales screen`,
+        product_id: product.id,
+      })
+      await logAuditAction(
+        user?.username || 'cashier', 'UPDATE_PRODUCT', 'PRODUCT', String(product.id),
+        `Selling price set via Sales screen: "${product.name}" → $${price.toFixed(2)}`,
+        '0', String(price)
+      )
+      // Update local products state so the cards now show the price without a reload
+      setProducts(prev => prev.map(p => p.id === product.id ? { ...p, selling_price: price } : p))
+      setMostSoldProducts(prev => prev.map(p => p.id === product.id ? { ...p, selling_price: price } : p))
+      const updatedProduct = { ...product, selling_price: price }
+      setPriceRequiredProduct(null)
+      setPriceInput('')
+      addToCart(updatedProduct)
+    } catch (err) {
+      flash(`Failed to save price: ${err.message}`)
+    } finally {
+      setIsSavingPrice(false)
+    }
   }
 
   const updateQty = (productId, qty) => {
@@ -333,36 +404,81 @@ function Sales() {
     if (cart.some(i => !i.quantity || i.quantity <= 0)) {
       flash('All items must have a valid quantity'); return
     }
-    setCheckoutStep('cashTendered')
+    setCheckoutStep('paymentSelect')
     setCheckoutCashTendered('')
+    setSplitCashAmt('')
+    setSplitUsdAmt('')
     setMessage({ text: '', type: '' })
   }
 
-  const handleBackNavigation = () => {
-    setCheckoutStep(null)
+  const handleSelectPaymentMethod = (method) => {
+    setPaymentMethod(method)
     setCheckoutCashTendered('')
+    setSplitCashAmt('')
+    setSplitUsdAmt('')
+    setCheckoutStep('cashTendered')
   }
 
-  const handleCompleteCheckout = async (cashAmount) => {
-    const validation = validateCurrency(cashAmount, 'Cash amount')
-    if (!validation.valid) { flash(validation.error); return }
-    const cash = parseFloat(cashAmount)
-    if (cash < cartTotal) { flash('Insufficient cash tendered'); return }
+  const handleBackNavigation = () => {
+    if (checkoutStep === 'cashTendered') {
+      setCheckoutStep('paymentSelect')
+      setCheckoutCashTendered('')
+      setSplitCashAmt('')
+      setSplitUsdAmt('')
+    } else {
+      setCheckoutStep(null)
+    }
+  }
+
+  const handleCompleteCheckout = async () => {
+    let cashAmt = 0, usdAmt = 0, cashTendered = 0, changeGiven = 0
+
+    if (paymentMethod === 'Cash') {
+      const validation = validateCurrency(checkoutCashTendered, 'Cash amount')
+      if (!validation.valid) { flash(validation.error); return }
+      cashTendered = parseFloat(checkoutCashTendered)
+      if (cashTendered < cartTotal) { flash('Insufficient cash tendered'); return }
+      cashAmt = cartTotal
+      usdAmt = 0
+      changeGiven = Math.max(0, cashTendered - cartTotal)
+    } else if (paymentMethod === 'USD') {
+      const validation = validateCurrency(checkoutCashTendered, 'USD amount')
+      if (!validation.valid) { flash(validation.error); return }
+      cashTendered = parseFloat(checkoutCashTendered)
+      if (cashTendered < cartTotal) { flash('Insufficient USD tendered'); return }
+      usdAmt = cartTotal
+      cashAmt = 0
+      changeGiven = Math.max(0, cashTendered - cartTotal)
+    } else {
+      // Split
+      const c = parseFloat(splitCashAmt) || 0
+      const u = parseFloat(splitUsdAmt) || 0
+      if (Math.abs(c + u - cartTotal) > 0.005) { flash(`Split amounts must total $${cartTotal.toFixed(2)}`); return }
+      cashAmt = c
+      usdAmt = u
+      cashTendered = c + u
+      changeGiven = 0
+    }
 
     setIsProcessing(true)
     try {
-      const change = Math.max(0, cash - cartTotal)
-      let saleId
+      const paymentData = {
+        payment_method: paymentMethod,
+        cash_amount: cashAmt,
+        usd_amount: usdAmt,
+        cash_tendered: cashTendered,
+        change_given: changeGiven,
+      }
       const saleBase = {
         cashier: user.username,
         total: cartTotal,
-        cash_tendered: cash,
-        change_given: change,
-        shift_id: currentShift?.id || null
+        shift_id: currentShift?.id || null,
+        ...paymentData,
       }
 
+      let saleId
       if (recalledSaleId) {
-        saleId = await completeHeldSale(recalledSaleId, cash, change, currentShift?.id || null)
+        saleId = await completeHeldSale(recalledSaleId, paymentData, currentShift?.id || null)
         setRecalledSaleId(null)
       } else {
         saleId = await addSale(saleBase, cart)
@@ -378,10 +494,12 @@ function Sales() {
       } catch { /* don't block on receipt number failure */ }
 
       // ── Update UI immediately — sale is done ──
-      setLastSale({ id: saleId, total: cartTotal, change, timestamp: new Date() })
+      setLastSale({ id: saleId, total: cartTotal, change: changeGiven, paymentMethod, timestamp: new Date() })
       setShowConfirmation(true)
       setCheckoutStep(null)
       setCheckoutCashTendered('')
+      setSplitCashAmt('')
+      setSplitUsdAmt('')
       setCart([])
       setSearch('')
       loadProducts()
@@ -443,8 +561,13 @@ function Sales() {
     } catch { flash('Failed to recall sale') }
   }
 
-  const handleDiscardHeld = async (heldSaleId) => {
-    if (!window.confirm('Discard this held sale permanently?')) return
+  const handleDiscardHeld = (heldSaleId) => {
+    setConfirmDiscard(heldSaleId)
+  }
+
+  const handleConfirmDiscard = async () => {
+    const heldSaleId = confirmDiscard
+    setConfirmDiscard(null)
     try {
       await discardHeldSale(heldSaleId)
       await loadHeldSales()
@@ -485,9 +608,15 @@ function Sales() {
   })()
 
   // ── Change calculation ────────────────────────────
-  const tenderedNum  = parseFloat(checkoutCashTendered) || 0
-  const changeAmount = Math.max(0, tenderedNum - cartTotal)
-  const isInsufficient = checkoutCashTendered && tenderedNum < cartTotal
+  const tenderedNum    = parseFloat(checkoutCashTendered) || 0
+  const changeAmount   = Math.max(0, tenderedNum - cartTotal)
+  const isInsufficient = checkoutCashTendered !== '' && tenderedNum < cartTotal
+
+  // Split validation
+  const splitCash = parseFloat(splitCashAmt) || 0
+  const splitUsd  = parseFloat(splitUsdAmt)  || 0
+  const splitTotal = splitCash + splitUsd
+  const splitValid = Math.abs(splitTotal - cartTotal) < 0.005
 
   if (loading) {
     return (
@@ -500,6 +629,14 @@ function Sales() {
 
   return (
     <div className="pos-page">
+
+      {/* ── Shift force-closed warning banner (visible while a sale is in progress) ── */}
+      {pendingForceClose && (
+        <div className="pos-force-close-banner">
+          <FiAlertTriangle size={16} />
+          <span>Your shift has been closed by the manager. Please complete this sale, then log out.</span>
+        </div>
+      )}
 
       {/* ── Keyboard shortcut bar ── */}
       <div className="pos-shortcuts">
@@ -617,7 +754,7 @@ function Sales() {
                   return (
                     <button
                       key={product.id}
-                      className={`pos-product${selectedIdx === idx ? ' pos-product--selected' : ''}`}
+                      className={`pos-product${selectedIdx === idx ? ' pos-product--selected' : ''}${!product.selling_price ? ' pos-product--no-price' : ''}`}
                       onClick={(e) => { triggerFly(e.currentTarget.getBoundingClientRect()); addToCart(product) }}
                       disabled={product.current_quantity <= 0}
                     >
@@ -629,7 +766,9 @@ function Sales() {
                       <div className="pos-product-info">
                         <div className="pos-product-name">{product.name}</div>
                         <div className="pos-product-meta">
-                          <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                          {product.selling_price > 0
+                            ? <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                            : <span className="pos-product-price pos-product-price--unset"><FiTag size={11} /> Set price</span>}
                           <span className={`pos-product-stock ${stockClass}`}>
                             {product.current_quantity === 0 ? 'Out of stock' : `${product.current_quantity} in stock`}
                           </span>
@@ -646,7 +785,7 @@ function Sales() {
                 return (
                   <button
                     key={product.id}
-                    className="pos-product"
+                    className={`pos-product${!product.selling_price ? ' pos-product--no-price' : ''}`}
                     onClick={(e) => { triggerFly(e.currentTarget.getBoundingClientRect()); addToCart(product) }}
                     disabled={product.current_quantity <= 0}
                   >
@@ -658,7 +797,9 @@ function Sales() {
                     <div className="pos-product-info">
                       <div className="pos-product-name">{product.name}</div>
                       <div className="pos-product-meta">
-                        <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                        {product.selling_price > 0
+                          ? <span className="pos-product-price">${product.selling_price.toFixed(2)}</span>
+                          : <span className="pos-product-price pos-product-price--unset"><FiTag size={11} /> Set price</span>}
                         <span className={`pos-product-stock ${stockClass}`}>
                           {product.current_quantity === 0 ? 'Out of stock' : `${product.current_quantity} in stock`}
                         </span>
@@ -840,58 +981,148 @@ function Sales() {
         </div>
       </div>
 
-      {/* ── Payment modal ── */}
-      {checkoutStep === 'cashTendered' && (
-        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
+      {/* ── Step 1: Payment method select ── */}
+      {checkoutStep === 'paymentSelect' && (
+        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) setCheckoutStep(null) }}>
           <div className="pay-modal">
-            {/* Green header with total */}
             <div className="pay-modal-top">
               <div className="pay-modal-label">Amount Due</div>
               <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
             </div>
+            <div className="pay-modal-body">
+              <div className="pay-method-label">Select Payment Method</div>
+              <div className="pay-method-row">
+                <button className="pay-method-btn pay-method-cash" onClick={() => handleSelectPaymentMethod('Cash')}>
+                  <span className="pay-method-icon">💵</span>
+                  <span className="pay-method-name">Cash</span>
+                  <span className="pay-method-sub">ZWG / Local</span>
+                </button>
+                <button className="pay-method-btn pay-method-usd" onClick={() => handleSelectPaymentMethod('USD')}>
+                  <span className="pay-method-icon">💲</span>
+                  <span className="pay-method-name">USD</span>
+                  <span className="pay-method-sub">US Dollars</span>
+                </button>
+                <button className="pay-method-btn pay-method-split" onClick={() => handleSelectPaymentMethod('Split')}>
+                  <span className="pay-method-icon">⚡</span>
+                  <span className="pay-method-name">Split</span>
+                  <span className="pay-method-sub">Cash + USD</span>
+                </button>
+              </div>
+              <div className="pay-actions" style={{ marginTop: 16 }}>
+                <button className="pay-cancel-btn" onClick={() => setCheckoutStep(null)}>
+                  <FiChevronLeft size={15} /> Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 2: Amount entry ── */}
+      {checkoutStep === 'cashTendered' && (
+        <div className="pay-overlay" onClick={e => { if (e.target === e.currentTarget) handleBackNavigation() }}>
+          <div className="pay-modal">
+            <div className={`pay-modal-top pay-modal-top--${paymentMethod.toLowerCase()}`}>
+              <div className="pay-modal-label">
+                {paymentMethod === 'Cash' ? 'Cash Payment' : paymentMethod === 'USD' ? 'USD Payment' : 'Split Payment'}
+              </div>
+              <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
+            </div>
 
             <div className="pay-modal-body">
-              {/* Quick amount buttons */}
-              <div className="pay-quick-label">Quick Cash</div>
-              <div className="pay-quick-row">
-                {quickAmounts.map(({ label, value, isExact }) => (
-                  <button
-                    key={label}
-                    className={`pay-quick-btn ${isExact ? 'exact' : ''}`}
-                    onClick={() => setCheckoutCashTendered(value)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {paymentMethod !== 'Split' ? (
+                <>
+                  {/* Quick amount buttons */}
+                  <div className="pay-quick-label">Quick {paymentMethod === 'USD' ? 'USD' : 'Cash'}</div>
+                  <div className="pay-quick-row">
+                    {quickAmounts.map(({ label, value, isExact }) => (
+                      <button
+                        key={label}
+                        className={`pay-quick-btn ${isExact ? 'exact' : ''}`}
+                        onClick={() => setCheckoutCashTendered(value)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
 
-              {/* Cash input */}
-              <div className="pay-input-label">Cash Tendered</div>
-              <div className="pay-input-wrap">
-                <span className="pay-input-symbol">$</span>
-                <input
-                  ref={cashInputRef}
-                  type="number"
-                  className="pay-cash-input"
-                  placeholder="0.00"
-                  value={checkoutCashTendered}
-                  onChange={e => setCheckoutCashTendered(e.target.value)}
-                  onClick={e => e.target.select()}
-                  step="any"
-                  min="0"
-                />
-              </div>
+                  <div className="pay-input-label">{paymentMethod === 'USD' ? 'USD Tendered' : 'Cash Tendered'}</div>
+                  <div className="pay-input-wrap">
+                    <span className="pay-input-symbol">$</span>
+                    <input
+                      ref={cashInputRef}
+                      type="number"
+                      className="pay-cash-input"
+                      placeholder="0.00"
+                      value={checkoutCashTendered}
+                      onChange={e => setCheckoutCashTendered(e.target.value)}
+                      onClick={e => e.target.select()}
+                      step="any"
+                      min="0"
+                    />
+                  </div>
 
-              {/* Change display */}
-              {checkoutCashTendered && (
-                <div className={`pay-change ${isInsufficient ? 'insufficient' : ''}`}>
-                  <span className="pay-change-label">{isInsufficient ? 'Short by' : 'Change'}</span>
-                  <span className="pay-change-value">
-                    {isInsufficient
-                      ? `$${(cartTotal - tenderedNum).toFixed(2)}`
-                      : `$${changeAmount.toFixed(2)}`}
-                  </span>
-                </div>
+                  {checkoutCashTendered !== '' && (
+                    <div className={`pay-change ${isInsufficient ? 'insufficient' : ''}`}>
+                      <span className="pay-change-label">{isInsufficient ? 'Short by' : 'Change'}</span>
+                      <span className="pay-change-value">
+                        {isInsufficient
+                          ? `$${(cartTotal - tenderedNum).toFixed(2)}`
+                          : `$${changeAmount.toFixed(2)}`}
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                /* Split payment inputs */
+                <>
+                  <div className="pay-split-hint">Enter amounts that add up to <strong>${cartTotal.toFixed(2)}</strong></div>
+                  <div className="pay-split-row">
+                    <div className="pay-split-field">
+                      <div className="pay-input-label">Cash (ZWG)</div>
+                      <div className="pay-input-wrap">
+                        <span className="pay-input-symbol">$</span>
+                        <input
+                          ref={cashInputRef}
+                          type="number"
+                          className="pay-cash-input"
+                          placeholder="0.00"
+                          value={splitCashAmt}
+                          onChange={e => setSplitCashAmt(e.target.value)}
+                          onClick={e => e.target.select()}
+                          step="any"
+                          min="0"
+                        />
+                      </div>
+                    </div>
+                    <div className="pay-split-field">
+                      <div className="pay-input-label">USD</div>
+                      <div className="pay-input-wrap">
+                        <span className="pay-input-symbol">$</span>
+                        <input
+                          type="number"
+                          className="pay-cash-input"
+                          placeholder="0.00"
+                          value={splitUsdAmt}
+                          onChange={e => setSplitUsdAmt(e.target.value)}
+                          onClick={e => e.target.select()}
+                          step="any"
+                          min="0"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className={`pay-change ${splitCashAmt || splitUsdAmt ? (splitValid ? '' : 'insufficient') : ''}`}>
+                    <span className="pay-change-label">Total entered</span>
+                    <span className="pay-change-value">
+                      ${splitTotal.toFixed(2)}
+                      {(splitCashAmt || splitUsdAmt) && (splitValid
+                        ? <span style={{ marginLeft: 6, color: '#4caf50', fontSize: 12 }}>✓</span>
+                        : <span style={{ marginLeft: 6, color: '#f44336', fontSize: 12 }}> (need ${cartTotal.toFixed(2)})</span>
+                      )}
+                    </span>
+                  </div>
+                </>
               )}
 
               {/* Actions */}
@@ -901,8 +1132,12 @@ function Sales() {
                 </button>
                 <button
                   className="pay-complete-btn"
-                  onClick={() => handleCompleteCheckout(checkoutCashTendered)}
-                  disabled={!checkoutCashTendered || isInsufficient || isProcessing}
+                  onClick={() => handleCompleteCheckout()}
+                  disabled={
+                    isProcessing ||
+                    (paymentMethod !== 'Split' && (!checkoutCashTendered || isInsufficient)) ||
+                    (paymentMethod === 'Split' && !splitValid)
+                  }
                 >
                   {isProcessing ? 'Processing…' : 'Complete Sale'}
                   {!isProcessing && <span className="pay-enter-hint">↵</span>}
@@ -921,6 +1156,9 @@ function Sales() {
               <FiCheck size={32} color="white" strokeWidth={3} />
             </div>
             <div className="sale-success-title">Sale Complete!</div>
+            <div className="sale-success-pay-badge">
+              {lastSale.paymentMethod === 'USD' ? '💲 USD' : lastSale.paymentMethod === 'Split' ? '⚡ Split' : '💵 Cash'}
+            </div>
             <div className="sale-success-amounts">
               <div className="sale-success-amount">
                 <div className="sale-success-amount-label">Total</div>
@@ -968,6 +1206,42 @@ function Sales() {
                   {isProcessing ? 'Processing…' : 'Void Sale'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Set price modal (no-price products) ── */}
+      {priceRequiredProduct && (
+        <div className="set-price-overlay" onClick={e => { if (e.target === e.currentTarget) setPriceRequiredProduct(null) }}>
+          <div className="set-price-modal">
+            <div className="set-price-icon"><FiTag size={28} /></div>
+            <h3 className="set-price-title">Set Selling Price</h3>
+            <p className="set-price-product-name">{priceRequiredProduct.name}</p>
+            <p className="set-price-hint">This product has no price. Set one now to add it to the cart.</p>
+            <div className="set-price-input-wrap">
+              <span className="set-price-symbol">$</span>
+              <input
+                className="set-price-input"
+                type="number"
+                placeholder="0.00"
+                value={priceInput}
+                onChange={e => setPriceInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSetPriceConfirm() }}
+                step="0.01"
+                min="0.01"
+                autoFocus
+              />
+            </div>
+            <div className="set-price-actions">
+              <button className="set-price-cancel" onClick={() => setPriceRequiredProduct(null)}>Cancel</button>
+              <button
+                className="set-price-confirm"
+                onClick={handleSetPriceConfirm}
+                disabled={!priceInput || parseFloat(priceInput) <= 0 || isSavingPrice}
+              >
+                {isSavingPrice ? 'Saving…' : 'Set Price & Add to Cart'}
+              </button>
             </div>
           </div>
         </div>
@@ -1026,6 +1300,16 @@ function Sales() {
         </div>
       )}
 
+    {confirmDiscard && (
+      <ConfirmModal
+        message="Discard this held sale?"
+        detail="This sale will be permanently removed and stock will be returned."
+        confirmLabel="Discard"
+        danger
+        onConfirm={handleConfirmDiscard}
+        onCancel={() => setConfirmDiscard(null)}
+      />
+    )}
     </div>
   )
 }

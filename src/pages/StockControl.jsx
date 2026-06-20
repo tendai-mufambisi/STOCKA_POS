@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings } from '../database/db'
+import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
+import { useLanSync } from '../hooks/useLanSync'
 import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
 import './StockControl.css'
@@ -106,6 +107,7 @@ function StockControl() {
   const { user } = useAuthStore()
 
   const [purchaseType, setPurchaseType] = useState('supplier')
+  const [productPriceInfo, setProductPriceInfo] = useState(null)
 
   const emptyForm = {
     product_id: '',
@@ -116,7 +118,8 @@ function StockControl() {
     cost_per_carton: '',
     quantity: '',
     cost_per_unit: '',
-    notes: ''
+    notes: '',
+    new_selling_price: ''
   }
   const [formData, setFormData] = useState(emptyForm)
 
@@ -173,12 +176,13 @@ function StockControl() {
   const [sortConfig, setSortConfig] = useState({ column: 'date', direction: 'desc' })
 
   useEffect(() => { loadData() }, [])
+  useLanSync(() => loadData(true))
 
   useEffect(() => { applyHistoryFilters() }, [receivings, historySearch, historyTypeFilter, historySupplierFilter, sortConfig])
 
-  const loadData = async () => {
+  const loadData = async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const [p, s, h] = await Promise.all([getProducts(), getSuppliers(), getAllPurchaseHistory()])
       setProducts(p)
       setSuppliers(s)
@@ -187,7 +191,7 @@ function StockControl() {
       setError('Failed to load data')
       console.error(err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -247,13 +251,30 @@ function StockControl() {
   const directCpu = parseFloat(formData.cost_per_unit) || 0
   const directTotalValue = directQty * directCpu
 
+  // Profit calculations — use new selling price if being updated, otherwise current
+  const effectiveSP = parseFloat(formData.new_selling_price) > 0
+    ? parseFloat(formData.new_selling_price)
+    : (productPriceInfo?.selling_price_per_unit || 0)
+  const showProfit = effectiveSP > 0 && directCpu > 0
+  const profitPerUnit = effectiveSP - directCpu
+  const totalProfit = profitPerUnit * directQty
+  const profitMarginPct = effectiveSP > 0 ? (profitPerUnit / effectiveSP) * 100 : 0
+
   const handleFieldChange = (name, value) => {
     setFormData(prev => ({ ...prev, [name]: value }))
+    if (name === 'product_id') {
+      if (value) {
+        getLatestProductPrice(parseInt(value)).then(info => setProductPriceInfo(info)).catch(() => setProductPriceInfo(null))
+      } else {
+        setProductPriceInfo(null)
+      }
+    }
   }
 
   const handleTypeChange = (type) => {
     setPurchaseType(type)
     setFormData(emptyForm)
+    setProductPriceInfo(null)
     setError('')
   }
 
@@ -265,6 +286,7 @@ function StockControl() {
     if (!formData.product_id) { setError('Please select a product'); return }
 
     try {
+      let msg = ''
       if (purchaseType === 'supplier') {
         if (!formData.supplier_id) { setError('Please select a supplier'); return }
         if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
@@ -281,8 +303,7 @@ function StockControl() {
           total_value: directTotalValue,
           recorded_by: user?.username || 'System'
         })
-
-        setSuccessMessage('Stock received and inventory updated!')
+        msg = 'Stock received and inventory updated!'
       } else {
         if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
 
@@ -294,14 +315,24 @@ function StockControl() {
           notes: formData.notes,
           recorded_by: user?.username || 'System'
         })
-
         const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || ''
-        setSuccessMessage(`${directQty} units of "${productName}" added to stock!`)
+        msg = `${directQty} units of "${productName}" added to stock!`
       }
 
-      setTimeout(() => setSuccessMessage(''), 4000)
+      const newSP = parseFloat(formData.new_selling_price)
+      if (newSP > 0) {
+        const prod = products.find(p => p.id === parseInt(formData.product_id))
+        if (prod) {
+          await updateProduct(prod.id, { ...prod, selling_price: newSP })
+          msg += ` Selling price updated to $${newSP.toFixed(2)}.`
+        }
+      }
+
+      setSuccessMessage(msg)
+      setTimeout(() => setSuccessMessage(''), 5000)
       setFormData(emptyForm)
       setPurchaseType('supplier')
+      setProductPriceInfo(null)
       setShowForm(false)
       await loadData()
     } catch (err) {
@@ -331,9 +362,9 @@ function StockControl() {
 
   const downloadImportTemplate = () => {
     const templateData = [
-      { 'Product Name': 'Bread', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', 'Date Received': '2026-06-17', Quantity: 48, 'Cost Per Unit': 0.80, Notes: '' },
-      { 'Product Name': 'Cooking Oil 2L', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', 'Date Received': '2026-06-17', Quantity: 24, 'Cost Per Unit': 3.20, Notes: '' },
-      { 'Product Name': 'Salt 1kg', 'Purchase Type': 'direct', 'Supplier Name': '', 'Date Received': '2026-06-17', Quantity: 10, 'Cost Per Unit': 0.50, Notes: 'Cash purchase at market' },
+      { 'Product Name': 'Bread', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 48, 'Cost Per Unit': 0.80, Notes: '' },
+      { 'Product Name': 'Cooking Oil 2L', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 24, 'Cost Per Unit': 3.20, Notes: '' },
+      { 'Product Name': 'Salt 1kg', 'Purchase Type': 'direct', 'Supplier Name': '', Quantity: 10, 'Cost Per Unit': 0.50, Notes: 'Cash purchase at market' },
     ]
     const ws = utils.json_to_sheet(templateData)
     const wb = utils.book_new()
@@ -403,11 +434,16 @@ function StockControl() {
     setImporting(true)
     try {
       const result = await importStockReceivings(importPreview.valid, user?.username || 'Import')
+      if (result.inserted === 0 && result.errors && result.errors.length > 0) {
+        setImportError(`Import failed — ${result.errors[0]}${result.errors.length > 1 ? ` (and ${result.errors.length - 1} more)` : ''}`)
+        return
+      }
       setShowImportModal(false)
       setImportPreview({ valid: [], skipped: 0 })
       const parts = [`${result.inserted} receiving${result.inserted !== 1 ? 's' : ''} imported`]
       if (result.created_products)  parts.push(`${result.created_products} new product${result.created_products !== 1 ? 's' : ''} created`)
       if (result.created_suppliers) parts.push(`${result.created_suppliers} new supplier${result.created_suppliers !== 1 ? 's' : ''} created`)
+      if (result.errors && result.errors.length > 0) parts.push(`${result.errors.length} row${result.errors.length !== 1 ? 's' : ''} skipped`)
       setSuccessMessage(parts.join(' · '))
       setTimeout(() => setSuccessMessage(''), 5000)
       await loadData()
@@ -430,7 +466,7 @@ function StockControl() {
       {successMessage && <div className="success-banner">{successMessage}</div>}
 
       <div className="toolbar">
-        <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm) }}>
+        <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm); setProductPriceInfo(null) }}>
           {showForm ? <><FiX size={16} />Cancel</> : <><FiPlus size={16} />Record Stock</>}
         </button>
         <button className="btn btn-secondary" onClick={() => importFileRef.current.click()}>
@@ -529,6 +565,25 @@ function StockControl() {
               </div>
             )}
 
+            {/* ── Product price context panel ── */}
+            {productPriceInfo && formData.product_id && quickAddMode !== 'product' && (
+              <div className="product-price-info">
+                <div className="ppi-item">
+                  <span className="ppi-label">Current Selling Price</span>
+                  <span className={`ppi-value ${productPriceInfo.selling_price_per_unit > 0 ? 'ppi-selling' : 'ppi-none'}`}>
+                    {productPriceInfo.selling_price_per_unit > 0 ? `$${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'Not set'}
+                  </span>
+                </div>
+                <div className="ppi-divider" />
+                <div className="ppi-item">
+                  <span className="ppi-label">Last Restock Cost/Unit</span>
+                  <span className={`ppi-value ${productPriceInfo.cost_per_unit > 0 ? 'ppi-cost' : 'ppi-none'}`}>
+                    {productPriceInfo.cost_per_unit > 0 ? `$${productPriceInfo.cost_per_unit.toFixed(2)}` : 'No previous restock'}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* ── Step 3: Supplier (supplier type only) ── */}
             {purchaseType === 'supplier' && (
               <div className="form-row">
@@ -620,6 +675,21 @@ function StockControl() {
                   </div>
                 </div>
 
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Update Selling Price (USD)</label>
+                    <input
+                      type="number"
+                      value={formData.new_selling_price}
+                      onChange={e => handleFieldChange('new_selling_price', e.target.value)}
+                      placeholder={productPriceInfo?.selling_price_per_unit > 0 ? `Current: $${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'e.g. 1.50'}
+                      step="any"
+                      min="0"
+                    />
+                    <p className="field-hint">Leave blank to keep the current selling price</p>
+                  </div>
+                </div>
+
                 {directQty > 0 && (
                   <div className="calculations-panel">
                     <div className="calc-row">
@@ -631,8 +701,31 @@ function StockControl() {
                         <span className="calc-label">Total Cost:</span>
                         <span className="calc-value">${directTotalValue.toFixed(2)}</span>
                       </div>
+                      {showProfit && (
+                        <div className="calc-item">
+                          <span className="calc-label">Profit per Unit:</span>
+                          <span className={`calc-value ${profitPerUnit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {profitPerUnit >= 0 ? '+' : ''}${profitPerUnit.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                      {showProfit && directQty > 0 && (
+                        <div className="calc-item">
+                          <span className="calc-label">Total Profit:</span>
+                          <span className={`calc-value ${totalProfit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                      {showProfit && (
+                        <div className="calc-item">
+                          <span className="calc-label">Margin:</span>
+                          <span className={`calc-value ${profitMarginPct >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {profitMarginPct.toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    <p className="calc-note">Selling price is managed separately in the Products section</p>
                   </div>
                 )}
               </>
@@ -668,6 +761,21 @@ function StockControl() {
                   </div>
                 </div>
 
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Update Selling Price (USD)</label>
+                    <input
+                      type="number"
+                      value={formData.new_selling_price}
+                      onChange={e => handleFieldChange('new_selling_price', e.target.value)}
+                      placeholder={productPriceInfo?.selling_price_per_unit > 0 ? `Current: $${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'e.g. 1.50'}
+                      step="any"
+                      min="0"
+                    />
+                    <p className="field-hint">Leave blank to keep the current selling price</p>
+                  </div>
+                </div>
+
                 {directQty > 0 && (
                   <div className="calculations-panel">
                     <div className="calc-row">
@@ -679,8 +787,31 @@ function StockControl() {
                         <span className="calc-label">Total Cost:</span>
                         <span className="calc-value">${directTotalValue.toFixed(2)}</span>
                       </div>
+                      {showProfit && (
+                        <div className="calc-item">
+                          <span className="calc-label">Profit per Unit:</span>
+                          <span className={`calc-value ${profitPerUnit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {profitPerUnit >= 0 ? '+' : ''}${profitPerUnit.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                      {showProfit && directQty > 0 && (
+                        <div className="calc-item">
+                          <span className="calc-label">Total Profit:</span>
+                          <span className={`calc-value ${totalProfit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                      {showProfit && (
+                        <div className="calc-item">
+                          <span className="calc-label">Margin:</span>
+                          <span className={`calc-value ${profitMarginPct >= 0 ? 'calc-profit' : 'calc-loss'}`}>
+                            {profitMarginPct.toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    <p className="calc-note">Selling price is managed separately in the Products section</p>
                   </div>
                 )}
 
@@ -702,7 +833,7 @@ function StockControl() {
               <button type="submit" className="btn btn-primary">
                 {purchaseType === 'supplier' ? <><FiCheck size={14} /> Record Stock Receiving</> : <><FiCheck size={14} /> Confirm Direct Purchase</>}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setError('') }}>
+              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setError('') }}>
                 Cancel
               </button>
             </div>

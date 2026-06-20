@@ -29,7 +29,7 @@ function Settings() {
   const [formData, setFormData] = useState({
     name: '', address: '', phone: '', email: '', currency: 'USD',
     printer_name: '', printer_port: 'COM3', auto_print: 1, print_duplicate: 0,
-    receipt_width_mm: 58, receipt_footer: 'Thank you for your business!',
+    receipt_width_mm: 58, receipt_footer: 'Thank you for your business!', receipt_name_size: 'large',
     vat_rate: 0, default_reorder_level: 5, variance_tolerance: 0.01
   })
 
@@ -84,6 +84,7 @@ function Settings() {
           print_duplicate: shop.print_duplicate !== undefined ? shop.print_duplicate : 0,
           receipt_width_mm: shop.receipt_width_mm || 58,
           receipt_footer: shop.receipt_footer !== undefined ? shop.receipt_footer : 'Thank you for your business!',
+          receipt_name_size: shop.receipt_name_size || 'large',
           vat_rate: shop.vat_rate !== undefined ? shop.vat_rate : 0,
           default_reorder_level: shop.default_reorder_level || 5,
           variance_tolerance: shop.variance_tolerance !== undefined ? shop.variance_tolerance : 0.01
@@ -636,6 +637,29 @@ function Settings() {
                     ))}
                   </div>
                   <p className="s-hint">Match this to the paper roll in your printer. Wrong setting causes split lines on receipts.</p>
+                </div>
+
+                <div className="s-field">
+                  <label className="s-label">Shop Name Font Size</label>
+                  <div className="s-radio-group s-radio-group--mt">
+                    {[
+                      { value: 'large',  title: 'Large (auto-fit)', sub: 'Double-size · shrinks if name is too long' },
+                      { value: 'medium', title: 'Medium',           sub: 'Double height, normal width · always fits' },
+                      { value: 'normal', title: 'Normal',           sub: 'Same size as body text · guaranteed single line' },
+                    ].map(opt => (
+                      <label key={opt.value}
+                        className={`s-radio-option ${formData.receipt_name_size === opt.value ? 'chosen' : ''}`}>
+                        <input type="radio" name="receipt_name_size" value={opt.value}
+                          checked={formData.receipt_name_size === opt.value}
+                          onChange={() => setFormData({ ...formData, receipt_name_size: opt.value })} />
+                        <span>
+                          <div className="s-radio-title">{opt.title}</div>
+                          <div className="s-radio-sub">{opt.sub}</div>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="s-hint">If your shop name wraps to a second line on receipts, switch to Medium or Normal.</p>
                 </div>
 
                 <div className="s-field">

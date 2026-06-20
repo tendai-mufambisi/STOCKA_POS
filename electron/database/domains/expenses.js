@@ -4,8 +4,8 @@ const { logAuditAction } = require('./audit')
 function addExpense(expense) {
   const db = getDb()
   const { lastInsertRowid: expenseId } = db.prepare(
-    `INSERT INTO expenses (description, amount, category, date, recorded_by, shift_id) VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(expense.description, expense.amount, expense.category, expense.date, expense.recorded_by, expense.shift_id || null)
+    `INSERT INTO expenses (description, amount, category, date, recorded_by, shift_id, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(expense.description, expense.amount, expense.category, expense.date, expense.recorded_by, expense.shift_id || null, expense.payment_method || 'Cash')
   try {
     logAuditAction(expense.recorded_by, 'CREATE_EXPENSE', 'EXPENSE', String(expenseId),
       `${expense.category} expense: ${expense.description} | Amount: $${expense.amount}`)
@@ -22,8 +22,8 @@ function getExpenseById(id) {
 
 function updateExpense(id, expense) {
   getDb().prepare(
-    `UPDATE expenses SET description = ?, amount = ?, category = ?, date = ? WHERE id = ?`
-  ).run(expense.description, expense.amount, expense.category, expense.date, id)
+    `UPDATE expenses SET description = ?, amount = ?, category = ?, date = ?, payment_method = ?, sync_updated_at = datetime('now') WHERE id = ?`
+  ).run(expense.description, expense.amount, expense.category, expense.date, expense.payment_method || 'Cash', id)
 }
 
 function deleteExpense(id) {

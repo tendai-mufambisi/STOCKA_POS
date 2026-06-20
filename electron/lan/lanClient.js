@@ -8,12 +8,13 @@ const WRITE_CHANNELS = new Set([
   'domain:products:add', 'domain:products:update', 'domain:products:delete',
   'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
-  'domain:stock:addReceiving', 'domain:stock:recordDirect',
+  'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings',
+  'domain:stock:recordInitialCost', 'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
   'domain:users:add', 'domain:users:update', 'domain:users:deactivate',
-  'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales',
+  'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales', 'domain:shifts:closeAll', 'domain:shifts:reopen',
   'domain:notifications:create', 'domain:notifications:clearForProduct', 'domain:notifications:markRead',
   'domain:eod:add',
   'domain:audit:log', 'domain:audit:cleanup',
@@ -21,8 +22,8 @@ const WRITE_CHANNELS = new Set([
   'domain:holds:create', 'domain:holds:deleteOnLogout', 'domain:holds:release',
 ])
 
-const PING_INTERVAL_MS = 3000
-const SYNC_INTERVAL_MS = 5_000
+const PING_INTERVAL_MS = 8000   // was 3000 — less aggressive on WiFi, avoids false disconnects from single dropped packets
+const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handles instant push anyway
 
 let _cfg = null          // { serverIp, serverPort, secret }
 let _online = false
@@ -179,7 +180,7 @@ async function ping() {
   return new Promise((resolve) => {
     const opts = {
       hostname: _cfg.serverIp, port: _cfg.serverPort,
-      path: '/lan/ping', method: 'GET', timeout: 1500,
+      path: '/lan/ping', method: 'GET', timeout: 3000,
     }
     const req = http.request(opts, (res) => {
       res.resume() // drain
@@ -215,6 +216,13 @@ async function syncFromServer() {
       db.transaction((r) => { for (const row of r) stmt.run(cols.map(c => row[c])) })(rows)
     }
 
+    // Snapshot row counts for always-full tables BEFORE upserting so we can
+    // detect additions/removals (upsert can't delete, but counts help for adds).
+    const prevUsers     = db.prepare('SELECT COUNT(*) FROM users').pluck().get()
+    const prevSuppliers = db.prepare('SELECT COUNT(*) FROM suppliers').pluck().get()
+    const prevBranches  = db.prepare('SELECT COUNT(*) FROM branches').pluck().get()
+    const prevShopHash  = JSON.stringify(db.prepare('SELECT * FROM shops LIMIT 1').get() || {})
+
     if (body.products)   upsert('products', body.products)
     if (body.sales)      upsert('sales', body.sales)
     if (body.sale_items) upsert('sale_items', body.sale_items)
@@ -240,8 +248,23 @@ async function syncFromServer() {
       ).run(cols.map(c => merged[c]))
     }
 
+    // Only notify the renderer when something actually changed.
+    // Firing on every timer tick (even with empty deltas) caused constant
+    // UI reloads / flicker on all pages subscribed to lan:synced.
+    const hasChanges =
+      body.products?.length   > 0 ||
+      body.sales?.length       > 0 ||
+      body.sale_items?.length  > 0 ||
+      body.expenses?.length    > 0 ||
+      body.shifts?.length      > 0 ||
+      body.stock?.length       > 0 ||
+      db.prepare('SELECT COUNT(*) FROM users').pluck().get()     !== prevUsers     ||
+      db.prepare('SELECT COUNT(*) FROM suppliers').pluck().get() !== prevSuppliers ||
+      db.prepare('SELECT COUNT(*) FROM branches').pluck().get()  !== prevBranches  ||
+      JSON.stringify(db.prepare('SELECT * FROM shops LIMIT 1').get() || {}) !== prevShopHash
+
     _lastSync = body.fetched_at || new Date().toISOString()
-    if (_notify) _notify('lan:synced', { lastSync: _lastSync })
+    if (hasChanges && _notify) _notify('lan:synced', { lastSync: _lastSync })
   } catch (err) {
     logger.warn(`[LAN Client] Sync from server failed: ${err.code || err.message}`)
   }
@@ -349,6 +372,7 @@ function connectEventStream() {
           try {
             const ev = JSON.parse(line.slice(6))
             if (ev.type === 'change') syncFromServer()
+            if (ev.type === 'eod_closed' && _notify) _notify('lan:eod-closed', { date: ev.date, closedBy: ev.closedBy })
           } catch (_) {}
         }
       }

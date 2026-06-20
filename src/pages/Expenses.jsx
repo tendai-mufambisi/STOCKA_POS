@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { addExpense, getExpenses, updateExpense, deleteExpense } from '../database/db'
+import ConfirmModal from '../components/ConfirmModal'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
@@ -16,6 +17,7 @@ function Expenses() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('All')
   const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(null) // { id, description }
   const [formData, setFormData] = useState({
     description: '',
     amount: '',
@@ -106,14 +108,18 @@ function Expenses() {
     setShowForm(true)
   }
 
-  const handleDelete = async (id) => {
-    if (window.confirm('Delete this expense?')) {
-      try {
-        await deleteExpense(id)
-        await loadData()
-      } catch (err) {
-        setError('Failed to delete expense')
-      }
+  const handleDelete = (id, description) => {
+    setConfirmDelete({ id, description })
+  }
+
+  const handleConfirmDelete = async () => {
+    const { id } = confirmDelete
+    setConfirmDelete(null)
+    try {
+      await deleteExpense(id)
+      await loadData()
+    } catch (err) {
+      setError('Failed to delete expense')
     }
   }
 
@@ -253,7 +259,7 @@ function Expenses() {
                   <td className="notes">{e.notes}</td>
                   <td>
                     <button className="btn-icon" onClick={() => handleEdit(e)} title="Edit"><FiEdit2 size={14} /></button>
-                    <button className="btn-icon delete" onClick={() => handleDelete(e.id)} title="Delete"><FiTrash2 size={14} /></button>
+                    <button className="btn-icon delete" onClick={() => handleDelete(e.id, e.description)} title="Delete"><FiTrash2 size={14} /></button>
                   </td>
                 </tr>
               ))}
@@ -261,6 +267,17 @@ function Expenses() {
           </table>
         )}
       </div>
+
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Delete expense?`}
+          detail={`"${confirmDelete.description}" will be permanently removed.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   )
 }

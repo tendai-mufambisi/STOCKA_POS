@@ -243,8 +243,10 @@
   white-space: nowrap;
 }
 
-.sd-badge.open   { background: #fef3c7; color: #b45309; }
-.sd-badge.closed { background: #dcfce7; color: #15803d; }
+.sd-badge.open        { background: #fef3c7; color: #b45309; }
+.sd-badge.closed      { background: #dcfce7; color: #15803d; }
+.sd-badge.recon-short { background: #fee2e2; color: #b91c1c; }
+.sd-badge.recon-over  { background: #eff6ff; color: #1d4ed8; }
 
 .sd-badge.lg { padding: 5px 13px; font-size: 12px; }
 
@@ -603,6 +605,53 @@
 
 .sd-btn.ghost:hover:not(:disabled) { background: #e2e8f0; color: #374151; }
 
+/* ── Transactions list ── */
+.sd-transactions { grid-column: 1 / -1; }
+
+.sd-txn-list { margin-top: 4px; }
+
+.sd-txn-head {
+  display: grid;
+  grid-template-columns: 1fr 70px 80px 80px 32px;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sd-txn-row {
+  display: grid;
+  grid-template-columns: 1fr 70px 80px 80px 32px;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+  align-items: center;
+  font-size: 13px;
+  color: #374151;
+}
+
+.sd-txn-row:hover { background: #f0fdf4; }
+.sd-txn-row:hover .sd-view-btn { color: #2e7d32; }
+
+.sd-txn-ref {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.sd-txn-time { color: #64748b; font-size: 12px; }
+
+.sd-txn-total {
+  font-weight: 700;
+  color: #15803d;
+}
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   .sd-body-grid { grid-template-columns: 1fr; }
@@ -619,4 +668,35 @@
   .sd-summary-card  { max-width: 100%; }
   .sd-thead, .sd-row { grid-template-columns: 1fr 80px 80px 40px; }
   .c-dur, .c-txn { display: none; }
+}
+
+/* ── Reopen shift card ─────────────────────────────────────── */
+.sd-reopen-card {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.sd-reopen-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #166534;
+  font-size: 0.85rem;
+}
+
+.sd-reopen-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: #166534;
+  border-color: #86efac;
 }

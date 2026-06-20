@@ -103,6 +103,7 @@ export default function ActivityLogs() {
                 <th>Time</th>
                 <th>User</th>
                 <th>Action</th>
+                <th>Machine</th>
                 <th>Details</th>
               </tr>
             </thead>
@@ -114,6 +115,7 @@ export default function ActivityLogs() {
                     <td className="alog-time">{fmt(l.created_at)}</td>
                     <td className="alog-user">{l.username || '—'}</td>
                     <td><span className={`alog-badge ${meta.cls}`}>{meta.label}</span></td>
+                    <td className="alog-machine">{l.machine_name || '—'}</td>
                     <td className="alog-desc">{l.description || '—'}</td>
                   </tr>
                 )

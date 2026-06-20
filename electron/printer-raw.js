@@ -53,10 +53,25 @@ function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
   // Init printer
   push(cmd(ESC, 0x40))
 
-  // Shop name — centered, bold, double-height
+  // Shop name — centered, bold, with size chosen by setting or auto-fit
+  // 'large'  → double width+height if name fits (≤ W/2 chars), else double-height only
+  // 'medium' → double height only (fits any name ≤ W chars)
+  // 'normal' → bold, normal size (always fits)
+  const nameSize = shopInfo?.receipt_name_size || 'large'
+  let nameSizeCmd = null
+  if (nameSize === 'normal') {
+    nameSizeCmd = null // bold only
+  } else if (nameSize === 'medium') {
+    nameSizeCmd = cmd(GS, 0x21, 0x01) // double height only
+  } else {
+    // 'large' with auto-fit: drop to medium when name won't fit at double-width
+    nameSizeCmd = shop.length <= Math.floor(W / 2)
+      ? cmd(GS, 0x21, 0x11)  // double width+height
+      : cmd(GS, 0x21, 0x01)  // double height only
+  }
   push(cmd(ESC, 0x61, 0x01))              // center align
   push(cmd(ESC, 0x45, 0x01))              // bold on
-  push(cmd(GS,  0x21, 0x11))             // double width+height
+  if (nameSizeCmd) push(nameSizeCmd)
   push(txt((isDuplicate ? shop + ' (REPRINT)' : shop) + '\n'))
   push(cmd(GS,  0x21, 0x00))             // normal size
   push(cmd(ESC, 0x45, 0x00))             // bold off

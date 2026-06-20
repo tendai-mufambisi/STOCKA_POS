@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
-import { getAllShifts, getShiftSummary, closeShift } from '../database/db'
+import { getAllShifts, getShiftSummary, closeShift, getSalesByShift, reopenShift } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
+import { useLanSync } from '../hooks/useLanSync'
+import ConfirmModal from '../components/ConfirmModal'
 import './ShiftDashboard.css'
 import {
   FiClock, FiCheckCircle, FiAlertCircle, FiEye, FiX,
   FiDollarSign, FiShoppingCart, FiChevronLeft, FiCalendar,
-  FiTrendingUp, FiAlertTriangle
+  FiTrendingUp, FiAlertTriangle, FiRefreshCw
 } from 'react-icons/fi'
+import ReceiptModal from '../components/ReceiptModal'
 
 function ShiftDashboard() {
   const { user } = useAuthStore()
@@ -21,12 +24,17 @@ function ShiftDashboard() {
   const [isClosing, setIsClosing]     = useState(false)
   const [filterStatus, setFilterStatus] = useState('all')
   const [activeTab, setActiveTab]     = useState('list')
+  const [shiftSales, setShiftSales]   = useState([])
+  const [selectedReceipt, setSelectedReceipt] = useState(null)
+  const [isReopening, setIsReopening] = useState(false)
+  const [confirmReopen, setConfirmReopen] = useState(null) // shiftId
 
   useEffect(() => { loadShifts() }, [filterStatus])
+  useLanSync(() => loadShifts(true))
 
-  const loadShifts = async () => {
+  const loadShifts = async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const status = filterStatus === 'all' ? null : filterStatus
       const raw = await getAllShifts(status)
       setAllShifts(raw.map(s => ({
@@ -39,19 +47,23 @@ function ShiftDashboard() {
     } catch {
       setError('Failed to load shifts')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   const handleViewShift = async (shift) => {
     try {
-      const summary = await getShiftSummary(shift.id)
+      const [summary, sales] = await Promise.all([
+        getShiftSummary(shift.id),
+        getSalesByShift(shift.id),
+      ])
       setShiftDetail({
         ...summary,
         cashier_name: summary.cashier_display_name || summary.cashier_username,
         start_time:   summary.started_at,
         end_time:     summary.closed_at,
       })
+      setShiftSales(sales || [])
       setSelectedShift(shift)
       setActiveTab('detail')
     } catch {
@@ -63,6 +75,8 @@ function ShiftDashboard() {
     setActiveTab('list')
     setSelectedShift(null)
     setShiftDetail(null)
+    setShiftSales([])
+    setSelectedReceipt(null)
     setClosingShiftId(null)
     setEndCash('')
     setCloseNotes('')
@@ -84,6 +98,25 @@ function ShiftDashboard() {
       setError(`Failed to close shift: ${err.message}`)
     } finally {
       setIsClosing(false)
+    }
+  }
+
+  const handleReopenShift = (shiftId) => {
+    setConfirmReopen(shiftId)
+  }
+
+  const handleConfirmReopen = async () => {
+    const shiftId = confirmReopen
+    setConfirmReopen(null)
+    setIsReopening(true)
+    try {
+      await reopenShift(shiftId)
+      await loadShifts()
+      handleBackToList()
+    } catch (err) {
+      setError(`Failed to reopen shift: ${err.message}`)
+    } finally {
+      setIsReopening(false)
     }
   }
 
@@ -121,6 +154,7 @@ function ShiftDashboard() {
     .reduce((sum, s) => sum + (s.total_sales || 0), 0)
 
   return (
+    <>
     <div className="sd-page">
 
       {/* ── Summary strip ── */}
@@ -218,7 +252,11 @@ function ShiftDashboard() {
                   <div className="sd-td c-status">
                     {shift.status === 'open'
                       ? <span className="sd-badge open"><FiClock size={11} /> Open</span>
-                      : <span className="sd-badge closed"><FiCheckCircle size={11} /> Closed</span>
+                      : shift.reconciliation_status === 'short'
+                        ? <span className="sd-badge recon-short"><FiAlertCircle size={11} /> Short</span>
+                        : shift.reconciliation_status === 'over'
+                          ? <span className="sd-badge recon-over"><FiAlertCircle size={11} /> Over</span>
+                          : <span className="sd-badge closed"><FiCheckCircle size={11} /> Balanced</span>
                     }
                   </div>
                   <div className="sd-td c-action">
@@ -369,6 +407,56 @@ function ShiftDashboard() {
             </div>
           </div>
 
+          {/* ── Transactions list ── */}
+          {shiftSales.length > 0 && (
+            <div className="sd-section-card sd-transactions">
+              <div className="sd-section-header">
+                <FiShoppingCart size={15} />
+                Transactions ({shiftSales.length})
+              </div>
+              <div className="sd-txn-list">
+                <div className="sd-txn-head">
+                  <span>Receipt #</span>
+                  <span>Time</span>
+                  <span>Items</span>
+                  <span>Total</span>
+                  <span />
+                </div>
+                {shiftSales.map(sale => (
+                  <div key={sale.id} className="sd-txn-row" onClick={() => setSelectedReceipt(sale)}>
+                    <span className="sd-txn-ref">
+                      {sale.receipt_number || `#${sale.id}`}
+                    </span>
+                    <span className="sd-txn-time">
+                      {fmt.time(sale.created_at)}
+                    </span>
+                    <span>{(sale.items || []).length} item{(sale.items || []).length !== 1 ? 's' : ''}</span>
+                    <span className="sd-txn-total">{fmt.money(sale.total)}</span>
+                    <span className="sd-view-btn"><FiEye size={14} /></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Reopen shift (admin only, closed shifts) ── */}
+          {shiftDetail.status === 'closed' && (user?.role === 'Admin' || user?.role === 'Manager') && (
+            <div className="sd-reopen-card">
+              <div className="sd-reopen-info">
+                <FiRefreshCw size={15} />
+                <span>Need to reopen this shift? The cashier will be able to log back in and continue selling.</span>
+              </div>
+              <button
+                className="sd-btn ghost outline sd-reopen-btn"
+                onClick={() => handleReopenShift(shiftDetail.id)}
+                disabled={isReopening}
+              >
+                <FiRefreshCw size={14} />
+                {isReopening ? 'Reopening…' : 'Reopen Shift'}
+              </button>
+            </div>
+          )}
+
           {/* ── Close shift section (only if still open) ── */}
           {shiftDetail.status === 'open' && (
             <div className="sd-close-card">
@@ -430,6 +518,24 @@ function ShiftDashboard() {
         </div>
       )}
     </div>
+
+    {selectedReceipt && (
+      <ReceiptModal
+        sale={selectedReceipt}
+        onClose={() => setSelectedReceipt(null)}
+      />
+    )}
+
+    {confirmReopen && (
+      <ConfirmModal
+        message="Reopen this shift?"
+        detail="The cashier will be able to log in and continue selling."
+        confirmLabel="Reopen"
+        onConfirm={handleConfirmReopen}
+        onCancel={() => setConfirmReopen(null)}
+      />
+    )}
+    </>
   )
 }
 

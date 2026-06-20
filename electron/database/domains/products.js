@@ -15,7 +15,7 @@ function addProduct(product) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     product.name,
-    product.category || '',
+    product.category || null,
     product.supplier_id || null,
     product.unit || 'each',
     product.selling_price || 0,
@@ -29,8 +29,8 @@ function addProduct(product) {
 function updateProduct(id, product) {
   const oldProduct = getProductById(id)
   getDb().prepare(
-    `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, selling_price = ?, reorder_level = ?, description = ?, image_data = ? WHERE id = ?`
-  ).run(product.name, product.category || '', product.supplier_id || null, product.unit || 'each', product.selling_price || 0, product.reorder_level || 5, product.description || '', product.image_data || null, id)
+    `UPDATE products SET name = ?, category = ?, supplier_id = ?, unit = ?, selling_price = ?, reorder_level = ?, description = ?, image_data = ?, sync_updated_at = datetime('now') WHERE id = ?`
+  ).run(product.name, product.category || null, product.supplier_id || null, product.unit || 'each', product.selling_price || 0, product.reorder_level || 5, product.description || '', product.image_data || null, id)
   try {
     if (oldProduct && oldProduct.name !== product.name) {
       logAuditAction('system', 'UPDATE_PRODUCT', 'PRODUCT', String(id),
@@ -48,11 +48,11 @@ function deleteProduct(id) {
 }
 
 function updateProductQuantity(productId, quantity) {
-  getDb().prepare(`UPDATE products SET current_quantity = ? WHERE id = ?`).run(quantity, productId)
+  getDb().prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`).run(quantity, productId)
 }
 
 function updateProductImage(productId, imageData) {
-  getDb().prepare(`UPDATE products SET image_data = ? WHERE id = ?`).run(imageData, productId)
+  getDb().prepare(`UPDATE products SET image_data = ?, sync_updated_at = datetime('now') WHERE id = ?`).run(imageData, productId)
 }
 
 function updateProductLastSoldDate(productId) {

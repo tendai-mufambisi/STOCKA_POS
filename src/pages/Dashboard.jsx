@@ -21,12 +21,16 @@ import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
 import ActivityLogs from './ActivityLogs'
+import MyTransactions from './MyTransactions'
 import Notifications from '../components/Notifications'
 import LanStatusBar from '../components/LanStatusBar'
-import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction } from '../database/db'
+import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary } from '../database/db'
 import { useLanSync } from '../hooks/useLanSync'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
+import ShiftForceClosedModal from '../components/ShiftForceClosedModal'
+import EodClosedModal from '../components/EodClosedModal'
+import { useShiftGuard } from '../hooks/useShiftGuard'
 
 import {
   FiHome,
@@ -48,7 +52,8 @@ import {
   FiCalendar,
   FiArrowRight,
   FiUsers,
-  FiList
+  FiList,
+  FiFileText
 } from 'react-icons/fi'
 
 
@@ -108,9 +113,21 @@ function Dashboard() {
 
   // Shift UI state
   const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
+  const [closingShiftData, setClosingShiftData] = useState(null)
   const [isClosingShift, setIsClosingShift] = useState(false)
   const [showOpeningFloatModal, setShowOpeningFloatModal] = useState(false)
   const [isStartingShift, setIsStartingShift] = useState(false)
+
+  const { shiftForceClosed } = useShiftGuard()
+
+  const [eodClosed, setEodClosed] = useState(null) // { date, closedBy } or null
+
+  useEffect(() => {
+    const lan = window.stocka?.lan
+    if (!lan?.onEodClosed) return
+    const off = lan.onEodClosed((data) => setEodClosed(data))
+    return () => off?.()
+  }, [])
 
   const loadCurrentShift = async () => {
     try {
@@ -151,8 +168,23 @@ function Dashboard() {
     setShowOpeningFloatModal(false)
   }
 
-  const handleCloseShiftClick = () => {
-    if (currentShift) setShowClosingFloatModal(true)
+  const handleCloseShiftClick = async () => {
+    if (!currentShift) return
+    // Fetch the real sales/expenses totals from the DB so the closing modal
+    // shows the correct expected cash (opening float + actual sales − expenses).
+    // The shifts.total_sales_value column is never incremented after sales, so
+    // we always query getShiftSummary instead of relying on that stale column.
+    let enriched = currentShift
+    try {
+      const summary = await getShiftSummary(currentShift.id)
+      enriched = {
+        ...currentShift,
+        total_sales_value: summary.total_sales,
+        total_expenses:    summary.total_expenses,
+      }
+    } catch { /* fall back to raw shift if summary fails */ }
+    setClosingShiftData(enriched)
+    setShowClosingFloatModal(true)
   }
 
   const handleClosingFloatSubmit = async (closingFloat, notes) => {
@@ -170,6 +202,7 @@ function Dashboard() {
   }
 
   const handleClosingFloatCancel = () => {
+    setClosingShiftData(null)
     setShowClosingFloatModal(false)
   }
 
@@ -210,6 +243,18 @@ function Dashboard() {
     setSidebarExpanded(false)
     
     // Navigate to login
+    navigate('/login', { replace: true })
+  }
+
+  // Called from ShiftForceClosedModal — shift is already closed by admin, skip closeShift
+  const forceLogout = async () => {
+    try { await logAuditAction(user?.username || 'unknown', 'LOGOUT', 'USER', String(user?.id || ''), 'Force-logged out via End of Day') } catch (_) {}
+    logout()
+    clearShift()
+    localStorage.removeItem('stocka_db_init')
+    sessionStorage.clear()
+    setActivePage('dashboard')
+    setDashboardStats(null)
     navigate('/login', { replace: true })
   }
 
@@ -297,6 +342,7 @@ function Dashboard() {
     { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock',   roles: ['Admin', 'Manager'] },
     { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock',   roles: ['Admin', 'Manager'] },
+    { id: 'my-transactions', icon: 'file-text', label: 'Transactions',   group: 'sales',   roles: ['Admin', 'Manager', 'Cashier'] },
     { id: 'expenses',   icon: 'credit-card', label: 'Expenses',         group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance', roles: ['Admin', 'Manager'] },
     { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance', roles: ['Admin', 'Manager'] },
@@ -321,6 +367,7 @@ function Dashboard() {
     ops:     'OPERATIONS',
   }
 
+
   // Function to render nav icons
   const renderNavIcon = (iconName) => {
     const iconProps = { size: 20 }
@@ -338,6 +385,7 @@ function Dashboard() {
       case 'calendar': return <FiCalendar {...iconProps} />
       case 'settings': return <FiSettings {...iconProps} />
       case 'list': return <FiList {...iconProps} />
+      case 'file-text': return <FiFileText {...iconProps} />
       default: return null
     }
   }
@@ -466,6 +514,8 @@ function Dashboard() {
         return <DeadStock />
       case 'expiry':
         return <ExpiryTracking />
+      case 'my-transactions':
+        return <MyTransactions />
       case 'activitylogs':
         return <ActivityLogs />
       case 'settings':
@@ -685,13 +735,25 @@ function Dashboard() {
           isLoading={isStartingShift}
         />
       )}
-      {showClosingFloatModal && currentShift && (
+      {showClosingFloatModal && (closingShiftData || currentShift) && (
         <ClosingFloatModal
-          shift={currentShift}
+          shift={closingShiftData || currentShift}
           onConfirm={handleClosingFloatSubmit}
           onCancel={handleClosingFloatCancel}
           isLoading={isClosingShift}
           varianceTolerance={shopSettings?.variance_tolerance ?? 0.01}
+        />
+      )}
+
+      {shiftForceClosed && (
+        <ShiftForceClosedModal onLogout={forceLogout} />
+      )}
+
+      {eodClosed && (
+        <EodClosedModal
+          date={eodClosed.date}
+          closedBy={eodClosed.closedBy}
+          onDismiss={() => setEodClosed(null)}
         />
       )}
     </div>

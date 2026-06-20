@@ -10,3 +10,5 @@ export const getShiftsByCashier = (username, status = null) => w.getByCashier(us
 export const getAllShifts = (status = null, fromDate = null, toDate = null) => w.getAll(status, fromDate, toDate)
 export const getActiveShifts = () => w.getActive()
 export const getShiftSummary = (shiftId) => w.getSummary(shiftId)
+export const closeAllOpenShifts = (data, note) => w.closeAll(data, note)
+export const reopenShift = (shiftId) => w.reopen(shiftId)

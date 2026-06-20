@@ -22,12 +22,13 @@ const WRITE_CHANNELS_SERVER = new Set([
   'domain:products:add', 'domain:products:update', 'domain:products:delete',
   'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
-  'domain:stock:addReceiving', 'domain:stock:recordDirect',
+  'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings', 'domain:stock:recordInitialCost',
+  'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
   'domain:users:add', 'domain:users:update', 'domain:users:deactivate',
-  'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales',
+  'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales', 'domain:shifts:closeAll', 'domain:shifts:reopen',
   'domain:notifications:create', 'domain:notifications:clearForProduct', 'domain:notifications:markRead',
   'domain:eod:add',
   'domain:audit:log', 'domain:audit:cleanup',
@@ -43,6 +44,17 @@ const sseClients = new Map()
 function broadcastChange(channel) {
   if (sseClients.size === 0) return
   const event = `data: ${JSON.stringify({ type: 'change', channel })}\n\n`
+  for (const [id, res] of sseClients) {
+    try { res.write(event) }
+    catch (_) { sseClients.delete(id) }
+  }
+}
+
+// Called after EOD is saved — pushes a dedicated event so satellites can show
+// a day-closed modal without waiting for the next sync cycle.
+function broadcastEodClosed(date, closedBy) {
+  if (sseClients.size === 0) return
+  const event = `data: ${JSON.stringify({ type: 'eod_closed', date, closedBy })}\n\n`
   for (const [id, res] of sseClients) {
     try { res.write(event) }
     catch (_) { sseClients.delete(id) }
@@ -91,6 +103,10 @@ const DISPATCH = {
   'domain:stock:getExpiring':    (...a) => stockDomain.getExpiringProducts(...a),
   'domain:stock:getExpired':     () => stockDomain.getExpiredProducts(),
   'domain:stock:getExpiryReport':() => stockDomain.getExpiryReport(),
+  'domain:stock:importReceivings':    (...a) => stockDomain.importStockReceivings(...a),
+  'domain:stock:recordInitialCost':   (...a) => stockDomain.recordInitialCost(...a),
+  'domain:stock:reconcileProduct':    (...a) => stockDomain.reconcileProduct(...a),
+  'domain:stock:reconcileProducts':   (...a) => stockDomain.reconcileProducts(...a),
 
   'domain:sales:add':           (...a) => sales.addSale(...a),
   'domain:sales:getAll':        () => sales.getSales(),
@@ -106,6 +122,7 @@ const DISPATCH = {
   'domain:sales:getLastReceipt':() => sales.getLastReceiptNumber(),
   'domain:sales:getReceipt':    (...a) => sales.getReceiptBySaleId(...a),
   'domain:sales:updateReceipt': (...a) => sales.updateSaleReceiptNumber(...a),
+  'domain:sales:getByShift':    (...a) => sales.getSalesByShift(...a),
 
   'domain:expenses:add':    (...a) => expenses.addExpense(...a),
   'domain:expenses:getAll': () => expenses.getExpenses(),
@@ -132,6 +149,8 @@ const DISPATCH = {
   'domain:shifts:getAll':         (...a) => shifts.getAllShifts(...a),
   'domain:shifts:getActive':      () => shifts.getActiveShifts(),
   'domain:shifts:getSummary':     (...a) => shifts.getShiftSummary(...a),
+  'domain:shifts:closeAll':       (...a) => shifts.closeAllOpenShifts(...a),
+  'domain:shifts:reopen':         (...a) => shifts.reopenShift(...a),
 
   'domain:notifications:create':          (...a) => notifications.createNotification(...a),
   'domain:notifications:getActive':       () => notifications.getActiveNotifications(),
@@ -272,14 +291,20 @@ const ROUTES = [
     if (!channel || typeof channel !== 'string') return send(res, 400, { error: 'Missing channel' })
     const fn = DISPATCH[channel]
     if (!fn) return send(res, 404, { error: `Unknown channel: ${channel}` })
+    // Tag audit entries with the satellite's IP so the admin log shows which machine acted
+    const clientIp = req.socket.remoteAddress || 'unknown'
+    audit.setRequestMachine(clientIp)
     try {
       const result = fn(...args)
+      audit.clearRequestMachine()
       send(res, 200, { result })
       if (WRITE_CHANNELS_SERVER.has(channel)) {
         broadcastChange(channel)
+        if (channel === 'domain:eod:add') broadcastEodClosed(args[0]?.date, args[0]?.cashier)
         if (_notifyMain) _notifyMain('lan:data-changed', { channel })
       }
     } catch (err) {
+      audit.clearRequestMachine()
       const status = err.message.includes('Insufficient stock') ? 409
         : err.message.includes('not found') ? 404 : 500
       send(res, status, { error: err.message })
@@ -396,17 +421,23 @@ const ROUTES = [
   // admin-managed tables and updates don't reliably bump a timestamp column.
   ['GET',  '/lan/changes', async (req, res, _p, q) => {
     const since = q.get('since') || '1970-01-01T00:00:00.000Z'
+    // SQLite stores datetime as 'YYYY-MM-DD HH:MM:SS' (space, no Z, no milliseconds).
+    // JS ISO strings use 'YYYY-MM-DDTHH:MM:SS.mmmZ' (T separator, Z suffix).
+    // SQLite string comparison: space (0x20) < T (0x54), so any SQLite-format date
+    // is always "less than" a JS ISO string at the same instant — making every delta
+    // query return nothing after the first sync. Convert before querying.
+    const sinceForSql = since.replace('T', ' ').replace(/\.\d{3}Z?$|Z$/, '')
     const { getDb } = require('../database/index')
     const db = getDb()
     send(res, 200, {
       since,
       fetched_at: new Date().toISOString(),
-      products:   db.prepare(`SELECT * FROM products WHERE created_at > ? OR last_sold_date > ?`).all(since, since),
-      sales:      db.prepare(`SELECT * FROM sales WHERE created_at > ?`).all(since),
-      sale_items: db.prepare(`SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.created_at > ?`).all(since),
-      expenses:   db.prepare(`SELECT * FROM expenses WHERE created_at > ?`).all(since),
-      shifts:     db.prepare(`SELECT * FROM shifts WHERE started_at > ? OR closed_at > ?`).all(since, since),
-      stock:      db.prepare(`SELECT * FROM stock_receivings WHERE created_at > ?`).all(since),
+      products:   db.prepare(`SELECT * FROM products WHERE created_at > ? OR last_sold_date > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql, sinceForSql),
+      sales:      db.prepare(`SELECT * FROM sales WHERE created_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql),
+      sale_items: db.prepare(`SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.created_at > ? OR s.sync_updated_at > ?`).all(sinceForSql, sinceForSql),
+      expenses:   db.prepare(`SELECT * FROM expenses WHERE created_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql),
+      shifts:     db.prepare(`SELECT * FROM shifts WHERE started_at > ? OR closed_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql, sinceForSql),
+      stock:      db.prepare(`SELECT * FROM stock_receivings WHERE created_at > ?`).all(sinceForSql),
       users:      db.prepare(`SELECT * FROM users`).all(),
       suppliers:  db.prepare(`SELECT * FROM suppliers`).all(),
       branches:   db.prepare(`SELECT * FROM branches`).all(),
@@ -546,4 +577,4 @@ function getConnectedClients() {
   return [...clients.values()].filter(c => c.lastSeen > cutoff)
 }
 
-module.exports = { createServer, getConnectedClients, generatePairingCode, getPairingInfo }
+module.exports = { createServer, getConnectedClients, generatePairingCode, getPairingInfo, broadcastEodClosed, broadcastChange, WRITE_CHANNELS_SERVER }

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getSuppliers, addSupplier, updateSupplier, deleteSupplier, getStockReceivings } from '../database/db'
+import ConfirmModal from '../components/ConfirmModal'
 import { validateRequired, validateEmail, validatePhone } from '../utils/validation'
 import { FiPlus, FiX, FiEdit2, FiTrash2, FiPhone, FiMail, FiMapPin, FiUser, FiUsers } from 'react-icons/fi'
 import './Suppliers.css'
@@ -20,6 +21,7 @@ function Suppliers() {
   })
   const [receivings, setReceivings] = useState([])
   const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(null) // { id, name }
 
   useEffect(() => {
     loadData()
@@ -105,14 +107,18 @@ function Suppliers() {
     setShowForm(true)
   }
 
-  const handleDelete = async (id) => {
-    if (window.confirm('Delete this supplier?')) {
-      try {
-        await deleteSupplier(id)
-        await loadData()
-      } catch (err) {
-        setError('Failed to delete supplier')
-      }
+  const handleDelete = (id, name) => {
+    setConfirmDelete({ id, name })
+  }
+
+  const handleConfirmDelete = async () => {
+    const { id } = confirmDelete
+    setConfirmDelete(null)
+    try {
+      await deleteSupplier(id)
+      await loadData()
+    } catch (err) {
+      setError('Failed to delete supplier')
     }
   }
 
@@ -260,7 +266,7 @@ function Suppliers() {
                     <h4>{supplier.name}</h4>
                     <div className="actions">
                       <button className="btn-icon" onClick={() => handleEdit(supplier)} title="Edit"><FiEdit2 size={14} /></button>
-                      <button className="btn-icon delete" onClick={() => handleDelete(supplier.id)} title="Delete"><FiTrash2 size={14} /></button>
+                      <button className="btn-icon delete" onClick={() => handleDelete(supplier.id, supplier.name)} title="Delete"><FiTrash2 size={14} /></button>
                     </div>
                   </div>
 
@@ -307,6 +313,17 @@ function Suppliers() {
           </div>
         )}
       </div>
+
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Delete "${confirmDelete.name}"?`}
+          detail="This supplier will be permanently removed."
+          confirmLabel="Delete"
+          danger
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   )
 }

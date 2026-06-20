@@ -1,7 +1,7 @@
 const path = require('path')
 const logger = require('../logger')
 const { getLanConfig, saveLanConfig, getOrCreateSecret, LAN_MODES, DEFAULT_PORT } = require('./lanConfig')
-const { createServer, getConnectedClients, generatePairingCode, getPairingInfo } = require('./lanServer')
+const { createServer, getConnectedClients, generatePairingCode, getPairingInfo, broadcastEodClosed, broadcastChange, WRITE_CHANNELS_SERVER } = require('./lanServer')
 const { startBeacon, scanForServers, getLocalIp } = require('./lanDiscovery')
 const { OfflineQueue } = require('./offlineQueue')
 const { updateMakeHandler } = require('../database/ipc')
@@ -43,6 +43,20 @@ function stopLan() {
   if (_stopBeacon) { _stopBeacon(); _stopBeacon = null }
   if (_server) { _server.close(() => {}); _server = null }
   if (_clientMod) { _clientMod.stopClient(); _clientMod = null }
+}
+
+// When running as the server, wrap write IPC handlers so that every local
+// write also broadcasts a change event to any connected satellite SSE streams.
+function makeServerHandler(channel, fn) {
+  return (event, ...args) => {
+    try {
+      const result = fn(...args)
+      if (WRITE_CHANNELS_SERVER.has(channel)) broadcastChange(channel)
+      return result
+    } catch (err) {
+      return { __error: err.message }
+    }
+  }
 }
 
 function startServerMode(cfg, secret) {
@@ -101,6 +115,7 @@ function initLan(userDataPath, getMainWindow) {
 
   if (cfg.mode === LAN_MODES.SERVER) {
     startServerMode(cfg, secret)
+    lanMakeHandler = makeServerHandler
   } else if (cfg.mode === LAN_MODES.CLIENT && cfg.serverIp) {
     startClientMode(cfg, secret)
     lanMakeHandler = _clientMod.makeHandler
@@ -143,7 +158,7 @@ function initLan(userDataPath, getMainWindow) {
       stopLan()
       if (merged.mode === LAN_MODES.SERVER) {
         startServerMode(merged, sec)
-        lanMakeHandler = null
+        lanMakeHandler = makeServerHandler
       } else if (merged.mode === LAN_MODES.CLIENT && merged.serverIp) {
         startClientMode(merged, sec)
         lanMakeHandler = _clientMod.makeHandler
@@ -224,6 +239,12 @@ function initLan(userDataPath, getMainWindow) {
     ['lan:stop', () => {
       stopLan()
       notifyRenderer('lan:status-changed', getStatus())
+      return { ok: true }
+    }],
+
+    // Admin machine: after EOD is saved locally, push the eod_closed SSE event to all satellites
+    ['lan:broadcast-eod-closed', (event, date, closedBy) => {
+      if (_server) broadcastEodClosed(date, closedBy)
       return { ok: true }
     }],
 

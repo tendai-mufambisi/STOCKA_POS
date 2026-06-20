@@ -107,6 +107,7 @@ contextBridge.exposeInMainWorld('stocka', {
     importReceivings:   (rows, by)   => invoke('domain:stock:importReceivings', rows, by),
     reconcileProduct:   (id, qty, notes, by) => invoke('domain:stock:reconcileProduct', id, qty, notes, by),
     reconcileProducts:  (adjs, by)   => invoke('domain:stock:reconcileProducts', adjs, by),
+    recordInitialCost:  (id, cost, by) => invoke('domain:stock:recordInitialCost', id, cost, by),
   },
 
   // ── SALES ─────────────────────────────────────────────────
@@ -120,11 +121,12 @@ contextBridge.exposeInMainWorld('stocka', {
     recall:        (id)          => invoke('domain:sales:recall', id),
     discard:       (id)          => invoke('domain:sales:discard', id),
     void:          (id, r, by)   => invoke('domain:sales:void', id, r, by),
-    complete:      (id, t, c, s) => invoke('domain:sales:complete', id, t, c, s),
+    complete:      (id, paymentData, shiftId) => invoke('domain:sales:complete', id, paymentData, shiftId),
     getVoided:     ()            => invoke('domain:sales:getVoided'),
     getLastReceipt:()            => invoke('domain:sales:getLastReceipt'),
     getReceipt:    (id)          => invoke('domain:sales:getReceipt', id),
     updateReceipt: (id, num)     => invoke('domain:sales:updateReceipt', id, num),
+    getByShift:    (shiftId)     => invoke('domain:sales:getByShift', shiftId),
   },
 
   // ── EXPENSES ──────────────────────────────────────────────
@@ -160,6 +162,9 @@ contextBridge.exposeInMainWorld('stocka', {
     getAll:         (status, from, to)    => invoke('domain:shifts:getAll', status, from, to),
     getActive:      ()                    => invoke('domain:shifts:getActive'),
     getSummary:     (id)                  => invoke('domain:shifts:getSummary', id),
+    closeAll:       (data, note)          => invoke('domain:shifts:closeAll', data, note),
+    reopen:         (id)                  => invoke('domain:shifts:reopen', id),
+    onForceClose:   (cb) => { const l = (_, d) => cb(d); ipcRenderer.on('shift:force-closed', l); return () => ipcRenderer.removeListener('shift:force-closed', l) },
   },
 
   // ── NOTIFICATIONS ─────────────────────────────────────────
@@ -242,6 +247,10 @@ contextBridge.exposeInMainWorld('stocka', {
     onSynced:       (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:synced', l);          return () => ipcRenderer.removeListener('lan:synced', l) },
     // Fired on the main computer after a satellite write landed via /lan/invoke
     onDataChanged:  (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:data-changed', l);    return () => ipcRenderer.removeListener('lan:data-changed', l) },
+    // Admin: push an EOD-closed SSE event to all connected satellites
+    broadcastDayClosed: (date, by) => ipcRenderer.invoke('lan:broadcast-eod-closed', date, by),
+    // Satellite: fires when the admin machine closes the day
+    onEodClosed:    (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:eod-closed', l);      return () => ipcRenderer.removeListener('lan:eod-closed', l) },
   },
 
   // ── BLUETOOTH SERIAL PRINTER ──────────────────────────────

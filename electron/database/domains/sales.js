@@ -14,8 +14,8 @@ function addSale(sale, saleItems) {
   }
 
   const insertSale = db.prepare(
-    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, currency, note, status, shift_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`
+    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, cash_amount, usd_amount, currency, note, status, shift_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`
   )
   const insertItem = db.prepare(
     `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, cost_price, selling_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -29,9 +29,17 @@ function addSale(sale, saleItems) {
   )
 
   const doSale = db.transaction(() => {
+    const cashAmt = parseFloat(sale.cash_amount) || 0
+    const usdAmt  = parseFloat(sale.usd_amount)  || 0
+    let method = sale.payment_method
+    if (!method) {
+      if (cashAmt > 0 && usdAmt > 0) method = 'Split'
+      else if (usdAmt > 0) method = 'USD'
+      else method = 'Cash'
+    }
     const saleId = insertSale.run(
       sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given,
-      sale.payment_method || 'USD Cash', sale.currency || 'USD', sale.note || '', sale.shift_id || null
+      method, cashAmt, usdAmt, sale.currency || 'USD', sale.note || '', sale.shift_id || null
     ).lastInsertRowid
 
     const now = new Date().toISOString()
@@ -57,7 +65,10 @@ function addSale(sale, saleItems) {
 }
 
 function getSales() {
-  return getDb().prepare('SELECT * FROM sales ORDER BY created_at DESC').all()
+  return getDb().prepare(
+    `SELECT s.*, (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS items_count
+     FROM sales s ORDER BY s.created_at DESC`
+  ).all()
 }
 
 function getSaleById(id) {
@@ -71,7 +82,7 @@ function getSaleItems(saleId) {
 
 function holdSale(saleId, heldName) {
   getDb().prepare(
-    `UPDATE sales SET status = 'held', held_name = ?, held_at = ? WHERE id = ?`
+    `UPDATE sales SET status = 'held', held_name = ?, held_at = ?, sync_updated_at = datetime('now') WHERE id = ?`
   ).run(heldName || `Hold-${saleId}`, new Date().toISOString(), saleId)
 }
 
@@ -81,7 +92,7 @@ function getHeldSales() {
 
 function recallHeldSale(saleId) {
   getDb().prepare(
-    `UPDATE sales SET status = 'pending', released_from_hold_at = ? WHERE id = ?`
+    `UPDATE sales SET status = 'pending', released_from_hold_at = ?, sync_updated_at = datetime('now') WHERE id = ?`
   ).run(new Date().toISOString(), saleId)
   const sale = getSaleById(saleId)
   const items = getSaleItems(saleId)
@@ -126,7 +137,7 @@ function voidSale(saleId, voidReason, voidedBy) {
       updateQty.run((product.current_quantity || 0) + item.quantity, item.product_id)
       insertMovement.run(item.product_id, item.product_name, item.quantity, `Void sale #${saleId}: ${voidReason}`, voidedBy)
     }
-    db.prepare(`UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ? WHERE id = ?`)
+    db.prepare(`UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run(voidReason, voidedBy, now, saleId)
     if (sale.shift_id) {
       db.prepare(`UPDATE shifts SET total_sales_count = MAX(0, total_sales_count - 1), total_sales_value = MAX(0, total_sales_value - ?) WHERE id = ?`)
@@ -138,12 +149,20 @@ function voidSale(saleId, voidReason, voidedBy) {
   return true
 }
 
-function completeHeldSale(saleId, cashTendered, changeGiven, shiftId) {
+function completeHeldSale(saleId, paymentData, shiftId) {
   const db = getDb()
+  const cashAmt = parseFloat(paymentData?.cash_amount) || 0
+  const usdAmt  = parseFloat(paymentData?.usd_amount)  || 0
+  let method = paymentData?.payment_method
+  if (!method) {
+    if (cashAmt > 0 && usdAmt > 0) method = 'Split'
+    else if (usdAmt > 0) method = 'USD'
+    else method = 'Cash'
+  }
   db.prepare(
-    `UPDATE sales SET status = 'completed', cash_tendered = ?, change_given = ?, payment_method = 'USD Cash', shift_id = COALESCE(?, shift_id)
+    `UPDATE sales SET status = 'completed', cash_tendered = ?, change_given = ?, payment_method = ?, cash_amount = ?, usd_amount = ?, shift_id = COALESCE(?, shift_id), sync_updated_at = datetime('now')
      WHERE id = ? AND (status = 'pending' OR status = 'held')`
-  ).run(cashTendered, changeGiven, shiftId || null, saleId)
+  ).run(paymentData?.cash_tendered || 0, paymentData?.change_given || 0, method, cashAmt, usdAmt, shiftId || null, saleId)
   if (shiftId) {
     const sale = getSaleById(saleId)
     if (sale) db.prepare(`UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`)
@@ -161,6 +180,13 @@ function getLastReceiptNumber() {
   return getDb().prepare(`SELECT receipt_number FROM sales WHERE receipt_number IS NOT NULL ORDER BY created_at DESC LIMIT 1`).pluck().get() || null
 }
 
+function getSalesByShift(shiftId) {
+  const sales = getDb().prepare(
+    `SELECT * FROM sales WHERE shift_id = ? AND status = 'completed' ORDER BY created_at DESC`
+  ).all(shiftId)
+  return sales.map(sale => ({ ...sale, items: getSaleItems(sale.id) }))
+}
+
 function getReceiptBySaleId(saleId) {
   const sale = getSaleById(saleId)
   if (!sale) return null
@@ -168,11 +194,11 @@ function getReceiptBySaleId(saleId) {
 }
 
 function updateSaleReceiptNumber(saleId, receiptNumber) {
-  getDb().prepare('UPDATE sales SET receipt_number = ? WHERE id = ?').run(receiptNumber, saleId)
+  getDb().prepare(`UPDATE sales SET receipt_number = ?, sync_updated_at = datetime('now') WHERE id = ?`).run(receiptNumber, saleId)
 }
 
 module.exports = {
   addSale, getSales, getSaleById, getSaleItems, holdSale, getHeldSales,
   recallHeldSale, discardHeldSale, voidSale, completeHeldSale, getVoidedSales,
-  getLastReceiptNumber, getReceiptBySaleId, updateSaleReceiptNumber
+  getLastReceiptNumber, getReceiptBySaleId, updateSaleReceiptNumber, getSalesByShift
 }

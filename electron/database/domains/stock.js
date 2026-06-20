@@ -51,8 +51,19 @@ function getAllPurchaseHistory() {
     FROM stock_receivings sr
     LEFT JOIN products p ON sr.product_id = p.id
     LEFT JOIN suppliers s ON sr.supplier_id = s.id
+    WHERE sr.total_units > 0
     ORDER BY sr.created_at DESC, sr.date_received DESC
   `).all()
+}
+
+function recordInitialCost(productId, costPerUnit, recordedBy) {
+  const db = getDb()
+  const product = getProductById(productId)
+  if (!product) throw new Error(`Product with ID ${productId} not found`)
+  db.prepare(
+    `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
+     VALUES (NULL, ?, ?, 0, 0, 0, 0, ?, 0, ?)`
+  ).run(productId, new Date().toISOString().split('T')[0], parseFloat(costPerUnit) || 0, recordedBy || 'System')
 }
 
 function recordDirectPurchase(purchase) {
@@ -157,7 +168,7 @@ function getExpiryReport() {
 function importStockReceivings(rows, recordedBy) {
   const db = getDb()
   const findProduct    = db.prepare(`SELECT id, name FROM products WHERE LOWER(name) = LOWER(?) LIMIT 1`)
-  const insertProduct  = db.prepare(`INSERT INTO products (name, category, unit, selling_price, reorder_level, current_quantity, description) VALUES (?, '', 'each', 0, 5, 0, '')`)
+  const insertProduct  = db.prepare(`INSERT INTO products (name, unit, selling_price, reorder_level, current_quantity) VALUES (?, 'each', 0, 5, 0)`)
   const findSupplier   = db.prepare(`SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) LIMIT 1`)
   const insertSupplier = db.prepare(`INSERT INTO suppliers (name) VALUES (?)`)
   const insertReceiving = db.prepare(
@@ -185,7 +196,7 @@ function importStockReceivings(rows, recordedBy) {
         if (qty <= 0) { errors.push(`Row ${i + 2}: quantity must be > 0`); continue }
 
         const cpu  = parseFloat(row.cost_per_unit) || 0
-        const date = row.date_received || new Date().toISOString().split('T')[0]
+        const date = new Date().toISOString().split('T')[0]
         const type = String(row.purchase_type || 'supplier').toLowerCase().trim() === 'direct' ? 'direct' : 'supplier'
         const by   = recordedBy || 'Import'
 
@@ -264,7 +275,7 @@ function reconcileProducts(adjustments, recordedBy) {
 
 module.exports = {
   addStockReceiving, getStockReceivings, getStockReceivingById, getAllPurchaseHistory,
-  recordDirectPurchase, getDeadStockProducts, getRestockNeeded, getProductSalesVelocity,
+  recordDirectPurchase, recordInitialCost, getDeadStockProducts, getRestockNeeded, getProductSalesVelocity,
   getExpiringProducts, getExpiredProducts, getExpiryReport, importStockReceivings,
   reconcileProduct, reconcileProducts
 }

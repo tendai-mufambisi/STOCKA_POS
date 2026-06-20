@@ -1,9 +1,20 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useLanSync } from '../hooks/useLanSync'
+import ConfirmModal from '../components/ConfirmModal'
 import { FiPackage, FiEdit2, FiTrash2, FiDownload, FiUpload, FiPlus, FiX, FiGrid, FiList, FiImage } from 'react-icons/fi'
-import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop, updateProductQuantity, addProductsBatch } from '../database/db'
+import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop, updateProductQuantity, addProductsBatch, recordInitialCost } from '../database/db'
 import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
 import { utils, writeFile, read } from 'xlsx'
 import './Products.css'
+
+function translateDbError(err) {
+  const msg = (err.message || '').toLowerCase()
+  if (msg.includes('check constraint failed: category')) return 'Invalid category. Please choose Food, Non-Food, or Drinks, or leave it blank.'
+  if (msg.includes('check constraint failed: unit')) return 'Invalid unit. Please choose "each" or "pack".'
+  if (msg.includes('not null constraint failed: products.name')) return 'Product name is required.'
+  if (msg.includes('unique constraint failed: products.name')) return 'A product with this name already exists.'
+  return err.message || 'Failed to save product'
+}
 
 function Products() {
   const [products, setProducts] = useState([])
@@ -24,7 +35,8 @@ function Products() {
     selling_price: '',
     reorder_level: 5,
     description: '',
-    image_data: null
+    image_data: null,
+    initial_cost_price: ''
   })
   const [error, setError] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
@@ -35,18 +47,21 @@ function Products() {
   const [duplicateResolutions, setDuplicateResolutions] = useState({})
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(null) // { id, name }
 
   const units = ['each', 'pack']
-  const categories = ['Food', 'Non-Food', 'Drinks', 'Other']
+  const categories = ['Food', 'Non-Food', 'Drinks']
   const importFileRef = useRef(null)
 
   useEffect(() => {
     loadData()
   }, [])
 
-  const loadData = async () => {
+  useLanSync(() => loadData(true))
+
+  const loadData = async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const [productsData, suppliersData, shop] = await Promise.all([
         getProducts(),
         getSuppliers(),
@@ -61,7 +76,7 @@ function Products() {
       setError('Failed to load products')
       console.error(err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -106,14 +121,17 @@ function Products() {
           ...formData,
           selling_price: parseFloat(formData.selling_price) || 0
         })
-        console.log('Product updated successfully')
-        console.log('Updated product details:', formData)
       } else {
         await addProduct({
           ...formData,
           selling_price: parseFloat(formData.selling_price) || 0
         })
-        
+        const initialCost = parseFloat(formData.initial_cost_price)
+        if (initialCost > 0) {
+          const allProducts = await getProducts()
+          const created = allProducts.find(p => p.name.toLowerCase() === formData.name.trim().toLowerCase())
+          if (created) await recordInitialCost(created.id, initialCost, 'Initial setup')
+        }
       }
       await loadData()
       setFormData({
@@ -124,12 +142,13 @@ function Products() {
         selling_price: '',
         reorder_level: 5,
         description: '',
-        image_data: null
+        image_data: null,
+        initial_cost_price: ''
       })
       setEditingId(null)
       setShowForm(false)
     } catch (err) {
-      setError('Failed to save product')
+      setError(translateDbError(err))
       console.error(err)
     }
   }
@@ -152,19 +171,23 @@ function Products() {
 
   const handleCancelEdit = () => {
     setEditingId(null)
-    setFormData({ name: '', category: '', supplier_id: '', unit: 'each', selling_price: '', reorder_level: defaultReorderLevel, description: '', image_data: null })
+    setFormData({ name: '', category: '', supplier_id: '', unit: 'each', selling_price: '', reorder_level: defaultReorderLevel, description: '', image_data: null, initial_cost_price: '' })
     setError('')
   }
 
-  const handleDelete = async (id) => {
-    if (window.confirm('Are you sure you want to delete this product?')) {
-      try {
-        await deleteProduct(id)
-        await loadData()
-      } catch (err) {
-        setError('Failed to delete product')
-        console.error(err)
-      }
+  const handleDelete = (id, name) => {
+    setConfirmDelete({ id, name })
+  }
+
+  const handleConfirmDelete = async () => {
+    const { id } = confirmDelete
+    setConfirmDelete(null)
+    try {
+      await deleteProduct(id)
+      await loadData()
+    } catch (err) {
+      setError('Failed to delete product')
+      console.error(err)
     }
   }
 
@@ -251,6 +274,7 @@ function Products() {
     if (['category', 'type'].includes(s)) return 'category'
     if (s === 'unit') return 'unit'
     if (['sellingprice', 'price', 'unitprice'].includes(s)) return 'selling_price'
+    if (['costprice', 'cost', 'costperunit', 'unitcost', 'purchaseprice'].includes(s)) return 'cost_price'
     if (['reorderlevel', 'reorder', 'minstock', 'minimumstock'].includes(s)) return 'reorder_level'
     if (['currentquantity', 'quantity', 'qty', 'stock', 'currentstock'].includes(s)) return 'current_quantity'
     if (['description', 'desc'].includes(s)) return 'description'
@@ -260,8 +284,8 @@ function Products() {
 
   const downloadTemplate = () => {
     const templateData = [
-      { 'Product Name': 'Bread', Category: 'Food', Unit: 'each', 'Selling Price': 1.50, 'Reorder Level': 10, 'Current Quantity': 50, Description: 'White bread', Supplier: '' },
-      { 'Product Name': 'Cooking Oil 2L', Category: 'Food', Unit: 'each', 'Selling Price': 4.00, 'Reorder Level': 5, 'Current Quantity': 20, Description: '', Supplier: '' },
+      { 'Product Name': 'Bread', Category: 'Food', Unit: 'each', 'Selling Price': 1.50, 'Cost Price': 0.80, 'Reorder Level': 10, 'Current Quantity': 50, Description: 'White bread', Supplier: '' },
+      { 'Product Name': 'Cooking Oil 2L', Category: 'Food', Unit: 'each', 'Selling Price': 4.00, 'Cost Price': 3.20, 'Reorder Level': 5, 'Current Quantity': 20, Description: '', Supplier: '' },
     ]
     const ws = utils.json_to_sheet(templateData)
     const wb = utils.book_new()
@@ -308,6 +332,7 @@ function Products() {
             category:         String(row.category ?? '').trim(),
             unit:             ['each', 'pack'].includes(rawUnit) ? rawUnit : 'each',
             selling_price:    parseFloat(row.selling_price) || 0,
+            cost_price:       parseFloat(row.cost_price) || 0,
             reorder_level:    parseInt(row.reorder_level) || 5,
             current_quantity: parseInt(row.current_quantity) || 0,
             description:      String(row.description ?? '').trim(),
@@ -375,6 +400,14 @@ function Products() {
     try {
       if (importPreview.fresh.length > 0) {
         await addProductsBatch(importPreview.fresh)
+        const freshWithCost = importPreview.fresh.filter(r => r.cost_price > 0)
+        if (freshWithCost.length > 0) {
+          const allProducts = await getProducts()
+          for (const row of freshWithCost) {
+            const prod = allProducts.find(p => p.name.toLowerCase() === row.name.toLowerCase())
+            if (prod) await recordInitialCost(prod.id, row.cost_price, 'Import')
+          }
+        }
       }
       for (let i = 0; i < importPreview.duplicates.length; i++) {
         const res = duplicateResolutions[i]
@@ -595,7 +628,7 @@ function Products() {
                       <table>
                         <thead>
                           <tr>
-                            <th>Name</th><th>Category</th><th>Unit</th><th>Price</th><th>Qty</th>
+                            <th>Name</th><th>Category</th><th>Unit</th><th>Sell Price</th><th>Cost Price</th><th>Qty</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -605,12 +638,13 @@ function Products() {
                               <td>{row.category || '—'}</td>
                               <td>{row.unit}</td>
                               <td>${row.selling_price.toFixed(2)}</td>
+                              <td>{row.cost_price > 0 ? `$${row.cost_price.toFixed(2)}` : '—'}</td>
                               <td>{row.current_quantity}</td>
                             </tr>
                           ))}
                           {importPreview.fresh.length > 6 && (
                             <tr className="import-more-row">
-                              <td colSpan="5">… and {importPreview.fresh.length - 6} more new products</td>
+                              <td colSpan="6">… and {importPreview.fresh.length - 6} more new products</td>
                             </tr>
                           )}
                         </tbody>
@@ -742,6 +776,19 @@ function Products() {
                 />
               </div>
               <div className="form-group">
+                <label>Initial Cost Price (USD)</label>
+                <input
+                  type="number"
+                  name="initial_cost_price"
+                  value={formData.initial_cost_price}
+                  onChange={handleChange}
+                  placeholder="0.00"
+                  step="any"
+                  min="0"
+                />
+                <p className="field-hint">What you paid per unit — optional, for reference</p>
+              </div>
+              <div className="form-group">
                 <label>Reorder Level</label>
                 <input
                   type="number"
@@ -839,7 +886,7 @@ function Products() {
                       <button className="btn-icon" onClick={() => handleEdit(product)} title="Edit">
                         <FiEdit2 size={14} />
                       </button>
-                      <button className="btn-icon delete" onClick={() => handleDelete(product.id)} title="Delete">
+                      <button className="btn-icon delete" onClick={() => handleDelete(product.id, product.name)} title="Delete">
                         <FiTrash2 size={14} />
                       </button>
                     </div>
@@ -885,7 +932,7 @@ function Products() {
                     <button className="btn-icon" onClick={() => handleEdit(product)} title="Edit">
                       ✎
                     </button>
-                    <button className="btn-icon delete" onClick={() => handleDelete(product.id)} title="Delete">
+                    <button className="btn-icon delete" onClick={() => handleDelete(product.id, product.name)} title="Delete">
                       ✘
                     </button>
                   </div>
@@ -966,6 +1013,17 @@ function Products() {
           </div>
         )}
       </div>
+
+      {confirmDelete && (
+        <ConfirmModal
+          message={`Delete "${confirmDelete.name}"?`}
+          detail="This product will be permanently removed. This cannot be undone."
+          confirmLabel="Delete"
+          danger
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   )
 }

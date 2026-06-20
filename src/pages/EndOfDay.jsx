@@ -1,420 +1,531 @@
-import { useState, useEffect } from 'react'
-import { getSales, getExpenses, addEndOfDay, getEndOfDayRecords, getAllShifts, getShiftSummary } from '../database/db'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  addEndOfDay, getEndOfDayRecords,
+  getAllShifts, getShiftSummary, closeAllOpenShifts,
+} from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import './EndOfDay.css'
-import { FiCheckCircle, FiAlertCircle } from 'react-icons/fi'
+import {
+  FiCheckCircle, FiAlertCircle, FiAlertTriangle, FiClock,
+  FiDollarSign, FiShoppingCart, FiUsers, FiTrendingDown,
+  FiSun, FiChevronDown, FiChevronUp,
+} from 'react-icons/fi'
 
-function EndOfDay() {
+// ─── helpers ──────────────────────────────────────────────────────────────────
+const fmt = {
+  money:    (n)         => `$${(n || 0).toFixed(2)}`,
+  time:     (d)         => d ? new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—',
+  date:     (d)         => d ? new Date(d).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—',
+  initials: (name)      => (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2),
+  dur: (start, end) => {
+    const mins = Math.round((new Date(end || Date.now()) - new Date(start)) / 60000)
+    if (mins < 0) return '—'
+    const h = Math.floor(mins / 60), m = mins % 60
+    return h === 0 ? `${m}m` : `${h}h ${m}m`
+  },
+}
+
+function varianceStatus(v) {
+  if (v === null || v === undefined) return 'neutral'
+  if (Math.abs(v) < 0.01) return 'balanced'
+  return v > 0 ? 'overage' : 'shortage'
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+export default function EndOfDay() {
   const { user } = useAuthStore()
-  const [records, setRecords] = useState([])
-  const [todaysSales, setTodaysSales] = useState([])
-  const [todaysExpenses, setTodaysExpenses] = useState([])
-  const [todaysShifts, setTodaysShifts] = useState([])
-  const [shiftSummaries, setShiftSummaries] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [error, setError] = useState('')
-  const [actualCash, setActualCash] = useState('')
-  const [notes, setNotes] = useState('')
-  const [viewMode, setViewMode] = useState('shifts') // 'shifts' | 'legacy'
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState('')
+  const [todaysRecord, setTodaysRecord] = useState(null)
+  const [allRecords, setAllRecords] = useState([])
+  const [shifts, setShifts]         = useState([])   // [{...shift, summary:{}}]
+  const [cashInputs, setCashInputs] = useState({})   // {shiftId: string}
+  const [notes, setNotes]           = useState('')
+  const [closing, setClosing]       = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const today = new Date().toISOString().split('T')[0]
 
-  useEffect(() => {
-    loadData()
-  }, [])
-
-  const loadData = async () => {
+  // ── Load ────────────────────────────────────────────────────────────────────
+  const loadData = useCallback(async () => {
     try {
       setLoading(true)
-      const [recordsData, salesData, expensesData, shiftsData] = await Promise.all([
+      const [records, allRawShifts] = await Promise.all([
         getEndOfDayRecords(),
-        getSales(),
-        getExpenses(),
-        getAllShifts(null, today, today)
+        getAllShifts(),
       ])
-      
-      setRecords(recordsData)
-      
-      // Filter today's transactions
-      const todayStart = new Date(today).getTime()
-      const todayEnd = todayStart + 24 * 60 * 60 * 1000
-      
-      // Filter completed sales only (exclude held, pending, voided)
-      const todaysSalesData = salesData.filter(s => {
-        const saleDate = new Date(s.created_at).getTime()
-        const isToday = saleDate >= todayStart && saleDate < todayEnd
-        const isCompleted = !s.status || s.status === 'completed'
-        return isToday && isCompleted
-      })
-      
-      const todaysExpensesData = expensesData.filter(e => {
-        const expenseDate = new Date(e.date).getTime()
-        return expenseDate >= todayStart && expenseDate < todayEnd
-      })
-      
-      // Filter today's shifts and map raw DB column names to display field names
-      const todaysShiftsData = shiftsData
-        .filter(shift => new Date(shift.started_at).toISOString().split('T')[0] === today)
-        .map(shift => ({
-          ...shift,
-          cashier_name: shift.cashier_display_name || shift.cashier_username,
-          start_time: shift.started_at,
-          end_time: shift.closed_at,
-          start_float: shift.opening_cash || 0,
-          end_float: shift.closing_cash || 0
-        }))
 
-      setTodaysSales(todaysSalesData)
-      setTodaysExpenses(todaysExpensesData)
-      setTodaysShifts(todaysShiftsData)
-      
-      // Load summaries for each shift
-      if (todaysShiftsData.length > 0) {
-        const summaries = await Promise.all(
-          todaysShiftsData.map(shift => getShiftSummary(shift.id))
-        )
-        setShiftSummaries(summaries)
+      setAllRecords(records)
+      const record = records.find(r => r.date === today) || null
+      setTodaysRecord(record)
+
+      // Filter to today's shifts (started_at begins with today's date)
+      const rawShifts = allRawShifts.filter(s => s.started_at && s.started_at.slice(0, 10) === today)
+
+      // Load shift summaries in parallel
+      const withSummaries = await Promise.all(
+        rawShifts.map(async s => {
+          const summary = await getShiftSummary(s.id)
+          return {
+            ...s,
+            cashier_name: s.cashier_display_name || s.cashier_username || 'Unknown',
+            summary,
+          }
+        })
+      )
+
+      setShifts(withSummaries)
+
+      // Pre-fill cash inputs: open shifts get empty, closed shifts pre-fill with their closing_cash
+      const inputs = {}
+      for (const s of withSummaries) {
+        if (s.status === 'closed' && s.closing_cash != null) {
+          inputs[s.id] = s.closing_cash.toFixed(2)
+        }
       }
-    } catch (err) {
+      setCashInputs(inputs)
+    } catch {
       setError('Failed to load end of day data')
-      console.error(err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [today])
 
-  const totalSales = todaysSales.reduce((sum, s) => sum + (s.total || 0), 0)
-  const totalExpenses = todaysExpenses.reduce((sum, e) => sum + (e.amount || 0), 0)
-  const totalOpeningFloat = todaysShifts.reduce((sum, s) => sum + (s.start_float || 0), 0)
-  const expectedCash = totalOpeningFloat + totalSales - totalExpenses
-  const difference = parseFloat(actualCash || 0) - expectedCash
-  const status = difference > 0 ? 'Overage' : difference < 0 ? 'Shortage' : 'Balanced'
+  useEffect(() => { loadData() }, [loadData])
 
+  // ── Derived values ──────────────────────────────────────────────────────────
+  const openShifts   = shifts.filter(s => s.status === 'open')
+  const closedShifts = shifts.filter(s => s.status === 'closed')
+
+  const totalSales    = shifts.reduce((sum, s) => sum + (s.summary?.total_sales    || 0), 0)
+  const totalExpenses = shifts.reduce((sum, s) => sum + (s.summary?.total_expenses || 0), 0)
+  const totalExpected = shifts.reduce((sum, s) => sum + (s.summary?.expected_cash  || 0), 0)
+  const totalReceived = shifts.reduce((sum, s) => {
+    const v = parseFloat(cashInputs[s.id])
+    return sum + (isNaN(v) ? 0 : v)
+  }, 0)
+  const totalVariance = totalReceived - totalExpected
+  const dayVarStatus  = varianceStatus(totalVariance)
+
+  const allOpenInputted = openShifts.every(s => {
+    const v = parseFloat(cashInputs[s.id])
+    return !isNaN(v) && cashInputs[s.id] !== ''
+  })
+  const canClose = openShifts.length === 0 || allOpenInputted
+
+  // ── Close Day handler ───────────────────────────────────────────────────────
   const handleCloseDay = async () => {
-    if (!actualCash) {
-      setError('Enter actual cash counted')
+    if (!canClose) {
+      setError('Enter cash received for every open shift before closing the day.')
       return
     }
-
+    setClosing(true)
+    setError('')
     try {
+      // 1. Force-close all still-open shifts with the admin-entered cash
+      if (openShifts.length > 0) {
+        const closingData = openShifts.map(s => ({
+          shiftId:     s.id,
+          closingCash: parseFloat(cashInputs[s.id]) || 0,
+        }))
+        await closeAllOpenShifts(closingData, 'Closed by End of Day')
+      }
+
+      // 2. Recompute totals after closes (use inputs as source of truth for actual cash)
+      const actualCash = shifts.reduce((sum, s) => {
+        const v = parseFloat(cashInputs[s.id])
+        return sum + (isNaN(v) ? 0 : v)
+      }, 0)
+      const diff   = actualCash - totalExpected
+      const status = Math.abs(diff) < 0.01 ? 'Balanced' : diff > 0 ? 'Overage' : 'Shortage'
+
+      // 3. Save EOD record
       await addEndOfDay({
-        date: today,
-        cashier: user?.username || 'System',
-        total_sales: totalSales,
+        date:           today,
+        cashier:        user?.username || 'System',
+        total_sales:    totalSales,
         total_expenses: totalExpenses,
-        expected_cash: expectedCash,
-        actual_cash: parseFloat(actualCash),
-        difference: difference,
-        status: status,
-        notes: notes
+        expected_cash:  totalExpected,
+        actual_cash:    actualCash,
+        difference:     diff,
+        status,
+        notes,
       })
-      await loadData()
-      setActualCash('')
+
       setNotes('')
-      setShowForm(false)
+      try { await window.stocka.lan?.broadcastDayClosed(today, user?.username || 'Admin') } catch (_) {}
+      await loadData()
     } catch (err) {
-      setError('Failed to close end of day')
+      setError('Failed to close day: ' + err.message)
+    } finally {
+      setClosing(false)
     }
   }
 
-  const todaysRecord = records.find(r => r.date === today)
-
-  if (loading) return <div className="eod-page"><div className="loading">Loading...</div></div>
+  // ── Loading state ───────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="eod-page">
+        <div className="eod-loading"><div className="eod-spinner" /> Loading…</div>
+      </div>
+    )
+  }
 
   return (
     <div className="eod-page">
-      {error && <div className="error-banner">{error}</div>}
 
-      {/* View Toggle */}
-      {todaysShifts.length > 0 && (
-        <div className="view-toggle">
-          <button
-            className={`toggle-btn ${viewMode === 'shifts' ? 'active' : ''}`}
-            onClick={() => setViewMode('shifts')}
-          >
-            Shift View
-          </button>
-          <button
-            className={`toggle-btn ${viewMode === 'legacy' ? 'active' : ''}`}
-            onClick={() => setViewMode('legacy')}
-          >
-            Legacy View
-          </button>
+      {/* ── Error banner ── */}
+      {error && (
+        <div className="eod-error-banner">
+          <FiAlertCircle size={14} />
+          <span>{error}</span>
+          <button onClick={() => setError('')}>×</button>
         </div>
       )}
 
-      {/* Shifts Reconciliation View */}
-      {viewMode === 'shifts' && todaysShifts.length > 0 ? (
-        <div className="shifts-reconciliation">
-          <h3>Shift-Based Reconciliation</h3>
-          <div className="shifts-grid">
-            {todaysShifts.map(shift => {
-              const summary = shiftSummaries.find(s => s.id === shift.id)
-              if (!summary) return null
-
-              const startTime = new Date(shift.start_time)
-              const endTime = shift.end_time ? new Date(shift.end_time) : null
-              const durationMs = endTime ? endTime - startTime : Date.now() - startTime
-              const durationHours = Math.floor(durationMs / (1000 * 60 * 60))
-              const durationMins = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60))
-              const timeStr = `${durationHours}h ${durationMins}m`
-
-              const balance = summary.balance || 0
-              const isBalanced = Math.abs(balance) < 0.01
-              const balanceStatus = isBalanced ? 'balanced' : balance > 0 ? 'overage' : 'shortage'
-
-              return (
-                <div key={shift.id} className={`shift-card ${balanceStatus}`}>
-                  <div className="shift-header">
-                    <div className="shift-cashier">{shift.cashier_name}</div>
-                    <div className={`shift-status ${shift.status}`}>{shift.status}</div>
-                  </div>
-
-                  <div className="shift-time">
-                    <span>{startTime.toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}</span>
-                    <span>→</span>
-                    <span>{endTime ? endTime.toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' }) : 'Open'}</span>
-                    <span className="duration">({timeStr})</span>
-                  </div>
-
-                  <div className="shift-metrics">
-                    <div className="metric-row">
-                      <span>Opening Float</span>
-                      <span className="amount">${(shift.start_float || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="metric-row">
-                      <span>Sales</span>
-                      <span className="amount positive">${(summary.total_sales || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="metric-row">
-                      <span>Expenses</span>
-                      <span className="amount negative">-${(summary.total_expenses || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="metric-row">
-                      <span>Expected Cash</span>
-                      <span className="amount">${(summary.expected_cash || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="metric-row">
-                      <span>Actual Cash</span>
-                      <span className="amount">${(shift.end_float || 0).toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  <div className={`shift-balance ${balanceStatus}`}>
-                    <div className="balance-status">
-                      {isBalanced ? (
-                        <><FiCheckCircle className="icon" /> Balanced</>
-                      ) : balance > 0 ? (
-                        <><FiAlertCircle className="icon" /> Overage</>
-                      ) : (
-                        <><FiAlertCircle className="icon" /> Shortage</>
-                      )}
-                    </div>
-                    <div className="balance-amount">
-                      ${Math.abs(balance).toFixed(2)}
-                    </div>
-                  </div>
-
-                  {shift.notes && <div className="shift-notes">{shift.notes}</div>}
-                </div>
-              )
-            })}
+      {/* ── Stats strip ── */}
+      <div className="eod-stats-strip">
+        <div className="eod-stat">
+          <FiShoppingCart size={15} className="eod-stat-icon" />
+          <div>
+            <div className="eod-stat-label">Total Sales</div>
+            <div className="eod-stat-value">{fmt.money(totalSales)}</div>
           </div>
         </div>
-      ) : !todaysRecord ? (
-        <div className="reconciliation-card">
-          <h3>Today's Reconciliation</h3>
-          
-          <div className="metrics-grid">
-            <div className="metric">
-              <div className="metric-label">Total Sales</div>
-              <div className="metric-value">${totalSales.toFixed(2)}</div>
-              <div className="metric-count">{todaysSales.length} transactions</div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">Total Expenses</div>
-              <div className="metric-value">${totalExpenses.toFixed(2)}</div>
-              <div className="metric-count">{todaysExpenses.length} entries</div>
-            </div>
-            <div className="metric highlight">
-              <div className="metric-label">Expected Cash</div>
-              <div className="metric-value">${expectedCash.toFixed(2)}</div>
-            </div>
+        <div className="eod-stat">
+          <FiTrendingDown size={15} className="eod-stat-icon neg" />
+          <div>
+            <div className="eod-stat-label">Expenses</div>
+            <div className="eod-stat-value">{fmt.money(totalExpenses)}</div>
           </div>
+        </div>
+        <div className="eod-stat highlight">
+          <FiDollarSign size={15} className="eod-stat-icon" />
+          <div>
+            <div className="eod-stat-label">Expected Cash</div>
+            <div className="eod-stat-value">{fmt.money(totalExpected)}</div>
+          </div>
+        </div>
+        <div className="eod-stat">
+          <FiUsers size={15} className="eod-stat-icon" />
+          <div>
+            <div className="eod-stat-label">Shifts Today</div>
+            <div className="eod-stat-value">{shifts.length}</div>
+            {openShifts.length > 0 && (
+              <div className="eod-stat-sub eod-open-tag">{openShifts.length} still open</div>
+            )}
+          </div>
+        </div>
+      </div>
 
-          {!showForm ? (
-            <button className="btn btn-primary" onClick={() => setShowForm(true)}>
-              Count Cash & Close Day
-            </button>
+      {/* ══════════════════════════════════════════════════════
+          ACTIVE STATE — day not yet closed
+         ══════════════════════════════════════════════════════ */}
+      {!todaysRecord ? (
+        <div className="eod-active">
+
+          {shifts.length === 0 ? (
+            <div className="eod-no-shifts">
+              <FiSun size={44} />
+              <h3>No shifts today</h3>
+              <p>No cashier shifts were opened today — nothing to reconcile.</p>
+            </div>
           ) : (
-            <div className="cash-count-form">
-              <h4>Cash Count</h4>
-              <div className="form-group">
-                <label>Actual Cash Counted (USD) *</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={actualCash}
-                  onChange={(e) => setActualCash(e.target.value)}
-                  placeholder="0.00"
-                  className="cash-input"
-                />
-              </div>
-
-              {actualCash && (
-                <div className={`reconciliation-result ${status.toLowerCase()}`}>
-                  <div className="result-line">
-                    <span>Expected</span>
-                    <span>${expectedCash.toFixed(2)}</span>
-                  </div>
-                  <div className="result-line">
-                    <span>Actual</span>
-                    <span>${parseFloat(actualCash).toFixed(2)}</span>
-                  </div>
-                  <div className="result-line total">
-                    <span>{status}</span>
-                    <span className={status === 'Overage' ? 'positive' : status === 'Shortage' ? 'negative' : ''}>
-                      ${Math.abs(difference).toFixed(2)}
-                    </span>
-                  </div>
+            <>
+              {/* Open-shift warning */}
+              {openShifts.length > 0 && (
+                <div className="eod-warn-banner">
+                  <FiAlertTriangle size={14} />
+                  <strong>{openShifts.length} shift{openShifts.length > 1 ? 's' : ''} still open.</strong>
+                  &nbsp;Enter the cash collected and Close Day — they will be auto-closed.
                 </div>
               )}
 
-              <div className="form-group">
-                <label>Notes</label>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Add any notes about shortages, overages, or special events..."
-                  rows="3"
-                />
+              {/* Section title */}
+              <div className="eod-section-hd">
+                <div>
+                  <h2>Cashier Cash Reconciliation</h2>
+                  <p>For each cashier, verify the expected cash and enter the amount you collected from them.</p>
+                </div>
               </div>
 
-              <div className="form-actions">
-                <button className="btn btn-primary" onClick={handleCloseDay}>
-                  Close Day
-                </button>
-                <button className="btn btn-secondary" onClick={() => {
-                  setShowForm(false)
-                  setActualCash('')
-                  setNotes('')
-                }}>
-                  Cancel
-                </button>
+              {/* ── Cashier rows ── */}
+              <div className="eod-cashier-list">
+                {shifts.map(shift => (
+                  <CashierRow
+                    key={shift.id}
+                    shift={shift}
+                    inputVal={cashInputs[shift.id] || ''}
+                    onChange={val => setCashInputs(prev => ({ ...prev, [shift.id]: val }))}
+                  />
+                ))}
               </div>
-            </div>
-          )}
 
-          {todaysSales.length > 0 && (
-            <div className="transactions-section">
-              <h4>Today's Sales ({todaysSales.length})</h4>
-              <div className="transactions-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Amount</th>
-                      <th>Cashier</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {todaysSales.map(s => (
-                      <tr key={s.id}>
-                        <td>{new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}</td>
-                        <td className="amount">${s.total?.toFixed(2)}</td>
-                        <td>{s.cashier || 'System'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* ── Totals bar ── */}
+              <div className={`eod-totals-bar ${dayVarStatus}`}>
+                <div className="eod-tb-item">
+                  <span className="eod-tb-label">Total Expected</span>
+                  <span className="eod-tb-val">{fmt.money(totalExpected)}</span>
+                </div>
+                <div className="eod-tb-divider" />
+                <div className="eod-tb-item">
+                  <span className="eod-tb-label">Total Received</span>
+                  <span className="eod-tb-val">{fmt.money(totalReceived)}</span>
+                </div>
+                <div className="eod-tb-divider" />
+                <div className={`eod-tb-item variance ${dayVarStatus}`}>
+                  <span className="eod-tb-label">
+                    {dayVarStatus === 'balanced' ? 'Balanced' : dayVarStatus === 'overage' ? 'Overage' : 'Shortage'}
+                  </span>
+                  <span className="eod-tb-val">
+                    {totalVariance >= 0 ? '+' : ''}{fmt.money(totalVariance)}
+                  </span>
+                </div>
               </div>
-            </div>
-          )}
 
-          {todaysExpenses.length > 0 && (
-            <div className="transactions-section">
-              <h4>Today's Expenses ({todaysExpenses.length})</h4>
-              <div className="transactions-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Description</th>
-                      <th>Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {todaysExpenses.map(e => (
-                      <tr key={e.id}>
-                        <td>{new Date(e.date).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}</td>
-                        <td>{e.description}</td>
-                        <td className="amount">${e.amount?.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* ── Close Day section ── */}
+              <div className="eod-close-card">
+                <div className="eod-close-notes-row">
+                  <label>Day Notes <span>(optional)</span></label>
+                  <textarea
+                    value={notes}
+                    onChange={e => setNotes(e.target.value)}
+                    placeholder="Any notes about the day — shortages, incidents, special events…"
+                    rows={2}
+                  />
+                </div>
+                <div className="eod-close-actions">
+                  {!canClose && (
+                    <span className="eod-close-hint">
+                      <FiAlertCircle size={13} /> Enter cash for all open shifts first
+                    </span>
+                  )}
+                  <button
+                    className="eod-close-btn"
+                    onClick={handleCloseDay}
+                    disabled={closing || !canClose}
+                  >
+                    {closing
+                      ? <><div className="eod-btn-spinner" /> Closing Day…</>
+                      : <><FiCheckCircle size={15} /> Close Day & Save</>
+                    }
+                  </button>
+                </div>
               </div>
-            </div>
+            </>
           )}
         </div>
+
       ) : (
-        <div className="record-card">
-          <h3 className="success"><FiCheckCircle size={18} /> Day Closed</h3>
-          <div className="record-details">
-            <div className="detail-row">
-              <span>Total Sales</span>
-              <span>${todaysRecord.total_sales?.toFixed(2)}</span>
+        /* ══════════════════════════════════════════════════════
+           CLOSED STATE — day already closed
+           ══════════════════════════════════════════════════════ */
+        <div className="eod-closed-view">
+
+          {/* Hero */}
+          <div className={`eod-closed-hero ${todaysRecord.status?.toLowerCase()}`}>
+            <div className="eod-closed-hero-left">
+              <FiCheckCircle size={28} className="eod-closed-hero-icon" />
+              <div>
+                <div className="eod-closed-hero-title">Day Closed</div>
+                <div className="eod-closed-hero-date">{fmt.date(todaysRecord.date)}</div>
+              </div>
             </div>
-            <div className="detail-row">
-              <span>Total Expenses</span>
-              <span>${todaysRecord.total_expenses?.toFixed(2)}</span>
-            </div>
-            <div className="detail-row">
-              <span>Expected Cash</span>
-              <span>${todaysRecord.expected_cash?.toFixed(2)}</span>
-            </div>
-            <div className="detail-row">
-              <span>Actual Cash</span>
-              <span>${todaysRecord.actual_cash?.toFixed(2)}</span>
-            </div>
-            <div className={`detail-row ${todaysRecord.status?.toLowerCase()}`}>
-              <span>{todaysRecord.status}</span>
-              <span>${Math.abs(todaysRecord.difference).toFixed(2)}</span>
+            <div className={`eod-day-badge ${todaysRecord.status?.toLowerCase()}`}>
+              {todaysRecord.status}
             </div>
           </div>
-          {todaysRecord.notes && <p className="notes">{todaysRecord.notes}</p>}
+
+          {/* Day totals */}
+          <div className="eod-closed-totals">
+            <div className="eod-ct-row">
+              <span>Total Sales</span>
+              <span className="pos">{fmt.money(todaysRecord.total_sales)}</span>
+            </div>
+            <div className="eod-ct-row">
+              <span>Expenses</span>
+              <span className="neg">−{fmt.money(todaysRecord.total_expenses)}</span>
+            </div>
+            <div className="eod-ct-row sep">
+              <span>Total Expected Cash</span>
+              <strong>{fmt.money(todaysRecord.expected_cash)}</strong>
+            </div>
+            <div className="eod-ct-row">
+              <span>Total Cash Collected</span>
+              <span>{fmt.money(todaysRecord.actual_cash)}</span>
+            </div>
+            <div className={`eod-ct-row final ${todaysRecord.status?.toLowerCase()}`}>
+              <span>
+                {todaysRecord.status === 'Balanced' ? 'Balanced' :
+                 todaysRecord.status === 'Overage'  ? 'Overage' : 'Shortage'}
+              </span>
+              <span>{fmt.money(todaysRecord.difference)}</span>
+            </div>
+          </div>
+
+          {todaysRecord.notes && (
+            <div className="eod-closed-notes">{todaysRecord.notes}</div>
+          )}
+
+          {/* Per-cashier breakdown */}
+          {shifts.length > 0 && (
+            <div className="eod-breakdown">
+              <h3>Per-Cashier Breakdown</h3>
+              {shifts.map(shift => (
+                <BreakdownRow key={shift.id} shift={shift} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {records.length > 0 && (
-        <div className="history-section">
-          <h3>History</h3>
-          <div className="history-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Sales</th>
-                  <th>Expenses</th>
-                  <th>Expected</th>
-                  <th>Actual</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.slice().reverse().map(r => (
-                  <tr key={r.id}>
-                    <td>{new Date(r.date).toLocaleDateString('en-ZW')}</td>
-                    <td>${r.total_sales?.toFixed(2)}</td>
-                    <td>${r.total_expenses?.toFixed(2)}</td>
-                    <td>${r.expected_cash?.toFixed(2)}</td>
-                    <td>${r.actual_cash?.toFixed(2)}</td>
-                    <td><span className={`status-badge ${r.status?.toLowerCase()}`}>{r.status}</span></td>
+      {/* ── History ── */}
+      {allRecords.length > 0 && (
+        <div className="eod-history">
+          <button className="eod-history-toggle" onClick={() => setHistoryOpen(h => !h)}>
+            <span>History ({allRecords.length} records)</span>
+            {historyOpen ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
+          </button>
+
+          {historyOpen && (
+            <div className="eod-history-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Sales</th>
+                    <th>Expenses</th>
+                    <th>Expected</th>
+                    <th>Collected</th>
+                    <th>Variance</th>
+                    <th>Status</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {allRecords.map(r => (
+                    <tr key={r.id}>
+                      <td>{fmt.date(r.date)}</td>
+                      <td>{fmt.money(r.total_sales)}</td>
+                      <td>{fmt.money(r.total_expenses)}</td>
+                      <td>{fmt.money(r.expected_cash)}</td>
+                      <td>{fmt.money(r.actual_cash)}</td>
+                      <td className={r.difference >= 0 ? 'pos' : 'neg'}>{fmt.money(r.difference)}</td>
+                      <td>
+                        <span className={`eod-hist-badge ${r.status?.toLowerCase()}`}>
+                          {r.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── CashierRow ────────────────────────────────────────────────────────────────
+function CashierRow({ shift, inputVal, onChange }) {
+  const s       = shift.summary || {}
+  const parsed  = parseFloat(inputVal)
+  const variance = inputVal !== '' && !isNaN(parsed) ? parsed - (s.expected_cash || 0) : null
+  const varSt   = varianceStatus(variance)
+  const isOpen  = shift.status === 'open'
+
+  return (
+    <div className={`eod-cr ${isOpen ? 'eod-cr-open' : 'eod-cr-closed'}`}>
+
+      {/* Header row */}
+      <div className="eod-cr-head">
+        <div className="eod-cr-avatar">{fmt.initials(shift.cashier_name)}</div>
+        <div className="eod-cr-identity">
+          <div className="eod-cr-name">{shift.cashier_name}</div>
+          <div className="eod-cr-time">
+            {fmt.time(shift.started_at)}
+            {' → '}
+            {isOpen
+              ? <span className="eod-cr-still-open">Still open</span>
+              : fmt.time(shift.closed_at)
+            }
+            {' · '}{fmt.dur(shift.started_at, shift.closed_at)}
+          </div>
+        </div>
+        {isOpen
+          ? <span className="eod-cr-badge open"><FiClock size={10} /> Open</span>
+          : <span className={`eod-cr-badge ${shift.reconciliation_status || 'closed'}`}>
+              <FiCheckCircle size={10} /> Closed
+            </span>
+        }
+      </div>
+
+      {/* Metrics grid */}
+      <div className="eod-cr-metrics">
+        <div className="eod-cr-m">
+          <span className="eod-cr-ml">Opening Float</span>
+          <span className="eod-cr-mv">{fmt.money(shift.opening_cash)}</span>
+        </div>
+        <div className="eod-cr-m">
+          <span className="eod-cr-ml">Sales</span>
+          <span className="eod-cr-mv pos">{fmt.money(s.total_sales)}</span>
+        </div>
+        {(s.total_expenses || 0) > 0 && (
+          <div className="eod-cr-m">
+            <span className="eod-cr-ml">Expenses</span>
+            <span className="eod-cr-mv neg">−{fmt.money(s.total_expenses)}</span>
+          </div>
+        )}
+        <div className="eod-cr-m expected">
+          <span className="eod-cr-ml">Expected Cash</span>
+          <span className="eod-cr-mv">{fmt.money(s.expected_cash)}</span>
+        </div>
+      </div>
+
+      {/* Cash input (open) or closed summary */}
+      {isOpen ? (
+        <div className="eod-cr-input-area">
+          <label>Cash collected from cashier</label>
+          <div className="eod-cr-input-row">
+            <div className="eod-cr-input-wrap">
+              <span className="eod-cr-prefix">$</span>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={inputVal}
+                onChange={e => onChange(e.target.value)}
+                placeholder="0.00"
+                className="eod-cr-input"
+                autoComplete="off"
+              />
+            </div>
+            {variance !== null && (
+              <div className={`eod-cr-var ${varSt}`}>
+                {varSt === 'balanced' && <><FiCheckCircle size={12} /> Balanced</>}
+                {varSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(variance)} over</>}
+                {varSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(variance)} short</>}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="eod-cr-settled">
+          <div className="eod-cr-settled-row">
+            <span>Cash submitted by cashier</span>
+            <span className="eod-cr-settled-amt">{fmt.money(shift.closing_cash)}</span>
+          </div>
+          <div className={`eod-cr-settled-row var ${shift.reconciliation_status || ''}`}>
+            <span>Variance</span>
+            <span className={(shift.variance || 0) >= 0 ? 'pos' : 'neg'}>
+              {(shift.variance || 0) > 0 ? '+' : ''}{fmt.money(shift.variance)}
+              {' '}
+              <span className="eod-cr-settled-label">
+                {shift.reconciliation_status === 'balanced' ? '(Balanced)' :
+                 shift.reconciliation_status === 'over'     ? '(Over)'     : '(Short)'}
+              </span>
+            </span>
           </div>
         </div>
       )}
@@ -422,4 +533,39 @@ function EndOfDay() {
   )
 }
 
-export default EndOfDay
+// ─── BreakdownRow (read-only, post-close) ─────────────────────────────────────
+function BreakdownRow({ shift }) {
+  const s       = shift.summary || {}
+  const varSt   = shift.reconciliation_status || 'balanced'
+  const variance = shift.variance || 0
+
+  return (
+    <div className={`eod-br-row ${varSt}`}>
+      <div className="eod-br-left">
+        <div className="eod-br-avatar">{fmt.initials(shift.cashier_name)}</div>
+        <div>
+          <div className="eod-br-name">{shift.cashier_name}</div>
+          <div className="eod-br-time">
+            {fmt.time(shift.started_at)} → {fmt.time(shift.closed_at)}
+            {' · '}{fmt.dur(shift.started_at, shift.closed_at)}
+          </div>
+        </div>
+      </div>
+
+      <div className="eod-br-metrics">
+        <span><em>Sales</em> {fmt.money(s.total_sales)}</span>
+        <span><em>Expected</em> {fmt.money(s.expected_cash)}</span>
+        <span><em>Collected</em> {fmt.money(shift.closing_cash)}</span>
+      </div>
+
+      <div className={`eod-br-status ${varSt}`}>
+        {Math.abs(variance) < 0.01
+          ? <><FiCheckCircle size={13} /> Balanced</>
+          : variance > 0
+            ? <><FiAlertCircle size={13} /> +{fmt.money(variance)}</>
+            : <><FiAlertCircle size={13} /> {fmt.money(variance)}</>
+        }
+      </div>
+    </div>
+  )
+}

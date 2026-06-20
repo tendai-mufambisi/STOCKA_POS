@@ -96,7 +96,7 @@
 }
 
 @keyframes alog-spin { to { transform: rotate(360deg); } }
-.alog-spin { animation: alog-spin 0.8s linear infinite; }
+.alog-spin { animation: alog-spin 0.8s linear infinite; will-change: transform; }
 
 /* ── Meta row ─────────────────────────────────────────────── */
 .alog-meta-row {
@@ -171,6 +171,13 @@
 .alog-user {
   font-weight: 600;
   white-space: nowrap;
+}
+
+.alog-machine {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
 }
 
 .alog-desc {

@@ -85,6 +85,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:stock:importReceivings',   h('domain:stock:importReceivings',   stock.importStockReceivings))
   ipcMain.handle('domain:stock:reconcileProduct',   h('domain:stock:reconcileProduct',   stock.reconcileProduct))
   ipcMain.handle('domain:stock:reconcileProducts',  h('domain:stock:reconcileProducts',  stock.reconcileProducts))
+  ipcMain.handle('domain:stock:recordInitialCost',  h('domain:stock:recordInitialCost',  stock.recordInitialCost))
 
   // ── SALES ──
   ipcMain.handle('domain:sales:add',           h('domain:sales:add',           sales.addSale))
@@ -101,6 +102,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:sales:getLastReceipt',h('domain:sales:getLastReceipt',sales.getLastReceiptNumber))
   ipcMain.handle('domain:sales:getReceipt',    h('domain:sales:getReceipt',    sales.getReceiptBySaleId))
   ipcMain.handle('domain:sales:updateReceipt', h('domain:sales:updateReceipt', sales.updateSaleReceiptNumber))
+  ipcMain.handle('domain:sales:getByShift',    h('domain:sales:getByShift',    sales.getSalesByShift))
 
   // ── EXPENSES ──
   ipcMain.handle('domain:expenses:add',    h('domain:expenses:add',    expenses.addExpense))
@@ -130,6 +132,24 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:shifts:getAll',          h('domain:shifts:getAll',          shifts.getAllShifts))
   ipcMain.handle('domain:shifts:getActive',       h('domain:shifts:getActive',       shifts.getActiveShifts))
   ipcMain.handle('domain:shifts:getSummary',      h('domain:shifts:getSummary',      shifts.getShiftSummary))
+  ipcMain.handle('domain:shifts:reopen',          h('domain:shifts:reopen',          shifts.reopenShift))
+
+  // closeAll runs locally (admin is always on main machine) and broadcasts to all renderer windows
+  // so cashiers get the force-close notification immediately without waiting for the next LAN sync.
+  ipcMain.handle('domain:shifts:closeAll', (event, ...args) => {
+    try {
+      const result = shifts.closeAllOpenShifts(...args)
+      try {
+        const { BrowserWindow } = require('electron')
+        BrowserWindow.getAllWindows().forEach(win => {
+          if (!win.isDestroyed()) win.webContents.send('shift:force-closed', { timestamp: Date.now() })
+        })
+      } catch (_) {}
+      return result
+    } catch (err) {
+      return { __error: err.message }
+    }
+  })
 
   // ── NOTIFICATIONS ──
   ipcMain.handle('domain:notifications:create',          h('domain:notifications:create',          notifications.createNotification))

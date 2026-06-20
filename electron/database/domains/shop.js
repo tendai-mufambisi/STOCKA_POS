@@ -31,7 +31,7 @@ function updateShop(id, shopData) {
     `UPDATE shops SET
       name = ?, address = ?, phone = ?, email = ?, currency = ?,
       printer_name = ?, printer_port = ?, auto_print = ?, print_duplicate = ?,
-      receipt_width_mm = ?, receipt_footer = ?,
+      receipt_width_mm = ?, receipt_footer = ?, receipt_name_size = ?,
       vat_rate = ?, default_reorder_level = ?, variance_tolerance = ?
      WHERE id = ?`
   ).run(
@@ -46,6 +46,7 @@ function updateShop(id, shopData) {
     shopData.print_duplicate !== undefined ? shopData.print_duplicate : 0,
     shopData.receipt_width_mm || 58,
     shopData.receipt_footer !== undefined ? shopData.receipt_footer : 'Thank you for your business!',
+    shopData.receipt_name_size || 'large',
     shopData.vat_rate !== undefined ? shopData.vat_rate : 0,
     shopData.default_reorder_level || 5,
     shopData.variance_tolerance !== undefined ? shopData.variance_tolerance : 0.01,

@@ -1,6 +1,6 @@
 {
   "name": "stocka",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "Stocka - Retail Inventory & POS for Zimbabwe",
   "author": "Tendai Mufambisi",
   "main": "electron/main.js",
@@ -72,8 +72,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Stocka",
-      "include": "installer.nsh",
-      "requestExecutionLevel": "highestAvailable"
+      "include": "installer.nsh"
     },
     "publish": {
       "provider": "github",

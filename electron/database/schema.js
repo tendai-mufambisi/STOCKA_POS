@@ -97,7 +97,9 @@ function createTables(db) {
       total REAL NOT NULL,
       cash_tendered REAL NOT NULL,
       change_given REAL NOT NULL,
-      payment_method TEXT DEFAULT 'USD Cash',
+      payment_method TEXT DEFAULT 'Cash',
+      cash_amount REAL DEFAULT 0,
+      usd_amount REAL DEFAULT 0,
       currency TEXT DEFAULT 'USD',
       note TEXT,
       status TEXT DEFAULT 'completed',
@@ -174,10 +176,13 @@ function createTables(db) {
       branch_id INTEGER,
       status TEXT DEFAULT 'open',
       opening_cash REAL DEFAULT 0,
+      opening_usd REAL DEFAULT 0,
       total_sales_count INTEGER DEFAULT 0,
       total_sales_value REAL DEFAULT 0,
       closing_cash REAL,
+      closing_usd REAL,
       variance REAL,
+      usd_variance REAL,
       reconciliation_status TEXT DEFAULT 'pending',
       notes TEXT,
       started_at TEXT DEFAULT (datetime('now')),
@@ -205,6 +210,7 @@ function createTables(db) {
       old_value TEXT,
       new_value TEXT,
       description TEXT,
+      machine_name TEXT,
       status TEXT DEFAULT 'completed',
       created_at TEXT DEFAULT (datetime('now'))
     );
@@ -228,7 +234,9 @@ function runMigrations(db) {
     addColIfMissing('users', 'current_shift_id', 'INTEGER')
 
     // sales
-    addColIfMissing('sales', 'payment_method', "TEXT DEFAULT 'USD Cash'")
+    addColIfMissing('sales', 'payment_method', "TEXT DEFAULT 'Cash'")
+    addColIfMissing('sales', 'cash_amount', 'REAL DEFAULT 0')
+    addColIfMissing('sales', 'usd_amount', 'REAL DEFAULT 0')
     addColIfMissing('sales', 'currency', "TEXT DEFAULT 'USD'")
     addColIfMissing('sales', 'status', "TEXT DEFAULT 'completed'")
     addColIfMissing('sales', 'held_name', 'TEXT')
@@ -245,6 +253,9 @@ function runMigrations(db) {
     addColIfMissing('products', 'image_data', 'TEXT')
     addColIfMissing('products', 'last_sold_date', 'TEXT')
 
+    // transaction_audit_log
+    addColIfMissing('transaction_audit_log', 'machine_name', 'TEXT')
+
     // expenses
     addColIfMissing('expenses', 'shift_id', 'INTEGER')
 
@@ -258,9 +269,13 @@ function runMigrations(db) {
     addColIfMissing('shops', 'print_duplicate', 'INTEGER DEFAULT 0')
     addColIfMissing('shops', 'receipt_width_mm', 'INTEGER DEFAULT 58')
     addColIfMissing('shops', 'receipt_footer', "TEXT DEFAULT 'Thank you for your business!'")
+    addColIfMissing('shops', 'receipt_name_size', "TEXT DEFAULT 'large'")
     addColIfMissing('shops', 'vat_rate', 'REAL DEFAULT 0')
     addColIfMissing('shops', 'default_reorder_level', 'INTEGER DEFAULT 5')
     addColIfMissing('shops', 'variance_tolerance', 'REAL DEFAULT 0.01')
+
+    // expenses
+    addColIfMissing('expenses', 'payment_method', "TEXT DEFAULT 'Cash'")
 
     // shifts — rebuild if old schema missing cashier_username
     const shiftCols = db.pragma('table_info(shifts)').map(c => c.name)
@@ -274,10 +289,13 @@ function runMigrations(db) {
           branch_id INTEGER,
           status TEXT DEFAULT 'open',
           opening_cash REAL DEFAULT 0,
+          opening_usd REAL DEFAULT 0,
           total_sales_count INTEGER DEFAULT 0,
           total_sales_value REAL DEFAULT 0,
           closing_cash REAL,
+          closing_usd REAL,
           variance REAL,
+          usd_variance REAL,
           reconciliation_status TEXT DEFAULT 'pending',
           notes TEXT,
           started_at TEXT DEFAULT (datetime('now')),
@@ -287,10 +305,23 @@ function runMigrations(db) {
       `)
     } else {
       addColIfMissing('shifts', 'opening_cash', 'REAL DEFAULT 0')
+      addColIfMissing('shifts', 'opening_usd', 'REAL DEFAULT 0')
       addColIfMissing('shifts', 'closing_cash', 'REAL')
+      addColIfMissing('shifts', 'closing_usd', 'REAL')
       addColIfMissing('shifts', 'variance', 'REAL')
+      addColIfMissing('shifts', 'usd_variance', 'REAL')
       addColIfMissing('shifts', 'total_sales_value', 'REAL DEFAULT 0')
     }
+
+    // Normalize legacy payment_method values to 'Cash' or 'USD'
+    try {
+      db.prepare(`UPDATE sales SET payment_method = 'USD' WHERE payment_method IN ('USD Cash', 'Swipe') AND payment_method NOT IN ('Cash', 'USD', 'Split')`).run()
+      db.prepare(`UPDATE sales SET payment_method = 'Cash' WHERE payment_method NOT IN ('Cash', 'USD', 'Split')`).run()
+      // Backfill cash_amount / usd_amount for old rows that have no split data yet
+      db.prepare(`UPDATE sales SET usd_amount = total WHERE payment_method = 'USD' AND usd_amount = 0 AND cash_amount = 0`).run()
+      db.prepare(`UPDATE sales SET cash_amount = total WHERE payment_method = 'Cash' AND cash_amount = 0 AND usd_amount = 0`).run()
+      db.prepare(`UPDATE sales SET cash_amount = total, usd_amount = 0 WHERE payment_method = 'Split' AND cash_amount = 0 AND usd_amount = 0`).run()
+    } catch (_) {}
 
     // Migrate stock_receivings.supplier_id to nullable if NOT NULL
     try {

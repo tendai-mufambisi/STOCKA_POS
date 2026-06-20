@@ -1,10 +1,19 @@
 const { getDb } = require('../index')
+const os = require('os')
+
+// Module-level context set by the LAN server before each /lan/invoke call so
+// audit entries from satellite machines record the satellite's IP rather than
+// the server's hostname. Cleared immediately after the call returns.
+let _requestMachine = null
+function setRequestMachine(ipOrName) { _requestMachine = ipOrName }
+function clearRequestMachine() { _requestMachine = null }
 
 function logAuditAction(username, actionType, entityType, entityId, description, oldValue = null, newValue = null) {
+  const machineName = _requestMachine || os.hostname()
   try {
     getDb().prepare(
-      `INSERT INTO transaction_audit_log (username, action_type, entity_type, entity_id, description, old_value, new_value, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')`
-    ).run(username, actionType, entityType, entityId, description, oldValue, newValue)
+      `INSERT INTO transaction_audit_log (username, action_type, entity_type, entity_id, description, old_value, new_value, machine_name, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed')`
+    ).run(username, actionType, entityType, entityId, description, oldValue, newValue, machineName)
   } catch (_) {}
 }
 
@@ -37,4 +46,4 @@ function cleanupOldAuditLogs() {
   } catch (_) {}
 }
 
-module.exports = { logAuditAction, getAuditLog, getEntityAuditTrail, getRecentAuditActions, cleanupOldAuditLogs }
+module.exports = { logAuditAction, getAuditLog, getEntityAuditTrail, getRecentAuditActions, cleanupOldAuditLogs, setRequestMachine, clearRequestMachine }
