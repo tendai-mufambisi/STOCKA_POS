@@ -1,26 +1,42 @@
 const { getDb } = require('../index')
 const { getProductById, updateProductQuantity } = require('./products')
 const { logAuditAction } = require('./audit')
+const { createNotification } = require('./notifications')
 
 function addSale(sale, saleItems) {
   const db = getDb()
+
+  // Idempotency: if this exact sale was already committed (e.g. satellite retry after a
+  // dropped response), return the existing ID instead of inserting a duplicate.
+  if (sale.external_id) {
+    const existing = db.prepare('SELECT id FROM sales WHERE external_id = ?').get(sale.external_id)
+    if (existing) return existing.id
+  }
+
+  // A replayed sale comes from a satellite's offline queue: the cashier already took
+  // the money, so it must be recorded even when our stock math disagrees — stock is
+  // clamped at 0 and a discrepancy is flagged instead of rejecting real revenue.
+  const isReplay = !!sale.replayed
 
   // Validate all products and stock levels before any write
   for (const item of saleItems) {
     const product = getProductById(item.product_id)
     if (!product) throw new Error(`Product with ID ${item.product_id} not found`)
-    if (product.current_quantity < item.quantity)
+    if (!isReplay && product.current_quantity < item.quantity)
       throw new Error(`Insufficient stock for "${product.name}": ${product.current_quantity} available, ${item.quantity} requested`)
   }
 
+  // receipt_number is part of the insert so offline/queued sales keep their printed
+  // receipt number — a separate update can't target a sale that has no id yet.
+  // till_code records which machine rang this up (its own receipt-number namespace).
   const insertSale = db.prepare(
-    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, cash_amount, usd_amount, currency, note, status, shift_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`
+    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, cash_amount, usd_amount, currency, note, status, shift_id, external_id, receipt_number, till_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)`
   )
   const insertItem = db.prepare(
     `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, cost_price, selling_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
-  const updateQty = db.prepare(`UPDATE products SET current_quantity = ?, last_sold_date = ? WHERE id = ?`)
+  const updateQty = db.prepare(`UPDATE products SET current_quantity = ?, last_sold_date = ?, sync_updated_at = datetime('now') WHERE id = ?`)
   const insertMovement = db.prepare(
     `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by) VALUES (?, ?, 'SOLD', ?, ?)`
   )
@@ -39,27 +55,49 @@ function addSale(sale, saleItems) {
     }
     const saleId = insertSale.run(
       sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given,
-      method, cashAmt, usdAmt, sale.currency || 'USD', sale.note || '', sale.shift_id || null
+      method, cashAmt, usdAmt, sale.currency || 'USD', sale.note || '', sale.shift_id || null,
+      sale.external_id || null, sale.receipt_number || null, sale.till_code || null
     ).lastInsertRowid
 
     const now = new Date().toISOString()
+    const clamped = []
     for (const item of saleItems) {
       insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.cost_price, item.selling_price, item.subtotal)
       const product = getProductById(item.product_id)
-      updateQty.run((product.current_quantity || 0) - item.quantity, now, item.product_id)
+      let newQty = (product.current_quantity || 0) - item.quantity
+      if (isReplay && newQty < 0) {
+        clamped.push({ name: item.product_name, shortfall: -newQty })
+        newQty = 0
+      }
+      updateQty.run(newQty, now, item.product_id)
       insertMovement.run(item.product_id, item.product_name, item.quantity, sale.cashier)
     }
 
     if (sale.shift_id) updateShift.run(sale.total, sale.shift_id)
-    return saleId
+    return { saleId, clamped }
   })
 
-  const saleId = doSale()
+  const { saleId, clamped } = doSale()
 
   try {
     const summary = saleItems.map(i => `${i.product_name} x${i.quantity}`).join(', ')
     logAuditAction(sale.cashier, 'CREATE_SALE', 'SALE', String(saleId), `Sale ${saleId}: ${summary} | Total: $${sale.total}`)
   } catch (_) {}
+
+  // Stock said less than what was physically sold — the sale is recorded; tell the
+  // admin to recount those products.
+  if (clamped.length > 0) {
+    try {
+      for (const c of clamped) {
+        createNotification({
+          type: 'STOCK_DISCREPANCY',
+          message: `⚠️ Stock count for "${c.name}" was ${c.shortfall} unit${c.shortfall !== 1 ? 's' : ''} lower than what was actually sold (offline sale #${saleId} by ${sale.cashier}). Quantity set to 0 — please recount this product.`,
+        })
+      }
+      logAuditAction('system', 'STOCK_DISCREPANCY', 'SALE', String(saleId),
+        `Offline sale replay clamped stock to 0 for: ${clamped.map(c => `${c.name} (short ${c.shortfall})`).join(', ')}`)
+    } catch (_) {}
+  }
 
   return saleId
 }
@@ -73,6 +111,16 @@ function getSales() {
 
 function getSaleById(id) {
   return getDb().prepare('SELECT * FROM sales WHERE id = ?').get(id) || null
+}
+
+// Every sale rung up on ONE specific till, read from this machine's own local
+// mirror — always available even offline, since a till's own confirmed sales
+// are always part of its local database.
+function getSalesByTillCode(tillCode) {
+  return getDb().prepare(
+    `SELECT s.*, (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS items_count
+     FROM sales s WHERE s.till_code = ? ORDER BY s.created_at DESC`
+  ).all(tillCode)
 }
 
 function getSaleItems(saleId) {
@@ -200,5 +248,6 @@ function updateSaleReceiptNumber(saleId, receiptNumber) {
 module.exports = {
   addSale, getSales, getSaleById, getSaleItems, holdSale, getHeldSales,
   recallHeldSale, discardHeldSale, voidSale, completeHeldSale, getVoidedSales,
-  getLastReceiptNumber, getReceiptBySaleId, updateSaleReceiptNumber, getSalesByShift
+  getLastReceiptNumber, getReceiptBySaleId, updateSaleReceiptNumber, getSalesByShift,
+  getSalesByTillCode,
 }

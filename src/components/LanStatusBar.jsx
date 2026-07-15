@@ -1,41 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { FiWifi, FiWifiOff, FiServer, FiRefreshCw, FiClock, FiChevronDown, FiX } from 'react-icons/fi'
+import { FiWifi, FiWifiOff, FiServer, FiRefreshCw, FiChevronDown, FiX, FiAlertTriangle } from 'react-icons/fi'
 
-// Maps a raw channel name like "domain:sales:add" to a short human label
-function channelLabel(channel) {
-  const map = {
-    'domain:sales:add':           'Sale',
-    'domain:sales:void':          'Void sale',
-    'domain:sales:hold':          'Hold sale',
-    'domain:sales:complete':      'Complete sale',
-    'domain:expenses:add':        'New expense',
-    'domain:expenses:update':     'Update expense',
-    'domain:expenses:delete':     'Delete expense',
-    'domain:products:add':        'Add product',
-    'domain:products:update':     'Update product',
-    'domain:products:delete':     'Delete product',
-    'domain:products:updateQty':  'Stock qty update',
-    'domain:shifts:start':        'Start shift',
-    'domain:shifts:close':        'Close shift',
-    'domain:shifts:closeAll':     'Close all shifts',
-    'domain:eod:add':             'End of Day',
-    'domain:stock:addReceiving':  'Stock receiving',
-    'domain:stock:recordDirect':  'Direct purchase',
-    'domain:users:add':           'Add user',
-    'domain:users:update':        'Update user',
-    'domain:audit:log':           'Audit log',
-  }
-  return map[channel] || channel.replace(/^domain:/, '').replace(/:/g, ' › ')
-}
-
-function timeAgo(ts) {
-  if (!ts) return ''
-  const secs = Math.floor((Date.now() - ts) / 1000)
-  if (secs < 60) return `${secs}s ago`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  return `${Math.floor(mins / 60)}h ago`
-}
 
 export default function LanStatusBar() {
   const [status, setStatus] = useState(null)
@@ -71,32 +36,85 @@ export default function LanStatusBar() {
 
   if (!status || status.mode === 'standalone') return null
 
-  const isServer = status.mode === 'server'
-  const isClient = status.mode === 'client'
-  const online   = status.clientOnline
-  const queued   = status.queueSize || 0
-  const items    = status.queueItems || []
+  const isServer    = status.mode === 'server'
+  const isClient    = status.mode === 'client'
+  const online      = status.clientOnline
+  const connecting  = status.clientConnecting ?? false
+  const queued      = status.queueSize || 0
 
   let dotColor, labelText
   if (isServer) {
     dotColor = '#4caf50'
     labelText = `Server · ${status.clientCount || 0} device${status.clientCount !== 1 ? 's' : ''}`
+  } else if (isClient && connecting) {
+    dotColor = 'rgba(255,255,255,0.35)'
+    labelText = 'Connecting…'
   } else if (isClient && online) {
     dotColor = '#4caf50'
-    labelText = queued > 0 ? `${queued} pending` : 'Synced'
+    labelText = queued > 0 ? 'Syncing…' : 'Synced'
   } else if (isClient) {
     dotColor = '#ff9800'
-    labelText = queued > 0 ? `Offline · ${queued} queued` : 'Offline'
+    labelText = 'Offline'
   } else {
     return null
   }
 
-  const lastSyncStr = status.lastSync
-    ? new Date(status.lastSync).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  // "Last sync" is shown from THIS machine's clock (lastSyncAt). The old field
+  // (status.lastSync) is Main's clock and reads hours wrong whenever Main's
+  // timezone is misconfigured — which is exactly when the user needs the truth.
+  const lastSyncStr = status.lastSyncAt
+    ? new Date(status.lastSyncAt).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : null
+
+  // Satellite alert banner — anything that risks losing or mistiming sales must be
+  // impossible to miss. One banner at a time, worst problem first.
+  const skewHours   = (status.clockSkewMs || 0) / 3600000
+  const clockSkewed = isClient && online && (status.clockSkewMs || 0) > 90_000
+  const syncStale   = isClient && online && !!status.lastSyncError &&
+    (!status.lastSyncAt || Date.now() - status.lastSyncAt > 120_000)
+
+  let banner = null
+  if (isClient && !connecting && !online) {
+    banner = {
+      bg: '#dc2626', icon: <FiWifiOff size={15} />,
+      text: queued > 0
+        ? `OFFLINE — ${queued} record${queued !== 1 ? 's' : ''} saved on this till, waiting to sync to Main`
+        : 'OFFLINE — no connection to Main. Sales will be saved here and synced when Main is back.',
+    }
+  } else if (syncStale) {
+    banner = {
+      bg: '#dc2626', icon: <FiAlertTriangle size={15} />,
+      text: `Connected to Main but data is NOT syncing (${status.lastSyncError}). Try Settings → Network → Force Full Resync.`,
+    }
+  } else if (clockSkewed) {
+    banner = {
+      bg: '#d97706', icon: <FiAlertTriangle size={15} />,
+      text: `This till's clock and Main's clock differ by ${skewHours >= 1 ? `~${skewHours.toFixed(1)} hours` : `${Math.round((status.clockSkewMs || 0) / 60000)} min`} — fix the Windows date/time/timezone on BOTH computers. Sale times and daily totals are wrong until fixed.`,
+    }
+  } else if (isClient && !connecting && queued > 0) {
+    banner = {
+      bg: '#d97706', icon: <FiRefreshCw size={15} />,
+      text: `Syncing ${queued} pending record${queued !== 1 ? 's' : ''} to Main…`,
+    }
+  }
+
+  const alertBanner = banner ? (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+      background: banner.bg,
+      color: '#fff', padding: '8px 16px',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+      fontSize: 13, fontWeight: 700, letterSpacing: '0.02em',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+    }}>
+      {banner.icon}
+      {banner.text}
+    </div>
+  ) : null
 
   return (
     <div style={{ position: 'relative' }} ref={panelRef}>
+      {alertBanner}
       {/* ── Status pill (clickable) ── */}
       <button
         onClick={() => setOpen(o => !o)}
@@ -146,16 +164,20 @@ export default function LanStatusBar() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             {isServer
               ? <FiServer size={13} style={{ color: '#4caf50' }} />
-              : online
-                ? <FiWifi size={13} style={{ color: '#4caf50' }} />
-                : <FiWifiOff size={13} style={{ color: '#ff9800' }} />
+              : connecting
+                ? <FiRefreshCw size={13} style={{ color: 'rgba(255,255,255,0.45)' }} />
+                : online
+                  ? <FiWifi size={13} style={{ color: '#4caf50' }} />
+                  : <FiWifiOff size={13} style={{ color: '#ff9800' }} />
             }
             <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)' }}>
               {isServer
                 ? `Listening · ${status.clientCount || 0} satellite${status.clientCount !== 1 ? 's' : ''} connected`
-                : online
-                  ? `Connected to ${status.serverIp || 'Main'}`
-                  : `Offline · reconnecting…`
+                : connecting
+                  ? `Connecting to ${status.serverIp || 'Main'}…`
+                  : online
+                    ? `Connected to ${status.serverIp || 'Main'}`
+                    : `Offline · reconnecting…`
               }
             </span>
           </div>
@@ -168,35 +190,14 @@ export default function LanStatusBar() {
             </div>
           )}
 
-          {/* Pending queue */}
-          {isClient && queued === 0 && (
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', paddingTop: 4 }}>
-              No pending operations
-            </div>
-          )}
-
-          {isClient && items.length > 0 && (
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#fbbf24', marginBottom: 6 }}>
-                {queued} operation{queued !== 1 ? 's' : ''} pending sync
-              </div>
-              <div style={{ maxHeight: 160, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {items.map((item) => (
-                  <div key={item.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    background: 'rgba(255,255,255,0.06)', borderRadius: 6,
-                    padding: '5px 8px', fontSize: 11,
-                  }}>
-                    <span style={{ color: 'rgba(255,255,255,0.85)', fontWeight: 500 }}>
-                      {channelLabel(item.channel)}
-                    </span>
-                    <span style={{ color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <FiClock size={10} />
-                      {timeAgo(item.timestamp)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+          {/* Pending queue count */}
+          {isClient && queued > 0 && (
+            <div style={{
+              fontSize: 11, fontWeight: 700, color: '#fbbf24', paddingTop: 4,
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24', flexShrink: 0 }} />
+              {queued} write{queued !== 1 ? 's' : ''} pending sync to Main
             </div>
           )}
 

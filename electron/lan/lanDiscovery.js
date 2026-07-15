@@ -27,10 +27,16 @@ function startBeacon(serverPort, shopName) {
 
   socket.bind(() => {
     try { socket.setBroadcast(true) } catch (_) {}
-    const ip = getLocalIp()
-    logger.info(`[LAN Discovery] Beacon broadcasting on UDP ${DISCOVERY_PORT} — advertising ${ip}:${serverPort}`)
+    logger.info(`[LAN Discovery] Beacon started on UDP ${DISCOVERY_PORT}`)
+    let advertisedIp = null
     const send = () => {
       try {
+        const ip = getLocalIp()
+        if (ip === '127.0.0.1') return  // network not up yet — skip this tick
+        if (ip !== advertisedIp) {
+          advertisedIp = ip
+          logger.info(`[LAN Discovery] Beacon advertising ${ip}:${serverPort}`)
+        }
         const msg = Buffer.from(JSON.stringify({ stocka: true, ip, port: serverPort, shopName }))
         socket.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255', (err) => {
           if (err) logger.warn(`[LAN Discovery] Beacon send failed: ${err.code || err.message}`)

@@ -1,16 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
 import { getSales, getReceiptBySaleId, getShop } from '../database/db'
+import { parseDbDate, localDateStr, formatDbTime, formatDbDate } from '../utils/salesDay'
 import { useAuthStore } from '../store/useAuthStore'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import ReceiptModal from '../components/ReceiptModal'
-import { FiSearch, FiEye, FiRefreshCw } from 'react-icons/fi'
+import { FiSearch, FiEye, FiRefreshCw, FiClock } from 'react-icons/fi'
 import './MyTransactions.css'
 
 function MyTransactions() {
   const { user } = useAuthStore()
   const isManager = user?.role === 'Admin' || user?.role === 'Manager'
 
-  const todayStr = new Date().toISOString().split('T')[0]
+  const todayStr = localDateStr()
 
   const [allSales, setAllSales]       = useState([])
   const [loading, setLoading]         = useState(true)
@@ -21,6 +22,11 @@ function MyTransactions() {
   const [receiptLoading, setReceiptLoading] = useState(false)
   const [shopInfo, setShopInfo]       = useState(null)
   const [printerName, setPrinterName] = useState('')
+
+  // "This till" — everything rung up on THIS physical machine, confirmed or not.
+  const [tillIdentity, setTillIdentity]   = useState(null) // { code, label }
+  const [tillOnly, setTillOnly]           = useState(false)
+  const [pendingSales, setPendingSales]   = useState([]) // queued domain:sales:add not yet synced to Main
 
   const { printReceipt, isPrinting } = useReceiptPrinter()
 
@@ -40,6 +46,24 @@ function MyTransactions() {
 
   useEffect(() => { loadData() }, [loadData])
 
+  useEffect(() => {
+    window.stocka?.till?.getIdentity().then(setTillIdentity).catch(() => {})
+  }, [])
+
+  // Pending (queued, not yet synced) sales — only ever non-empty on a satellite
+  // that has offline writes waiting. Refreshed on every lan status change.
+  useEffect(() => {
+    const lan = window.stocka?.lan
+    if (!lan) return
+    const refreshQueue = (status) => {
+      const items = (status?.queueItems || []).filter(i => i.channel === 'domain:sales:add' && i.summary)
+      setPendingSales(items)
+    }
+    lan.getStatus().then(refreshQueue).catch(() => {})
+    const off = lan.onStatusChange?.(refreshQueue)
+    return () => { try { off?.() } catch (_) {} }
+  }, [])
+
   // ── Filtering ──────────────────────────────────────────────────────────────
   const filtered = allSales.filter(s => {
     if (s.status !== 'completed') return false
@@ -47,15 +71,18 @@ function MyTransactions() {
     // Cashiers only see their own sales
     if (!isManager && s.cashier !== user?.username) return false
 
-    // Date filter
+    // Date filter — compare in LOCAL calendar days (created_at is stored in UTC)
     if (dateFilter) {
-      const saleDate = s.created_at?.slice(0, 10) ||
-        new Date(s.created_at).toISOString().slice(0, 10)
+      const d = parseDbDate(s.created_at)
+      const saleDate = d && !isNaN(d) ? localDateStr(d) : null
       if (saleDate !== dateFilter) return false
     }
 
     // Cashier filter (manager only)
     if (isManager && cashierFilter && s.cashier !== cashierFilter) return false
+
+    // This-till filter — everything rung up on THIS physical machine
+    if (tillOnly && tillIdentity && s.till_code !== tillIdentity.code) return false
 
     // Search by receipt number or cashier name
     if (search) {
@@ -93,14 +120,8 @@ function MyTransactions() {
   }
 
   // ── Formatters ─────────────────────────────────────────────────────────────
-  const fmtTime = (d) => {
-    if (!d) return '—'
-    return new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
-  }
-  const fmtDate = (d) => {
-    if (!d) return '—'
-    return new Date(d).toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' })
-  }
+  const fmtTime = formatDbTime
+  const fmtDate = formatDbDate
   const fmtMoney = (n) => `$${(n || 0).toFixed(2)}`
 
   const paymentBadge = (method) => {
@@ -165,6 +186,16 @@ function MyTransactions() {
           </div>
         )}
 
+        {tillIdentity && (
+          <div className="txn-filter-group">
+            <label>Machine</label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, height: 36, fontSize: 13, cursor: 'pointer' }}>
+              <input type="checkbox" checked={tillOnly} onChange={e => setTillOnly(e.target.checked)} />
+              This till only ({tillIdentity.label || tillIdentity.code})
+            </label>
+          </div>
+        )}
+
         <div className="txn-filter-group txn-search-group">
           <label>Search</label>
           <div className="txn-search-wrap">
@@ -179,6 +210,41 @@ function MyTransactions() {
           </div>
         </div>
       </div>
+
+      {/* Pending sync — sales rung up on this till that Main hasn't received yet.
+          Shown regardless of date/cashier/till filters so nothing offline is ever hidden. */}
+      {pendingSales.length > 0 && (
+        <div className="txn-table-wrap" style={{ marginBottom: 16, border: '1px solid #fde68a', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ background: '#fffbeb', padding: '8px 14px', fontSize: 12, fontWeight: 700, color: '#92400e', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FiClock size={13} /> {pendingSales.length} sale{pendingSales.length !== 1 ? 's' : ''} on this till — waiting to sync to Main
+          </div>
+          <table className="txn-table">
+            <tbody>
+              {pendingSales.map(item => (
+                <tr key={item.id} className="txn-row" style={{ cursor: 'default' }}>
+                  <td className="txn-time">{new Date(item.timestamp).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td className="txn-receipt">
+                    {item.summary.receiptNumber
+                      ? <span className="txn-rcpt-badge">#{item.summary.receiptNumber}</span>
+                      : <span className="txn-no-rcpt">—</span>}
+                  </td>
+                  {isManager && <td className="txn-cashier">{item.summary.cashier || '—'}</td>}
+                  <td className="txn-items-count">{item.summary.itemCount || '—'}</td>
+                  <td>
+                    <span className={`txn-pay-badge txn-pay-${paymentBadge(item.summary.paymentMethod)}`}>
+                      {item.summary.paymentMethod || 'Cash'}
+                    </span>
+                  </td>
+                  <td className="txn-right txn-total">{fmtMoney(item.summary.total)}</td>
+                  <td className="txn-action-cell">
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#d97706' }}>Pending</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Table */}
       <div className="txn-table-wrap">

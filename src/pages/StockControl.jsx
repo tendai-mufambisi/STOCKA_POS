@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct } from '../database/db'
+import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct, correctStockReceiving } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3 } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
 import './StockControl.css'
 
@@ -169,6 +169,74 @@ function StockControl() {
     }
   }
 
+  // ── Correction state ──
+  // Only Admin/Manager may correct; a correction never edits the original row —
+  // it appends a signed-delta receiving that references it.
+  const canCorrect = user?.role === 'Admin' || user?.role === 'Manager'
+  const [correctionTarget, setCorrectionTarget] = useState(null)   // original receiving row being corrected
+  const [correctionForm, setCorrectionForm] = useState({ quantity: '', cost_per_unit: '', reason: '' })
+  const [correctionError, setCorrectionError] = useState('')
+  const [correctionSaving, setCorrectionSaving] = useState(false)
+
+  // Current truth for a receiving = original + all its corrections
+  const effectiveReceiving = (row) => {
+    const corrections = receivings.filter(r => r.corrects_receiving_id === row.id)
+    const units = (row.total_units || 0) + corrections.reduce((s, c) => s + (c.total_units || 0), 0)
+    const value = (row.total_value || 0) + corrections.reduce((s, c) => s + (c.total_value || 0), 0)
+    return { units, value, cpu: units > 0 ? value / units : (row.cost_per_unit || 0) }
+  }
+
+  const openCorrection = (row) => {
+    const eff = effectiveReceiving(row)
+    setCorrectionTarget(row)
+    setCorrectionForm({ quantity: String(eff.units), cost_per_unit: eff.cpu ? eff.cpu.toFixed(2) : '0', reason: '' })
+    setCorrectionError('')
+  }
+
+  const closeCorrection = () => {
+    if (correctionSaving) return
+    setCorrectionTarget(null)
+    setCorrectionError('')
+  }
+
+  // Clears the error as soon as the user starts fixing the form
+  const updateCorrectionField = (field, value) => {
+    setCorrectionForm(f => ({ ...f, [field]: value }))
+    if (correctionError) setCorrectionError('')
+  }
+
+  const handleCorrectionSubmit = async () => {
+    if (!correctionTarget) return
+    setCorrectionError('')
+    const qty = parseInt(correctionForm.quantity)
+    const cpu = parseFloat(correctionForm.cost_per_unit)
+    if (correctionForm.quantity === '' || !Number.isFinite(qty) || qty < 0) { setCorrectionError('Please fill in the correct quantity (0 or more)'); return }
+    if (correctionForm.cost_per_unit === '' || !Number.isFinite(cpu) || cpu < 0) { setCorrectionError('Please fill in the correct cost per unit (0 or more)'); return }
+    if (!correctionForm.reason.trim()) { setCorrectionError('Please give a reason for the correction'); return }
+    const eff = effectiveReceiving(correctionTarget)
+    if (qty === eff.units && Math.abs(qty * cpu - eff.value) < 0.005) {
+      setCorrectionError('These values match the current record — change the quantity or cost to save a correction.')
+      return
+    }
+    setCorrectionSaving(true)
+    try {
+      const result = await correctStockReceiving(
+        correctionTarget.id,
+        { total_units: qty, cost_per_unit: cpu, reason: correctionForm.reason.trim() },
+        user?.username || 'System'
+      )
+      setCorrectionTarget(null)
+      const sign = result.qty_delta >= 0 ? '+' : ''
+      setSuccessMessage(`Correction saved for "${result.product_name}": ${sign}${result.qty_delta} units (record #${result.original_id}). Stock is now ${result.new_stock_qty}.`)
+      setTimeout(() => setSuccessMessage(''), 6000)
+      await loadData()
+    } catch (err) {
+      setCorrectionError(err.message || 'Failed to save correction')
+    } finally {
+      setCorrectionSaving(false)
+    }
+  }
+
   // History search/filter state (matches CurrentInventory pattern)
   const [historySearch, setHistorySearch] = useState('')
   const [historyTypeFilter, setHistoryTypeFilter] = useState('all')
@@ -246,9 +314,16 @@ function StockControl() {
       : <FiArrowDown size={13} className="sort-icon" />
   }
 
+  // Cost per unit defaults to the previous restock cost; the field only
+  // appears when there is no previous cost or the user chooses to edit it.
+  const [editingCost, setEditingCost] = useState(false)
+  const prevCpu = productPriceInfo?.cost_per_unit || 0
+  const hasPrevCost = prevCpu > 0
+  const usingPrevCost = hasPrevCost && !editingCost
+
   // Computed values for both form types
   const directQty = parseInt(formData.quantity) || 0
-  const directCpu = parseFloat(formData.cost_per_unit) || 0
+  const directCpu = usingPrevCost ? prevCpu : (parseFloat(formData.cost_per_unit) || 0)
   const directTotalValue = directQty * directCpu
 
   // Profit calculations — use new selling price if being updated, otherwise current
@@ -260,9 +335,54 @@ function StockControl() {
   const totalProfit = profitPerUnit * directQty
   const profitMarginPct = effectiveSP > 0 ? (profitPerUnit / effectiveSP) * 100 : 0
 
+  // Shared between supplier and direct purchase forms: shows the previous cost
+  // with an edit button, or a manual input when there is no previous cost / editing
+  const costPerUnitField = usingPrevCost ? (
+    <div className="form-group">
+      <label>Cost per Unit (USD)</label>
+      <div className="prev-cost-display">
+        <span className="prev-cost-value">${prevCpu.toFixed(2)}</span>
+        <button
+          type="button"
+          className="btn-edit-cost"
+          onClick={() => { setFormData(prev => ({ ...prev, cost_per_unit: prevCpu.toFixed(2) })); setEditingCost(true) }}
+        >
+          <FiEdit3 size={12} /> Edit previous cost per unit
+        </button>
+      </div>
+      <p className="field-hint">Using the previous restock cost automatically</p>
+    </div>
+  ) : (
+    <div className="form-group">
+      <label>Cost per Unit (USD)</label>
+      <input
+        type="number"
+        value={formData.cost_per_unit}
+        onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
+        placeholder="0.00"
+        step="any"
+        min="0"
+        autoFocus={editingCost}
+      />
+      {hasPrevCost ? (
+        <button
+          type="button"
+          className="btn-use-prev-cost"
+          onClick={() => { setEditingCost(false); setFormData(prev => ({ ...prev, cost_per_unit: '' })) }}
+        >
+          <FiX size={11} /> Cancel — keep previous cost (${prevCpu.toFixed(2)})
+        </button>
+      ) : (
+        <p className="field-hint">What you paid per individual unit</p>
+      )}
+    </div>
+  )
+
   const handleFieldChange = (name, value) => {
     setFormData(prev => ({ ...prev, [name]: value }))
     if (name === 'product_id') {
+      setEditingCost(false)
+      setFormData(prev => ({ ...prev, product_id: value, cost_per_unit: '' }))
       if (value) {
         getLatestProductPrice(parseInt(value)).then(info => setProductPriceInfo(info)).catch(() => setProductPriceInfo(null))
       } else {
@@ -275,6 +395,7 @@ function StockControl() {
     setPurchaseType(type)
     setFormData(emptyForm)
     setProductPriceInfo(null)
+    setEditingCost(false)
     setError('')
   }
 
@@ -333,6 +454,7 @@ function StockControl() {
       setFormData(emptyForm)
       setPurchaseType('supplier')
       setProductPriceInfo(null)
+      setEditingCost(false)
       setShowForm(false)
       await loadData()
     } catch (err) {
@@ -661,18 +783,7 @@ function StockControl() {
                     />
                     <p className="field-hint">Total individual units being added to stock</p>
                   </div>
-                  <div className="form-group">
-                    <label>Cost per Unit (USD)</label>
-                    <input
-                      type="number"
-                      value={formData.cost_per_unit}
-                      onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
-                      placeholder="0.00"
-                      step="any"
-                      min="0"
-                    />
-                    <p className="field-hint">What you paid per individual unit</p>
-                  </div>
+                  {costPerUnitField}
                 </div>
 
                 <div className="form-row">
@@ -747,18 +858,7 @@ function StockControl() {
                     />
                     <p className="field-hint">Total individual units being added to stock</p>
                   </div>
-                  <div className="form-group">
-                    <label>Cost per Unit (USD)</label>
-                    <input
-                      type="number"
-                      value={formData.cost_per_unit}
-                      onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
-                      placeholder="0.00"
-                      step="any"
-                      min="0"
-                    />
-                    <p className="field-hint">What you paid per individual unit</p>
-                  </div>
+                  {costPerUnitField}
                 </div>
 
                 <div className="form-row">
@@ -833,7 +933,7 @@ function StockControl() {
               <button type="submit" className="btn btn-primary">
                 {purchaseType === 'supplier' ? <><FiCheck size={14} /> Record Stock Receiving</> : <><FiCheck size={14} /> Confirm Direct Purchase</>}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setError('') }}>
+              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setEditingCost(false); setError('') }}>
                 Cancel
               </button>
             </div>
@@ -920,6 +1020,100 @@ function StockControl() {
         </div>
       )}
 
+      {/* ── Correction Modal ── */}
+      {correctionTarget && (() => {
+        const eff = effectiveReceiving(correctionTarget)
+        const qty = parseInt(correctionForm.quantity)
+        const cpu = parseFloat(correctionForm.cost_per_unit)
+        const inputsValid = Number.isFinite(qty) && qty >= 0 && Number.isFinite(cpu) && cpu >= 0
+        const qtyDelta = inputsValid ? qty - eff.units : 0
+        const valueDelta = inputsValid ? (qty * cpu) - eff.value : 0
+        const noChange = inputsValid && qtyDelta === 0 && Math.abs(valueDelta) < 0.005
+        return (
+          <div className="form-overlay" onClick={closeCorrection}>
+            <div className="product-form correction-modal" onClick={e => e.stopPropagation()}>
+              <div className="form-header">
+                <h2>Correct Stock Record #{correctionTarget.id}</h2>
+                <button className="close-btn" onClick={closeCorrection}><FiX size={14} /></button>
+              </div>
+
+              <div className="correction-original">
+                <div className="co-row"><span className="co-label">Product</span><span>{correctionTarget.product_name}</span></div>
+                <div className="co-row"><span className="co-label">Source</span><span>{correctionTarget.supplier_name || '—'}</span></div>
+                <div className="co-row"><span className="co-label">Date received</span><span>{new Date(correctionTarget.date_received).toLocaleDateString('en-ZW')}</span></div>
+                <div className="co-row">
+                  <span className="co-label">Currently recorded{correctionTarget.correction_count > 0 ? ' (after earlier corrections)' : ''}</span>
+                  <span>{eff.units} units @ ${eff.cpu.toFixed(2)} = ${eff.value.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {correctionError && <div className="error-banner">{correctionError}</div>}
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Correct Quantity *</label>
+                  <input
+                    type="number" min="0" step="1" autoFocus
+                    value={correctionForm.quantity}
+                    onChange={e => updateCorrectionField('quantity', e.target.value)}
+                  />
+                  <p className="field-hint">What the quantity should have been</p>
+                </div>
+                <div className="form-group">
+                  <label>Correct Cost per Unit (USD) *</label>
+                  <input
+                    type="number" min="0" step="any"
+                    value={correctionForm.cost_per_unit}
+                    onChange={e => updateCorrectionField('cost_per_unit', e.target.value)}
+                  />
+                  <p className="field-hint">What you actually paid per unit</p>
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Reason for Correction *</label>
+                  <textarea
+                    rows="2"
+                    value={correctionForm.reason}
+                    onChange={e => updateCorrectionField('reason', e.target.value)}
+                    placeholder="e.g. Counted 45 cartons on delivery, 50 was entered by mistake"
+                  />
+                </div>
+              </div>
+
+              {inputsValid && !noChange && (
+                <div className="correction-preview">
+                  <span>This will record a correction of&nbsp;</span>
+                  <strong className={qtyDelta >= 0 ? 'delta-pos' : 'delta-neg'}>
+                    {qtyDelta >= 0 ? '+' : ''}{qtyDelta} units
+                  </strong>
+                  <span>&nbsp;/&nbsp;</span>
+                  <strong className={valueDelta >= 0 ? 'delta-pos' : 'delta-neg'}>
+                    {valueDelta >= 0 ? '+' : '−'}${Math.abs(valueDelta).toFixed(2)}
+                  </strong>
+                  <span>&nbsp;against record #{correctionTarget.id}. The original entry is kept in history.</span>
+                </div>
+              )}
+              {noChange && (
+                <div className="correction-preview muted">These values match the current record — nothing to correct.</div>
+              )}
+
+              <div className="form-actions">
+                <button className="btn btn-secondary" onClick={closeCorrection} disabled={correctionSaving}>Cancel</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleCorrectionSubmit}
+                  disabled={correctionSaving}
+                >
+                  {correctionSaving ? 'Saving…' : <><FiCheck size={14} /> Save Correction</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* ── Purchase History Table ── */}
       <div className="receivings-list">
         <div className="receivings-list-header">
@@ -998,24 +1192,59 @@ function StockControl() {
                   <th onClick={() => handleSort('value')} className="th-sort th-nowrap">
                     Total Value <SortIcon column="value" />
                   </th>
+                  {canCorrect && <th></th>}
                 </tr>
               </thead>
               <tbody>
-                {filteredReceivings.map(r => (
-                  <tr key={r.id}>
+                {filteredReceivings.map(r => {
+                  const isCorrection = r.corrects_receiving_id != null
+                  return (
+                  <tr key={r.id} className={isCorrection ? 'correction-row' : ''}>
                     <td>{new Date(r.date_received).toLocaleDateString('en-ZW')}</td>
-                    <td>{r.product_name}</td>
+                    <td>
+                      {r.product_name}
+                      {isCorrection && (
+                        <div className="correction-detail">Corrects record #{r.corrects_receiving_id}{r.correction_reason ? ` — ${r.correction_reason}` : ''}</div>
+                      )}
+                    </td>
                     <td>{r.supplier_name || '—'}</td>
                     <td>
-                      <span className={`type-badge ${r.purchase_type === 'supplier' ? 'supplier' : 'direct'}`}>
-                        {r.purchase_type === 'supplier' ? 'Supplier' : 'Direct'}
-                      </span>
+                      {isCorrection ? (
+                        <span className="type-badge correction">Correction</span>
+                      ) : (
+                        <>
+                          <span className={`type-badge ${r.purchase_type === 'supplier' ? 'supplier' : 'direct'}`}>
+                            {r.purchase_type === 'supplier' ? 'Supplier' : 'Direct'}
+                          </span>
+                          {r.correction_count > 0 && (
+                            <span className="type-badge corrected" title="This record has been corrected — see its correction entries">Corrected</span>
+                          )}
+                        </>
+                      )}
                     </td>
-                    <td>{r.total_units} units</td>
+                    <td className={isCorrection ? (r.total_units >= 0 ? 'delta-pos' : 'delta-neg') : ''}>
+                      {isCorrection && r.total_units >= 0 ? '+' : ''}{r.total_units} units
+                    </td>
                     <td>${(r.cost_per_unit || 0).toFixed(2)}</td>
-                    <td>${(r.total_value || 0).toFixed(2)}</td>
+                    <td className={isCorrection ? (r.total_value >= 0 ? 'delta-pos' : 'delta-neg') : ''}>
+                      {isCorrection ? (r.total_value >= 0 ? '+' : '−') : ''}${Math.abs(r.total_value || 0).toFixed(2)}
+                    </td>
+                    {canCorrect && (
+                      <td>
+                        {!isCorrection && (
+                          <button
+                            className="btn-correct"
+                            title="Correct this record — the original is kept and a +/- correction is added"
+                            onClick={() => openCorrection(r)}
+                          >
+                            <FiEdit3 size={13} /> Correct
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

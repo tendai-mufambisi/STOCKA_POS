@@ -32,19 +32,29 @@ class OfflineQueue {
   peek() { return [...this.queue] }
 
   // Call handler(channel, args) for each item; removes item on success.
-  // Returns array of { item, error } for any that failed.
+  // A handler error with `permanent = true` (the server rejected the write outright —
+  // retrying can never succeed) ALSO removes the item, reported via `deadLettered`
+  // so the caller can archive and surface it. Transient errors keep the item queued.
+  // Returns { failed: [{item, error}], deadLettered: [{item, error}] }.
   async flush(handler) {
     const failed = []
+    const deadLettered = []
     for (const item of [...this.queue]) {
       try {
         await handler(item.channel, item.args)
         this.queue = this.queue.filter(q => q.id !== item.id)
         this._save()
       } catch (err) {
-        failed.push({ item, error: err.message })
+        if (err.permanent) {
+          this.queue = this.queue.filter(q => q.id !== item.id)
+          this._save()
+          deadLettered.push({ item, error: err.message })
+        } else {
+          failed.push({ item, error: err.message })
+        }
       }
     }
-    return failed
+    return { failed, deadLettered }
   }
 
   clear() {

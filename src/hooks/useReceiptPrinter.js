@@ -4,6 +4,7 @@
  * Works with any Bluetooth thermal printer paired and installed on Windows
  */
 import { useState, useCallback } from 'react'
+import { parseDbDate } from '../utils/salesDay'
 
 export const DEFAULT_PRINTER_NAME = '' // Empty = user must configure in Settings
 
@@ -14,7 +15,7 @@ export function mapReceiptToBluetoothPayload(receiptData, shopInfo = {}, options
   const { isDuplicate = false } = options
   const storeName = (shopInfo?.name || 'STOCKA SHOP').trim()
   const dateStr = receiptData.date ||
-    (receiptData.created_at ? new Date(receiptData.created_at).toLocaleString() : new Date().toLocaleString())
+    (receiptData.created_at ? parseDbDate(receiptData.created_at).toLocaleString() : new Date().toLocaleString())
 
   const items = (receiptData.items || []).map((item) => ({
     name: (item.product_name || item.name || 'Item').toString(),

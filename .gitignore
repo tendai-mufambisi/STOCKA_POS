@@ -1,6 +1,10 @@
 # License tool — contains the HMAC secret, never commit
 tools/generate-license.js
 
+# R2 upload scripts — contain credentials, never commit
+upload-to-r2.js
+upload-to-r2.py
+
 # Logs
 logs
 *.log

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { addExpense, getExpenses, updateExpense, deleteExpense } from '../database/db'
 import ConfirmModal from '../components/ConfirmModal'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
+import { formatDbDate } from '../utils/salesDay'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import { FiPlus, FiX, FiEdit2, FiTrash2, FiDollarSign, FiCalendar, FiTag, FiBriefcase } from 'react-icons/fi'
@@ -262,7 +263,7 @@ function Expenses() {
             <tbody>
               {filteredExpenses.map(e => (
                 <tr key={e.id}>
-                  <td>{new Date(e.date).toLocaleDateString('en-ZW')}</td>
+                  <td>{formatDbDate(e.date)}</td>
                   <td>{e.description}</td>
                   <td><span className="category-badge">{e.category}</span></td>
                   <td>

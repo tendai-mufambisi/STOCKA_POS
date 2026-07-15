@@ -1,6 +1,6 @@
 {
   "name": "stocka",
-  "version": "1.0.8",
+  "version": "1.4.0",
   "description": "Stocka - Retail Inventory & POS for Zimbabwe",
   "author": "Tendai Mufambisi",
   "main": "electron/main.js",
@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "dist": "cross-env NODE_ENV=production BUILD_TARGET=desktop vite build && electron-builder",
     "release": "cross-env NODE_ENV=production BUILD_TARGET=desktop vite build && electron-builder --publish always",
+    "upload": "python upload-to-r2.py",
     "lint": "eslint src/",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -57,6 +58,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "src/utils/printerUtils.js",
       "src/assets/icon.png",
       "src/assets/icon.ico",
       "package.json",
@@ -71,7 +73,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "src/assets/icon.ico"
+      "icon": "src/assets/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -83,9 +86,8 @@
       "include": "installer.nsh"
     },
     "publish": {
-      "provider": "github",
-      "owner": "tendai-mufambisi",
-      "repo": "STOCKA_POS"
+      "provider": "generic",
+      "url": "https://pub-88862824ed9840ca984415fbd9e10fb1.r2.dev"
     }
   }
 }

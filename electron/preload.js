@@ -28,9 +28,10 @@ contextBridge.exposeInMainWorld('stocka', {
 
   // ── LICENSE ───────────────────────────────────────────────
   license: {
-    check:    ()    => ipcRenderer.invoke('license:check'),
-    activate: (key) => ipcRenderer.invoke('license:activate', key),
-    getInfo:  ()    => ipcRenderer.invoke('license:get-info'),
+    check:    ()     => ipcRenderer.invoke('license:check'),
+    activate: (key)  => ipcRenderer.invoke('license:activate', key),
+    getInfo:  ()     => ipcRenderer.invoke('license:get-info'),
+    getRaw:   (data) => ipcRenderer.invoke('license:get-raw', data),
   },
 
   // ── UPDATER ───────────────────────────────────────────────
@@ -108,6 +109,7 @@ contextBridge.exposeInMainWorld('stocka', {
     reconcileProduct:   (id, qty, notes, by) => invoke('domain:stock:reconcileProduct', id, qty, notes, by),
     reconcileProducts:  (adjs, by)   => invoke('domain:stock:reconcileProducts', adjs, by),
     recordInitialCost:  (id, cost, by) => invoke('domain:stock:recordInitialCost', id, cost, by),
+    correctReceiving:   (id, corrected, by) => invoke('domain:stock:correctReceiving', id, corrected, by),
   },
 
   // ── SALES ─────────────────────────────────────────────────
@@ -127,6 +129,7 @@ contextBridge.exposeInMainWorld('stocka', {
     getReceipt:    (id)          => invoke('domain:sales:getReceipt', id),
     updateReceipt: (id, num)     => invoke('domain:sales:updateReceipt', id, num),
     getByShift:    (shiftId)     => invoke('domain:sales:getByShift', shiftId),
+    getByTill:     (tillCode)    => invoke('domain:sales:getByTill', tillCode),
   },
 
   // ── EXPENSES ──────────────────────────────────────────────
@@ -164,6 +167,8 @@ contextBridge.exposeInMainWorld('stocka', {
     getSummary:     (id)                  => invoke('domain:shifts:getSummary', id),
     closeAll:       (data, note)          => invoke('domain:shifts:closeAll', data, note),
     reopen:         (id)                  => invoke('domain:shifts:reopen', id),
+    previewOrphaned:   (shiftId) => invoke('domain:shifts:previewOrphaned', shiftId),
+    reconcileOrphaned: (shiftId) => invoke('domain:shifts:reconcileOrphaned', shiftId),
     onForceClose:   (cb) => { const l = (_, d) => cb(d); ipcRenderer.on('shift:force-closed', l); return () => ipcRenderer.removeListener('shift:force-closed', l) },
   },
 
@@ -231,6 +236,20 @@ contextBridge.exposeInMainWorld('stocka', {
     importFromFile: (jsonString) => invoke('domain:backup:importFromFile', jsonString),
   },
 
+  // ── MAINTENANCE (admin-only, always local) ────────────────
+  maintenance: {
+    // Wipes transactional history (sales/shifts/receivings/expenses/audit),
+    // keeps products, users, suppliers, branches, shop settings.
+    resetTransactions: (creds) => ipcRenderer.invoke('maintenance:reset-transactions', creds),
+  },
+
+  // ── TILL IDENTITY (local-only, never synced) ──────────────
+  till: {
+    getIdentity:        ()      => ipcRenderer.invoke('till:get-identity'),
+    setLabel:            (label) => ipcRenderer.invoke('till:set-label', label),
+    nextReceiptNumber:   ()      => ipcRenderer.invoke('till:next-receipt-number'),
+  },
+
   // ── LAN SYNC ─────────────────────────────────────────────
   lan: {
     getStatus:      ()       => ipcRenderer.invoke('lan:get-status'),
@@ -254,6 +273,9 @@ contextBridge.exposeInMainWorld('stocka', {
     broadcastDayClosed: (date, by) => ipcRenderer.invoke('lan:broadcast-eod-closed', date, by),
     // Satellite: fires when the admin machine closes the day
     onEodClosed:    (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:eod-closed', l);      return () => ipcRenderer.removeListener('lan:eod-closed', l) },
+    // Satellite: fires when this machine's clock is more than 60s out of sync with Main
+    onClockSkew:    (cb)     => { const l = (_, d) => cb(d); ipcRenderer.on('lan:clock-skew', l);      return () => ipcRenderer.removeListener('lan:clock-skew', l) },
+    clearQueue:     ()       => ipcRenderer.invoke('lan:clear-queue'),
   },
 
   // ── BLUETOOTH SERIAL PRINTER ──────────────────────────────

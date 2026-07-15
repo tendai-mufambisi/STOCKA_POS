@@ -56,4 +56,8 @@ function loadLicense() {
   }
 }
 
-module.exports = { verifyLicense, saveLicense, loadLicense }
+function getRawKey() {
+  try { return fs.readFileSync(getLicensePath(), 'utf8').trim() || null } catch { return null }
+}
+
+module.exports = { verifyLicense, saveLicense, loadLicense, getRawKey }

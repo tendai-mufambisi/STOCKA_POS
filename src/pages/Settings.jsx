@@ -7,13 +7,15 @@ import { validatePin } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
+import { NAV_PRIVILEGES, CONFIGURABLE_ROLES, parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
 import LanSettings from './LanSettings'
 import './Settings.css'
 import {
   FiShoppingBag, FiUsers, FiPrinter, FiShield, FiFileText,
   FiSliders, FiMonitor, FiHardDrive, FiWifi, FiSave, FiRefreshCw,
   FiZap, FiUserPlus, FiKey, FiUserX, FiDownload, FiUpload,
-  FiAlertCircle, FiCheckCircle, FiX, FiCheck, FiLock
+  FiAlertCircle, FiCheckCircle, FiX, FiCheck, FiLock,
+  FiEye, FiEyeOff, FiCopy
 } from 'react-icons/fi'
 
 function Settings() {
@@ -30,10 +32,14 @@ function Settings() {
     name: '', address: '', phone: '', email: '', currency: 'USD',
     printer_name: '', printer_port: 'COM3', auto_print: 1, print_duplicate: 0,
     receipt_width_mm: 58, receipt_footer: 'Thank you for your business!', receipt_name_size: 'large',
-    vat_rate: 0, default_reorder_level: 5, variance_tolerance: 0.01
+    vat_rate: 0, default_reorder_level: 5, variance_tolerance: 0.01,
+    role_privileges: null
   })
 
   const [users, setUsers]               = useState([])
+  // Role privileges editor (Settings → Role Privileges, admin only)
+  const [privRole, setPrivRole]   = useState('Cashier')
+  const [rolePrivs, setRolePrivs] = useState({})
   const [showNewUserForm, setShowNewUserForm] = useState(false)
   const [newUserForm, setNewUserForm]   = useState({ username: '', password: '', confirmPassword: '', role: 'Cashier' })
   const [resetPasswordUserId, setResetPasswordUserId] = useState(null)
@@ -52,6 +58,19 @@ function Settings() {
   const [systemInfo, setSystemInfo]         = useState(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateStatus, setUpdateStatus]     = useState('')
+
+  // Test-data reset (danger zone)
+  const [resetConfirmText, setResetConfirmText] = useState('')
+  const [resetPin, setResetPin]                 = useState('')
+  const [resetting, setResetting]               = useState(false)
+  const [resetResult, setResetResult]           = useState(null) // { totalRemoved, backupFilename }
+
+  // License key reveal
+  const [licenseReveal, setLicenseReveal]         = useState('hidden') // 'hidden' | 'pin' | 'revealed'
+  const [licensePin, setLicensePin]               = useState('')
+  const [licenseKey, setLicenseKey]               = useState('')
+  const [licenseRevealError, setLicenseRevealError] = useState('')
+  const [licenseCountdown, setLicenseCountdown]   = useState(30)
 
   // Reload users whenever another LAN machine creates/updates an account
   useLanSync(() => { if (isAdmin) loadUsers() })
@@ -87,8 +106,11 @@ function Settings() {
           receipt_name_size: shop.receipt_name_size || 'large',
           vat_rate: shop.vat_rate !== undefined ? shop.vat_rate : 0,
           default_reorder_level: shop.default_reorder_level || 5,
-          variance_tolerance: shop.variance_tolerance !== undefined ? shop.variance_tolerance : 0.01
+          variance_tolerance: shop.variance_tolerance !== undefined ? shop.variance_tolerance : 0.01,
+          allow_admin_sales: shop.allow_admin_sales ? 1 : 0,
+          role_privileges: shop.role_privileges || null
         })
+        setRolePrivs(parseRolePrivileges(shop.role_privileges))
       }
       setLoading(false)
     } catch { setError('Failed to load settings'); setLoading(false) }
@@ -137,6 +159,23 @@ function Settings() {
     } catch { flash('error', 'Failed to save settings') }
   }
 
+  // Flip one tab's visibility for the role being edited. Stored as an
+  // override only — untouched tabs keep following the role defaults.
+  const togglePrivilege = (navId) => {
+    const current = canRoleAccessNav(privRole, navId, rolePrivs)
+    setRolePrivs(p => ({ ...p, [privRole]: { ...(p[privRole] || {}), [navId]: !current } }))
+  }
+
+  const handleSavePrivileges = async (e) => {
+    e.preventDefault()
+    try {
+      const json = JSON.stringify(rolePrivs)
+      await updateShop(formData.id, { ...formData, role_privileges: json })
+      setFormData(f => ({ ...f, role_privileges: json }))
+      flash('success', 'Role privileges saved — applies when users next navigate or sign in')
+    } catch { flash('error', 'Failed to save role privileges') }
+  }
+
   // Printer settings are always saved locally — each machine has its own printer.
   // Uses domain:shop:updatePrinter which is never proxied to the LAN server.
   const handleSavePrinter = async (e) => {
@@ -151,6 +190,28 @@ function Settings() {
       })
       flash('success', 'Printer settings saved')
     } catch { flash('error', 'Failed to save printer settings') }
+  }
+
+  // Danger zone: wipe transactional history, keep products/users/settings.
+  // PIN is re-verified in the main process; a .db backup is taken automatically first.
+  const handleResetTransactions = async () => {
+    if (resetConfirmText.trim().toUpperCase() !== 'RESET') { flash('error', 'Type RESET in the confirmation box to continue'); return }
+    if (!resetPin) { flash('error', 'Enter your admin PIN to confirm'); return }
+    setResetting(true)
+    setResetResult(null)
+    try {
+      const res = await window.stocka.maintenance.resetTransactions({ username: user.username, pin: resetPin })
+      if (!res?.success) { flash('error', res?.error || 'Reset failed'); return }
+      setResetResult(res)
+      setResetConfirmText('')
+      setResetPin('')
+      loadBackups()
+      flash('success', `Reset complete — ${res.totalRemoved} record${res.totalRemoved !== 1 ? 's' : ''} removed. Backup saved first: ${res.backupFilename}`)
+    } catch (e) {
+      flash('error', 'Reset failed: ' + e.message)
+    } finally {
+      setResetting(false)
+    }
   }
 
   const handleChangePassword = async (e) => {
@@ -277,12 +338,40 @@ function Settings() {
     finally { setCheckingUpdate(false) }
   }
 
+  // ── License reveal ───────────────────────────────────
+  const handleRevealLicense = async (e) => {
+    e.preventDefault()
+    setLicenseRevealError('')
+    const result = await window.stocka.license.getRaw({ username: user.username, pin: licensePin })
+    if (!result.success) {
+      setLicenseRevealError(result.error || 'Incorrect PIN')
+      setLicensePin('')
+      return
+    }
+    setLicenseKey(result.key)
+    setLicenseReveal('revealed')
+    setLicensePin('')
+    setLicenseCountdown(30)
+  }
+
+  useEffect(() => {
+    if (licenseReveal !== 'revealed') return
+    const interval = setInterval(() => {
+      setLicenseCountdown(c => {
+        if (c <= 1) { setLicenseReveal('hidden'); setLicenseKey(''); return 30 }
+        return c - 1
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [licenseReveal])
+
   // ── Nav items ─────────────────────────────────────────
   const navItems = [
     { id: 'shop',     label: 'Shop Details',   Icon: FiShoppingBag, group: 'STORE',      show: !isCashier },
     { id: 'printer',  label: 'Printer',         Icon: FiPrinter,     group: 'STORE',      show: true },
     { id: 'receipt',  label: 'Receipt',         Icon: FiFileText,    group: 'STORE',      show: !isCashier },
     { id: 'users',    label: 'Team & Users',   Icon: FiUsers,        group: 'STAFF',      show: isAdmin },
+    { id: 'privileges', label: 'Role Privileges', Icon: FiKey,       group: 'STAFF',      show: isAdmin },
     { id: 'password', label: 'Security',        Icon: FiShield,      group: 'ACCOUNT',    show: true },
     { id: 'business', label: 'Business Rules',  Icon: FiSliders,     group: 'OPERATIONS', show: isAdmin },
     { id: 'system',   label: 'System',          Icon: FiMonitor,     group: 'SYSTEM',     show: !isCashier },
@@ -524,6 +613,61 @@ function Settings() {
             </div>
           )}
 
+          {/* ── ROLE PRIVILEGES ── */}
+          {activeTab === 'privileges' && isAdmin && (
+            <div className="s-card">
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiKey size={17} /> Role Privileges</h2>
+                  <p className="s-card-desc">Choose which sidebar tabs each role can see. Admins always have full access.</p>
+                </div>
+              </div>
+
+              <div className="s-role-pills">
+                {CONFIGURABLE_ROLES.map(role => (
+                  <button key={role} type="button"
+                    className={`s-role-pill ${privRole === role ? 'active' : ''}`}
+                    onClick={() => setPrivRole(role)}>
+                    {role}
+                  </button>
+                ))}
+              </div>
+
+              <form onSubmit={handleSavePrivileges}>
+                {['Main', 'Sales', 'Inventory', 'Finance', 'Operations'].map(group => {
+                  const items = NAV_PRIVILEGES.filter(n => n.group === group)
+                  if (items.length === 0) return null
+                  return (
+                    <div key={group}>
+                      <div className="s-priv-group">{group}</div>
+                      {items.map(item => {
+                        const visible = canRoleAccessNav(privRole, item.id, rolePrivs)
+                        return (
+                          <div key={item.id}
+                            className={`s-toggle-row s-priv-row ${item.locked ? 's-toggle-row--locked' : ''}`}
+                            onClick={() => !item.locked && togglePrivilege(item.id)}>
+                            <div className="s-toggle-info">
+                              <div className="s-toggle-label">{item.label}</div>
+                              {item.locked && <div className="s-toggle-sub">Always available to every role</div>}
+                            </div>
+                            <label className="s-switch" onClick={e => e.stopPropagation()}>
+                              <input type="checkbox" checked={visible} disabled={item.locked}
+                                onChange={() => togglePrivilege(item.id)} />
+                              <span className="s-switch-track" />
+                            </label>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
+                <div className="s-form-footer">
+                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Privileges</button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {/* ── PRINTER ── */}
           {activeTab === 'printer' && (
             <div className="s-card">
@@ -749,6 +893,23 @@ function Settings() {
                     <p className="s-hint">Maximum acceptable cash difference before a shift is flagged short or over.</p>
                   </div>
                 </div>
+
+                <div className="s-toggle-row"
+                  onClick={() => setFormData({ ...formData, allow_admin_sales: formData.allow_admin_sales === 1 ? 0 : 1 })}>
+                  <div className="s-toggle-info">
+                    <div className="s-toggle-label">Allow admin to make sales</div>
+                    <div className="s-toggle-sub">
+                      Off by default — admins handle admin tasks while cashiers sell.
+                      Turn on to let admin accounts use the POS. Applies to every till.
+                    </div>
+                  </div>
+                  <label className="s-switch" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={formData.allow_admin_sales === 1}
+                      onChange={e => setFormData({ ...formData, allow_admin_sales: e.target.checked ? 1 : 0 })} />
+                    <span className="s-switch-track" />
+                  </label>
+                </div>
+
                 <div className="s-form-footer">
                   <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Business Rules</button>
                 </div>
@@ -806,13 +967,68 @@ function Settings() {
               )}
 
               {isAdmin && (
-                <div className="s-update-row">
-                  <button className="s-btn-secondary" onClick={handleCheckUpdates} disabled={checkingUpdate}>
-                    <FiRefreshCw size={13} className={checkingUpdate ? 'spin' : ''} />
-                    {checkingUpdate ? 'Checking…' : 'Check for Updates'}
-                  </button>
-                  {updateStatus && <span className="s-update-status">{updateStatus}</span>}
-                </div>
+                <>
+                  <div className="s-info-row s-license-row">
+                    <span className="s-info-label"><FiKey size={13} style={{ marginRight: 5, verticalAlign: 'middle' }} />License Key</span>
+                    <div className="s-license-reveal-area">
+                      {licenseReveal === 'hidden' && (
+                        <>
+                          <code className="s-code s-code-masked">••••-••••-••••-••••</code>
+                          <button
+                            className="s-btn-secondary s-btn-sm"
+                            onClick={() => { setLicenseReveal('pin'); setLicenseRevealError('') }}
+                          >
+                            <FiEye size={12} /> Reveal
+                          </button>
+                        </>
+                      )}
+                      {licenseReveal === 'pin' && (
+                        <form onSubmit={handleRevealLicense} className="s-license-pin-form">
+                          <input
+                            className="s-input s-input-sm"
+                            type="password"
+                            inputMode="numeric"
+                            maxLength={4}
+                            autoFocus
+                            placeholder="Admin PIN"
+                            value={licensePin}
+                            onChange={e => { setLicensePin(e.target.value.replace(/\D/g, '').slice(0, 4)); setLicenseRevealError('') }}
+                          />
+                          <button type="submit" className="s-btn-primary s-btn-sm" disabled={licensePin.length !== 4}>
+                            <FiLock size={12} /> Confirm
+                          </button>
+                          <button type="button" className="s-btn-secondary s-btn-sm"
+                            onClick={() => { setLicenseReveal('hidden'); setLicensePin(''); setLicenseRevealError('') }}>
+                            <FiX size={12} /> Cancel
+                          </button>
+                          {licenseRevealError && <span className="s-license-error">{licenseRevealError}</span>}
+                        </form>
+                      )}
+                      {licenseReveal === 'revealed' && (
+                        <>
+                          <code className="s-code">{licenseKey}</code>
+                          <button className="s-btn-secondary s-btn-sm"
+                            onClick={() => { navigator.clipboard.writeText(licenseKey); flash('success', 'License key copied to clipboard') }}>
+                            <FiCopy size={12} /> Copy
+                          </button>
+                          <button className="s-btn-secondary s-btn-sm"
+                            onClick={() => { setLicenseReveal('hidden'); setLicenseKey('') }}>
+                            <FiEyeOff size={12} /> Hide
+                          </button>
+                          <span className="s-license-countdown">Hides in {licenseCountdown}s</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="s-update-row">
+                    <button className="s-btn-secondary" onClick={handleCheckUpdates} disabled={checkingUpdate}>
+                      <FiRefreshCw size={13} className={checkingUpdate ? 'spin' : ''} />
+                      {checkingUpdate ? 'Checking…' : 'Check for Updates'}
+                    </button>
+                    {updateStatus && <span className="s-update-status">{updateStatus}</span>}
+                  </div>
+                </>
               )}
             </div>
           )}
@@ -855,6 +1071,61 @@ function Settings() {
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+          )}
+
+          {/* ── DANGER ZONE: test-data reset (inside Backup tab) ── */}
+          {activeTab === 'backup' && isAdmin && (
+            <div className="s-card" style={{ border: '1px solid #fecaca', marginTop: 16 }}>
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title" style={{ color: '#dc2626' }}>
+                    <FiAlertCircle size={17} /> Danger Zone — Reset Transaction Data
+                  </h2>
+                  <p className="s-card-desc">
+                    Start over with a clean slate. This permanently deletes all <strong>sales, shifts,
+                    end-of-day records, stock receiving history, stock movements, expenses, notifications
+                    and activity logs</strong>. Your <strong>products (with current stock levels), users,
+                    suppliers, branches and shop settings are kept</strong>. A database backup is created
+                    automatically before anything is deleted.
+                  </p>
+                </div>
+              </div>
+
+              <div className="s-grid-3" style={{ alignItems: 'end' }}>
+                <div className="s-field">
+                  <label className="s-label">Type RESET to confirm</label>
+                  <input className="s-input" type="text" placeholder="RESET"
+                    value={resetConfirmText}
+                    onChange={e => setResetConfirmText(e.target.value)}
+                    disabled={resetting} />
+                </div>
+                <div className="s-field">
+                  <label className="s-label">Your Admin PIN</label>
+                  <input className="s-input" type="password" placeholder="••••" maxLength={4}
+                    value={resetPin}
+                    onChange={e => setResetPin(e.target.value)}
+                    disabled={resetting} />
+                </div>
+                <div className="s-field">
+                  <button
+                    className="s-btn-danger"
+                    onClick={handleResetTransactions}
+                    disabled={resetting || resetConfirmText.trim().toUpperCase() !== 'RESET' || !resetPin}
+                    style={{ width: '100%' }}
+                  >
+                    {resetting ? 'Resetting…' : 'Reset Transaction Data'}
+                  </button>
+                </div>
+              </div>
+
+              {resetResult && (
+                <p className="s-hint" style={{ marginTop: 10 }}>
+                  Removed {resetResult.totalRemoved} records. A pre-reset backup
+                  (<code className="s-code">{resetResult.backupFilename}</code>) is in your backups list above —
+                  restore it if this was a mistake.
+                </p>
               )}
             </div>
           )}

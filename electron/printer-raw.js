@@ -22,6 +22,14 @@ function getWidth(shopInfo) {
   return shopInfo?.receipt_width_mm === 80 ? 42 : 32
 }
 
+// DB timestamps ('YYYY-MM-DD HH:MM:SS') are UTC without a zone marker — new Date()
+// would read the digits as local time and print reprints 2h in the past. Force UTC.
+function parseDbDate(value) {
+  const s = String(value)
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(s)) return new Date(s.replace(' ', 'T') + 'Z')
+  return new Date(s)
+}
+
 function padLine(left, right, W) {
   const r = String(right)
   const l = String(left).substring(0, W - r.length - 1)
@@ -43,7 +51,7 @@ function buildReceiptBytes(receipt, shopInfo, isDuplicate) {
   const tendered = Number(receipt.cash_tendered || 0)
   const change   = Number(receipt.change_given  || 0)
   const dateStr  = receipt.created_at
-    ? new Date(receipt.created_at).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })
+    ? parseDbDate(receipt.created_at).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })
     : new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })
   const fmt = n => `${currency} ${Number(n).toFixed(2)}`
 

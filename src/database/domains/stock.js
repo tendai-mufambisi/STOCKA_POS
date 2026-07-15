@@ -15,3 +15,4 @@ export const importStockReceivings  = (rows, by)               => w.importReceiv
 export const reconcileProduct       = (id, qty, notes, by)     => w.reconcileProduct(id, qty, notes, by)
 export const reconcileProducts      = (adjustments, by)        => w.reconcileProducts(adjustments, by)
 export const recordInitialCost      = (id, cost, by)           => w.recordInitialCost(id, cost, by)
+export const correctStockReceiving  = (id, corrected, by)      => w.correctReceiving(id, corrected, by)

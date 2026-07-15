@@ -1,4 +1,5 @@
 import { FiX, FiPrinter } from 'react-icons/fi'
+import { formatDbDateTime } from '../utils/salesDay'
 import './ReceiptModal.css'
 
 function ReceiptModal({ sale, onClose, onReprint }) {
@@ -6,12 +7,7 @@ function ReceiptModal({ sale, onClose, onReprint }) {
 
   const fmt = {
     money: (n) => `$${(n || 0).toFixed(2)}`,
-    datetime: (d) => d
-      ? new Date(d).toLocaleString('en-ZA', {
-          day: '2-digit', month: 'short', year: 'numeric',
-          hour: '2-digit', minute: '2-digit'
-        })
-      : '—',
+    datetime: formatDbDateTime,
   }
 
   const items = sale.items || []

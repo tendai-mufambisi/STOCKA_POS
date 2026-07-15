@@ -27,6 +27,13 @@ export default function LanSettings() {
   const [saving, setSaving]       = useState(false)
   const [msg, setMsg]             = useState(null) // { type: 'ok'|'err', text }
   const [failureLog, setFailureLog] = useState([])
+  const [clockSkew, setClockSkew]   = useState(null) // { skewMs, serverTime } | null
+  const [clearingQueue, setClearingQueue] = useState(false)
+
+  // This till's identity (local-only; scopes its receipt numbers)
+  const [tillIdentity, setTillIdentity] = useState(null) // { code, label }
+  const [tillLabelInput, setTillLabelInput] = useState('')
+  const [savingLabel, setSavingLabel] = useState(false)
 
   // Pairing (Main computer side)
   const [pairingInfo, setPairingInfo] = useState(null) // { code, expiresAt }
@@ -61,10 +68,36 @@ export default function LanSettings() {
 
   useEffect(() => {
     loadStatus()
-    const off = lan?.onStatusChange?.((s) => setStatus(s))
+    const off  = lan?.onStatusChange?.((s) => setStatus(s))
     const off2 = lan?.onSyncFailures?.((f) => setFailureLog(prev => [...f, ...prev].slice(0, 20)))
-    return () => { try { off?.(); off2?.() } catch (_) {} }
+    const off3 = lan?.onClockSkew?.((d) => setClockSkew(d))
+    return () => { try { off?.(); off2?.(); off3?.() } catch (_) {} }
   }, [loadStatus, lan])
+
+  useEffect(() => {
+    window.stocka?.till?.getIdentity().then(id => {
+      setTillIdentity(id)
+      setTillLabelInput(id?.label || '')
+    }).catch(() => {})
+  }, [])
+
+  const handleSaveTillLabel = async () => {
+    if (!tillLabelInput.trim()) return
+    setSavingLabel(true)
+    try {
+      const res = await window.stocka.till.setLabel(tillLabelInput.trim())
+      if (res?.success) {
+        setTillIdentity(res.identity)
+        setMsg({ type: 'ok', text: 'Till name saved.' })
+      } else {
+        setMsg({ type: 'err', text: res?.error || 'Failed to save till name.' })
+      }
+    } catch (e) {
+      setMsg({ type: 'err', text: e.message || 'Failed to save till name.' })
+    } finally {
+      setSavingLabel(false)
+    }
+  }
 
   // Keep the pairing PIN (and its countdown) fresh while in Main computer mode
   useEffect(() => {
@@ -155,6 +188,21 @@ export default function LanSettings() {
     }
   }
 
+  const handleClearQueue = async () => {
+    if (!lan) return
+    if (!window.confirm(`Clear ${status?.queueSize} queued write(s)? This cannot be undone — any sales or changes made while offline will be permanently discarded.`)) return
+    setClearingQueue(true)
+    try {
+      await lan.clearQueue()
+      await loadStatus()
+      setMsg({ type: 'ok', text: 'Offline queue cleared.' })
+    } catch (e) {
+      setMsg({ type: 'err', text: 'Failed to clear queue: ' + e.message })
+    } finally {
+      setClearingQueue(false)
+    }
+  }
+
   const handleForceResync = async () => {
     if (!lan) return
     setResyncing(true)
@@ -184,7 +232,43 @@ export default function LanSettings() {
         Share your inventory and sales across multiple computers in the same shop over WiFi.
       </p>
 
+      {/* This till's identity — local only, drives its receipt-number prefix */}
+      {tillIdentity && (
+        <div className="lan-section">
+          <label className="lan-section-label">This Till</label>
+          <div className="lan-ip-field">
+            <div className="lan-ip-row">
+              <input
+                type="text"
+                className="lan-ip-input"
+                value={tillLabelInput}
+                maxLength={40}
+                onChange={e => setTillLabelInput(e.target.value)}
+                placeholder="e.g. Front Counter"
+              />
+              <button className="lan-discover-btn" onClick={handleSaveTillLabel} disabled={savingLabel || !tillLabelInput.trim()}>
+                {savingLabel ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            <div className="lan-secret-desc" style={{ marginTop: 6 }}>
+              Receipt code <strong>{tillIdentity.code}</strong> — every sale here prints as{' '}
+              <strong>{tillIdentity.code}-YYYYMMDD-0001</strong> and so on. Each till counts its own
+              receipts, so two computers can never issue the same number, online or offline.
+            </div>
+          </div>
+        </div>
+      )}
+
       {msg && <div className={`lan-msg ${msg.type}`}>{msg.text}</div>}
+
+      {clockSkew && (
+        <div className="lan-msg err">
+          Clock out of sync: this computer's clock differs from the Main computer by{' '}
+          {Math.round(clockSkew.skewMs / 1000)} seconds. Delta sync may miss recent changes.
+          Please sync both computers to the same time source.
+          <button className="lan-clear-btn" style={{ marginLeft: 8 }} onClick={() => setClockSkew(null)}>Dismiss</button>
+        </div>
+      )}
 
       {/* Mode selector */}
       <div className="lan-section">
@@ -287,11 +371,16 @@ export default function LanSettings() {
               <span className={`lan-status-dot ${status.clientOnline ? 'online' : 'offline'}`} />
               <span>
                 {status.clientOnline
-                  ? `Connected · last synced ${status.lastSync ? new Date(status.lastSync).toLocaleTimeString() : 'never'}`
+                  ? `Connected · last synced ${status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleTimeString() : 'never'}`
                   : `Offline · ${status.queueSize || 0} writes queued`}
               </span>
               {status.clientOnline && (
                 <button className="lan-sync-now-btn" onClick={handleSyncNow}>Sync Now</button>
+              )}
+              {status.queueSize > 0 && (
+                <button className="lan-clear-btn" onClick={handleClearQueue} disabled={clearingQueue}>
+                  {clearingQueue ? 'Clearing…' : `Clear Queue (${status.queueSize})`}
+                </button>
               )}
             </div>
           )}

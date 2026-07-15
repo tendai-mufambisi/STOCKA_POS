@@ -1,17 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLanSync } from '../hooks/useLanSync'
 import ConfirmModal from '../components/ConfirmModal'
+import NumericKeypad from '../components/NumericKeypad'
 import {
   getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts,
   getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale,
-  getSaleItems, getShop, getLastReceiptNumber, updateSaleReceiptNumber
+  getSaleItems, getShop, updateSaleReceiptNumber,
+  getShiftsByCashier
 } from '../database/db'
 import { updateProduct } from '../database/domains/products'
 import { logAuditAction } from '../database/domains/audit'
 import { createNotification } from '../database/domains/notifications'
 import { hasPermission } from '../utils/permissions'
 import { validateCurrency } from '../utils/validation'
-import { generateReceiptNumber, getNextReceiptCounter } from '../utils/receiptUtils'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
@@ -20,7 +21,7 @@ import './Sales.css'
 import {
   FiSearch, FiPackage, FiShoppingCart, FiTrash2, FiPause,
   FiCheck, FiX, FiChevronLeft, FiAlertTriangle, FiTag,
-  FiBriefcase, FiCreditCard, FiSmartphone
+  FiBriefcase, FiCreditCard, FiSmartphone, FiPlay, FiClock, FiLock
 } from 'react-icons/fi'
 
 function FlyParticle({ startX, startY, endX, endY, onDone }) {
@@ -53,7 +54,7 @@ function FlyParticle({ startX, startY, endX, endY, onDone }) {
   )
 }
 
-function Sales() {
+function Sales({ onRequestStartShift, onRequestCloseShift }) {
   const { user }         = useAuthStore()
   const { currentShift } = useShiftStore()
   const { setSaleInProgress, pendingForceClose } = useSaleStore()
@@ -97,6 +98,21 @@ function Sales() {
   const [printerSettings, setPrinterSettings] = useState(null)
   const { printReceipt } = useReceiptPrinter()
 
+  // ── Selling gates ─────────────────────────────────
+  // Admins can only sell when the shop-level toggle allows it (Settings → Business Rules)
+  const adminBlocked = user?.role === 'Admin' && !shopInfo?.allow_admin_sales
+  const shiftReady   = !!currentShift
+  const canSell      = shiftReady && !adminBlocked
+
+  // Recent shifts shown in the "shift not started" panel
+  const [recentShifts, setRecentShifts] = useState([])
+  useEffect(() => {
+    if (shiftReady || !user?.username) return
+    getShiftsByCashier(user.username)
+      .then(list => setRecentShifts((list || []).slice(0, 5)))
+      .catch(() => setRecentShifts([]))
+  }, [shiftReady, user?.username])
+
   // Navigation guard state (useBlocker requires a data router; not compatible
   // with HashRouter, so we manage the blocked modal manually via setNavBlocked)
   const [navBlocked, setNavBlocked] = useState(false)
@@ -119,6 +135,14 @@ function Sales() {
   // Set once on first load; subsequent loads sort to match it instead of re-sorting.
   const productOrderRef  = useRef([])
 
+  // ── Till identity (local-only; scopes this till's receipt numbers) ──
+  const [tillCode, setTillCode] = useState(null)
+  useEffect(() => {
+    window.stocka?.till?.getIdentity()
+      .then(id => setTillCode(id?.code || null))
+      .catch(() => setTillCode(null))
+  }, [])
+
   // ── Load on mount ─────────────────────────────────
   useEffect(() => {
     loadProducts()
@@ -136,13 +160,19 @@ function Sales() {
     }
   }, [checkoutStep, paymentMethod])
 
-  // Auto-close confirmation, then return focus to search
+  // Close the success flash and get the cashier straight back into the search box
+  const dismissConfirmation = () => {
+    setShowConfirmation(false)
+    setTimeout(() => searchRef.current?.focus(), 50)
+  }
+
+  // Auto-close confirmation, then return focus to search.
+  // Cash-with-change stays up longer so the cashier can count change;
+  // exact/transfer sales clear fast. Tap or any key dismisses instantly.
   useEffect(() => {
     if (showConfirmation) {
-      const t = setTimeout(() => {
-        setShowConfirmation(false)
-        setTimeout(() => searchRef.current?.focus(), 50)
-      }, 3200)
+      const hasChange = (lastSale?.change || 0) > 0
+      const t = setTimeout(dismissConfirmation, hasChange ? 3000 : 1600)
       return () => clearTimeout(t)
     }
   }, [showConfirmation])
@@ -167,6 +197,13 @@ function Sales() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       const tag = e.target.tagName
+
+      // Any key dismisses the sale-complete flash so the next sale starts immediately
+      if (showConfirmation) {
+        if (e.key === 'Enter' || e.key === 'Escape' || e.key === ' ') e.preventDefault()
+        dismissConfirmation()
+        return
+      }
 
       // Escape: close whatever is open
       if (e.key === 'Escape') {
@@ -223,7 +260,7 @@ function Sales() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [checkoutStep, showHeldPanel, showVoidModal, cart, cartTotal, checkoutCashTendered, isProcessing, heldSales.length])
+  }, [checkoutStep, showHeldPanel, showVoidModal, cart, cartTotal, checkoutCashTendered, splitCashAmt, isProcessing, heldSales.length, showConfirmation])
 
   // ── Loaders ───────────────────────────────────────
   const loadProducts = async () => {
@@ -305,6 +342,12 @@ function Sales() {
   }
 
   const addToCart = (product) => {
+    if (adminBlocked) { flash('Selling is disabled for admin accounts — enable it in Settings → Business Rules'); return }
+    if (!shiftReady) {
+      flash('Start your shift to begin selling')
+      onRequestStartShift?.()
+      return
+    }
     if (product.current_quantity <= 0) { flash(`"${product.name}" is out of stock`); return }
     if (!product.selling_price || product.selling_price <= 0) {
       setPriceRequiredProduct(product)
@@ -401,6 +444,13 @@ function Sales() {
 
   // ── Checkout ───────────────────────────────────────
   const handleChargeClick = () => {
+    if (!canSell) {
+      flash(adminBlocked
+        ? 'Selling is disabled for admin accounts — enable it in Settings → Business Rules'
+        : 'Start your shift before charging a sale')
+      if (!shiftReady && !adminBlocked) onRequestStartShift?.()
+      return
+    }
     if (cart.length === 0) { flash('Cart is empty'); return }
     if (cart.some(i => !i.quantity || i.quantity <= 0)) {
       flash('All items must have a valid quantity'); return
@@ -434,10 +484,13 @@ function Sales() {
   }
 
   const finaliseSale = async (method, cashTendered, changeGiven, cashPortion = null, transferPortion = null) => {
+    // Transfer sales: no physical cash, so cash_amount = 0 and usd_amount = total.
+    // Cash: full total is cash. Split: cashPortion/transferPortion set explicitly by caller.
+    const isTransfer = method === 'Transfer'
     const paymentData = {
       payment_method: method,
-      cash_amount: cashPortion !== null ? cashPortion : cartTotal,
-      usd_amount: transferPortion !== null ? transferPortion : 0,
+      cash_amount: cashPortion !== null ? cashPortion : (isTransfer ? 0 : cartTotal),
+      usd_amount: transferPortion !== null ? transferPortion : (isTransfer ? cartTotal : 0),
       cash_tendered: cashTendered,
       change_given: changeGiven,
     }
@@ -445,26 +498,41 @@ function Sales() {
       cashier: user.username,
       total: cartTotal,
       shift_id: currentShift?.id || null,
+      till_code: tillCode,
       ...paymentData,
     }
 
-    let saleId
-    if (recalledSaleId) {
-      saleId = await completeHeldSale(recalledSaleId, paymentData, currentShift?.id || null)
+    // Generate the receipt number BEFORE saving so it travels inside the sale record —
+    // an offline (queued) sale has no id yet, so a separate receipt update could never
+    // find it. Allocated from THIS till's own local counter (till:next-receipt-number),
+    // never by reading "the last number" from a shared/synced table — that's what let
+    // two machines race each other onto the same number.
+    let receiptNumber = null
+    try {
+      receiptNumber = await window.stocka.till.nextReceiptNumber()
+    } catch { /* don't block on receipt number failure */ }
+
+    const wasRecalled = !!recalledSaleId
+    let raw
+    if (wasRecalled) {
+      raw = await completeHeldSale(recalledSaleId, paymentData, currentShift?.id || null)
       setRecalledSaleId(null)
     } else {
-      saleId = await addSale(saleBase, cart)
+      raw = await addSale({ ...saleBase, receipt_number: receiptNumber }, cart)
+    }
+    // Offline: the write is queued for Main and there is no sale id yet
+    const wasQueued = !!(raw && typeof raw === 'object' && raw.__queued)
+    const saleId = wasQueued ? null : raw
+
+    // Recalled sales already exist in the DB, so their receipt number is attached by id
+    if (wasRecalled && !wasQueued && saleId && receiptNumber) {
+      try { await updateSaleReceiptNumber(saleId, receiptNumber) } catch { /* non-blocking */ }
     }
 
     let receiptData = { ...saleBase, id: saleId, items: cart, created_at: new Date().toISOString() }
-    try {
-      const lastReceipt = await getLastReceiptNumber()
-      const receiptNumber = generateReceiptNumber(getNextReceiptCounter(lastReceipt))
-      await updateSaleReceiptNumber(saleId, receiptNumber)
-      receiptData = { ...receiptData, receipt_number: receiptNumber }
-    } catch { /* don't block on receipt number failure */ }
+    if (receiptNumber) receiptData = { ...receiptData, receipt_number: receiptNumber }
 
-    setLastSale({ id: saleId, total: cartTotal, change: changeGiven, paymentMethod: method, timestamp: new Date() })
+    setLastSale({ id: saleId, total: cartTotal, change: changeGiven, paymentMethod: method, timestamp: new Date(), queued: wasQueued })
     setShowConfirmation(true)
     setCheckoutStep(null)
     setCheckoutCashTendered('')
@@ -505,6 +573,15 @@ function Sales() {
     finally { setIsProcessing(false) }
   }
 
+  // Exact cash — one tap from the payment-method screen, no tendering step
+  const handleExactCash = async () => {
+    setIsProcessing(true)
+    try {
+      await finaliseSale('Cash', cartTotal, 0)
+    } catch { flash('Failed to complete sale') }
+    finally { setIsProcessing(false) }
+  }
+
   // Split — cash portion entered, transfer covers the rest
   const handleCompleteSplitCheckout = async () => {
     const cash = parseFloat(splitCashAmt)
@@ -519,8 +596,22 @@ function Sales() {
   }
 
   // ── Hold / Recall ──────────────────────────────────
+  // Holding works by inserting a sale then flipping it to 'held' by id. A queued
+  // offline sale has no id yet, so the flip can't happen — and the queued insert
+  // would later replay on Main as a phantom COMPLETED sale. Block holds offline.
+  const isOfflineSatellite = async () => {
+    try {
+      const st = await window.stocka?.lan?.getStatus()
+      return st?.mode === 'client' && !st.clientOnline
+    } catch { return false }
+  }
+
   const handleHoldSale = async () => {
     if (cart.length === 0) { flash('Nothing in cart to hold'); return }
+    if (await isOfflineSatellite()) {
+      flash('Offline — holding sales needs the Main computer. Complete the sale now, or wait for reconnection.')
+      return
+    }
     setIsProcessing(true)
     try {
       const total = cartTotal
@@ -528,7 +619,7 @@ function Sales() {
         await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
         setRecalledSaleId(null)
       } else {
-        const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null }, cart)
+        const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null, till_code: tillCode }, cart)
         await holdSale(saleId, `Hold-${saleId}`)
         await loadProducts()
       }
@@ -541,13 +632,25 @@ function Sales() {
   }
 
   const handleRecallSale = async (heldSaleId) => {
+    if (!canSell) {
+      flash(adminBlocked
+        ? 'Selling is disabled for admin accounts — enable it in Settings → Business Rules'
+        : 'Start your shift before recalling a held sale')
+      if (!shiftReady && !adminBlocked) onRequestStartShift?.()
+      return
+    }
+    // Recall may hold the current cart first (same insert-then-flip as Hold) — see isOfflineSatellite
+    if (await isOfflineSatellite()) {
+      flash('Offline — recalling held sales needs the Main computer. Wait for reconnection.')
+      return
+    }
     try {
       if (cart.length > 0) {
         if (recalledSaleId) {
           await holdSale(recalledSaleId, `Hold-${recalledSaleId}`)
         } else {
           const total = cartTotal
-          const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null }, cart)
+          const saleId = await addSale({ cashier: user.username, total, cash_tendered: 0, change_given: 0, shift_id: currentShift?.id || null, till_code: tillCode }, cart)
           await holdSale(saleId, `Hold-${saleId}`)
           await loadProducts()
         }
@@ -599,12 +702,19 @@ function Sales() {
     : []
 
   // ── Quick amounts for payment modal ───────────────
+  // Round the total up to the next multiple of each common note so useful
+  // suggestions exist at ANY total (e.g. $7.30 → $8, $10, $20, $50;
+  // $123.40 → $124, $125, $130, $140). The old fixed list showed nothing
+  // beyond "Exact" once the total passed $100.
   const quickAmounts = (() => {
-    const fixed = [5, 10, 20, 50, 100]
-    const valid = fixed.filter(a => a >= cartTotal)
+    const denoms = [1, 5, 10, 20, 50, 100]
+    const ups = denoms
+      .map(d => Math.ceil((cartTotal + 0.001) / d) * d)
+      .filter(a => a > cartTotal)
+    const unique = [...new Set(ups)].sort((a, b) => a - b)
     return [
       { label: 'Exact', value: cartTotal.toFixed(2), isExact: true },
-      ...valid.slice(0, 4).map(a => ({ label: `$${a}`, value: String(a) }))
+      ...unique.slice(0, 4).map(a => ({ label: `$${a}`, value: String(a) }))
     ]
   })()
 
@@ -662,7 +772,48 @@ function Sales() {
           </div>
         )}
         <div className="pos-shift-indicator">
-          {currentShift && <><div className="pos-shift-dot" /><span>Shift active</span></>}
+          {currentShift?.__provisional ? (
+            <span
+              title="Still connecting to Main to confirm your shift — you can keep selling; sales made now will be reattached automatically once it confirms."
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '4px 10px', borderRadius: 12,
+                background: '#fffbeb', color: '#92400e', fontSize: 12, fontWeight: 700,
+              }}
+            >
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#d97706' }} />
+              Shift pending sync
+            </span>
+          ) : currentShift ? (
+            <>
+              <div className="pos-shift-dot" /><span>Shift active</span>
+              {onRequestCloseShift && (
+                <button
+                  onClick={onRequestCloseShift}
+                  title="Count your drawer and close this shift (you stay logged in)"
+                  style={{
+                    marginLeft: 8, padding: '3px 10px', border: '1px solid #cbd5e1',
+                    borderRadius: 12, background: 'transparent', color: '#64748b',
+                    fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  End Shift
+                </button>
+              )}
+            </>
+          ) : !adminBlocked ? (
+            <button
+              onClick={() => onRequestStartShift?.()}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 14px', border: 'none', borderRadius: 20,
+                background: '#16a34a', color: '#fff', fontWeight: 700, fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              <FiPlay size={12} /> Start Shift
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -833,7 +984,59 @@ function Sales() {
           </div>
 
           {/* Cart body */}
-          {cart.length === 0 ? (
+          {adminBlocked ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center', gap: 10 }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <FiLock size={24} color="#dc2626" />
+              </div>
+              <p style={{ fontWeight: 700, margin: 0 }}>Selling is disabled for admin accounts</p>
+              <small style={{ color: '#64748b' }}>
+                Admins handle admin tasks. To allow this account to sell, turn on
+                “Allow admin to make sales” in Settings → Business Rules.
+              </small>
+            </div>
+          ) : !shiftReady ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 20, gap: 14, overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 10, paddingTop: 8 }}>
+                <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <FiClock size={24} color="#16a34a" />
+                </div>
+                <p style={{ fontWeight: 700, margin: 0 }}>Shift not started</p>
+                <small style={{ color: '#64748b' }}>You can browse products, but selling opens once your shift starts.</small>
+                <button
+                  onClick={() => onRequestStartShift?.()}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, marginTop: 4,
+                    padding: '12px 28px', border: 'none', borderRadius: 8,
+                    background: '#16a34a', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer',
+                  }}
+                >
+                  <FiPlay size={16} /> Start Shift
+                </button>
+              </div>
+
+              {recentShifts.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '10px 0 8px' }}>
+                    Your recent shifts
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {recentShifts.map(s => (
+                      <div key={s.id} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={{ color: '#475569' }}>
+                          {String(s.started_at).slice(0, 10)}
+                          {s.status === 'open' ? ' · open' : ''}
+                        </span>
+                        <span style={{ fontWeight: 700, color: '#334155' }}>
+                          {s.total_sales_count || 0} sales · ${(s.total_sales_value || 0).toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : cart.length === 0 ? (
             <div className="cart-empty">
               <div className="cart-empty-icon"><FiShoppingCart size={28} /></div>
               <p>Cart is empty</p>
@@ -986,6 +1189,14 @@ function Sales() {
               <div className="pay-modal-total">${cartTotal.toFixed(2)}</div>
             </div>
             <div className="pay-modal-body">
+              <button
+                className="pay-exact-cash-btn"
+                onClick={handleExactCash}
+                disabled={isProcessing}
+              >
+                <FiCheck size={18} />
+                {isProcessing ? 'Processing…' : <>Exact Cash — ${cartTotal.toFixed(2)}</>}
+              </button>
               <div className="pay-method-label">How is the customer paying?</div>
               <div className="pay-method-row">
                 <button
@@ -1055,14 +1266,16 @@ function Sales() {
                 <span className="pay-input-symbol">$</span>
                 <input
                   ref={cashInputRef}
-                  type="number"
+                  type="text"
+                  inputMode="decimal"
                   className="pay-cash-input"
                   placeholder="0.00"
                   value={checkoutCashTendered}
-                  onChange={e => setCheckoutCashTendered(e.target.value)}
+                  onChange={e => {
+                    const v = e.target.value
+                    if (/^\d*\.?\d{0,2}$/.test(v)) setCheckoutCashTendered(v)
+                  }}
                   onClick={e => e.target.select()}
-                  step="any"
-                  min="0"
                 />
               </div>
 
@@ -1076,6 +1289,12 @@ function Sales() {
                   </span>
                 </div>
               )}
+
+              <NumericKeypad
+                value={checkoutCashTendered}
+                onChange={setCheckoutCashTendered}
+                disabled={isProcessing}
+              />
 
               {/* Actions */}
               <div className="pay-actions">
@@ -1113,14 +1332,16 @@ function Sales() {
                 <div className="pay-input-wrap">
                   <span className="pay-input-symbol">$</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     className="pay-cash-input"
                     placeholder="0.00"
                     value={splitCashAmt}
-                    onChange={e => setSplitCashAmt(e.target.value)}
+                    onChange={e => {
+                      const v = e.target.value
+                      if (/^\d*\.?\d{0,2}$/.test(v)) setSplitCashAmt(v)
+                    }}
                     onClick={e => e.target.select()}
-                    step="any"
-                    min="0"
                     autoFocus
                   />
                 </div>
@@ -1132,6 +1353,12 @@ function Sales() {
                     {splitValid && <span className="pay-change-value">${transfer.toFixed(2)}</span>}
                   </div>
                 )}
+
+                <NumericKeypad
+                  value={splitCashAmt}
+                  onChange={setSplitCashAmt}
+                  disabled={isProcessing}
+                />
                 <div className="pay-actions">
                   <button className="pay-cancel-btn" onClick={handleBackNavigation}>
                     <FiChevronLeft size={15} /> Back
@@ -1153,7 +1380,7 @@ function Sales() {
 
       {/* ── Sale success flash ── */}
       {showConfirmation && lastSale && (
-        <div className="sale-success-overlay">
+        <div className="sale-success-overlay" onClick={dismissConfirmation}>
           <div className="sale-success-card">
             <div className="sale-success-icon">
               <FiCheck size={32} color="white" strokeWidth={3} />
@@ -1176,7 +1403,7 @@ function Sales() {
                 <div className="sale-success-amount-value change">${lastSale.change.toFixed(2)}</div>
               </div>
             </div>
-            <div className="sale-success-sub">Closing in 3 seconds…</div>
+            <div className="sale-success-sub">Tap anywhere to continue</div>
           </div>
         </div>
       )}

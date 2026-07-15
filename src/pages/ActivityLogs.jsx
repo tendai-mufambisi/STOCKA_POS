@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { getAuditLog } from '../database/db'
+import { parseDbDate, localDateStr } from '../utils/salesDay'
 import { FiSearch, FiRefreshCw } from 'react-icons/fi'
 import './ActivityLogs.css'
 
@@ -18,11 +19,11 @@ const ACTION_META = {
 
 function fmt(iso) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('en-ZW', { dateStyle: 'short', timeStyle: 'short' })
+  return parseDbDate(iso).toLocaleString('en-ZW', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 export default function ActivityLogs() {
-  const today = new Date().toISOString().split('T')[0]
+  const today = localDateStr()
   const sevenAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
 
   const [logs, setLogs]             = useState([])

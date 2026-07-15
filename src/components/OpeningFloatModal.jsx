@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { FiCheck, FiDollarSign } from 'react-icons/fi'
 import './Modal.css'
 
-function OpeningFloatModal({ user, onConfirm, isLoading }) {
+function OpeningFloatModal({ user, onConfirm, onCancel, isLoading }) {
   const [openingCash, setOpeningCash] = useState('')
   const [error, setError] = useState('')
 
@@ -16,9 +16,16 @@ function OpeningFloatModal({ user, onConfirm, isLoading }) {
     onConfirm({ opening_cash: cash })
   }
 
+  useEffect(() => {
+    if (!onCancel) return
+    const onKey = (e) => { if (e.key === 'Escape' && !isLoading) onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel, isLoading])
+
   return (
-    <div className="modal-overlay">
-      <div className="modal">
+    <div className="modal-overlay" onClick={() => { if (onCancel && !isLoading) onCancel() }}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
             <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -60,7 +67,16 @@ function OpeningFloatModal({ user, onConfirm, isLoading }) {
           <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: 8 }}>Enter 0 if the drawer starts empty</p>
         </div>
 
-        <div className="modal-footer" style={{ justifyContent: 'flex-end' }}>
+        <div className="modal-footer" style={{ justifyContent: onCancel ? 'space-between' : 'flex-end' }}>
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              style={{ padding: '12px 20px', border: '1px solid #ddd', borderRadius: '6px', backgroundColor: '#fff', color: '#475569', cursor: isLoading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: '600' }}
+              disabled={isLoading}
+            >
+              Not now
+            </button>
+          )}
           <button
             onClick={handleSubmit}
             style={{ padding: '12px 32px', border: 'none', borderRadius: '6px', backgroundColor: '#2e7d32', color: '#fff', cursor: isLoading ? 'not-allowed' : 'pointer', fontSize: '15px', fontWeight: '600', opacity: isLoading ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 8 }}

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuthStore } from '../store/useAuthStore'
 import { useSaleStore } from '../store/useSaleStore'
-import { getCurrentShift } from '../database/db'
+import { useShiftStore } from '../store/useShiftStore'
+import { getCurrentShift, reconcileOrphanedSales } from '../database/db'
 
 // Polls for remote shift closure and raises a flag so Dashboard can show the
 // force-close modal.  Only active for Cashier role users with an active shift.
@@ -76,6 +77,45 @@ export function useShiftGuard() {
     const off = shifts.onForceClose(triggerForceClose)
     return () => off?.()
   }, [triggerForceClose])
+
+  // ── Provisional-shift auto-heal (all roles) ──────────────────────────────
+  // If startShift got queued (Main unreachable at that instant), Dashboard stores a
+  // __provisional shift with no id so selling isn't blocked — but any sale made
+  // before the real shift confirms is written with shift_id: null. The moment the
+  // real shift lands, reattach those orphaned sales so Shift Management / End of
+  // Day agree with Transactions without any admin having to notice or intervene.
+  const { currentShift, setCurrentShift } = useShiftStore()
+  const healingRef = useRef(false)
+
+  const checkProvisionalShift = useCallback(async () => {
+    if (!user?.username || !currentShift?.__provisional || healingRef.current) return
+    healingRef.current = true
+    try {
+      const real = await getCurrentShift(user.username)
+      if (real?.id) {
+        setCurrentShift(real)
+        try { await reconcileOrphanedSales(real.id) } catch (_) { /* next tick will retry */ }
+      }
+    } catch (_) {
+      // still unreachable — stay provisional, selling keeps working, try again next tick
+    } finally {
+      healingRef.current = false
+    }
+  }, [user?.username, currentShift?.__provisional, setCurrentShift])
+
+  useEffect(() => {
+    if (!currentShift?.__provisional) return
+    checkProvisionalShift()
+    const timer = setInterval(checkProvisionalShift, 8000)
+    return () => clearInterval(timer)
+  }, [currentShift?.__provisional, checkProvisionalShift])
+
+  useEffect(() => {
+    const lan = window.stocka?.lan
+    if (!lan?.onSynced || !currentShift?.__provisional) return
+    const off = lan.onSynced(checkProvisionalShift)
+    return () => off?.()
+  }, [checkProvisionalShift, currentShift?.__provisional])
 
   return { shiftForceClosed }
 }

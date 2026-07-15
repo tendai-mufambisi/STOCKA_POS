@@ -4,6 +4,7 @@ import {
   getAllShifts, getShiftSummary, closeAllOpenShifts,
 } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
+import { parseDbDate, localDateStr } from '../utils/salesDay'
 import './EndOfDay.css'
 import {
   FiCheckCircle, FiAlertCircle, FiAlertTriangle, FiClock,
@@ -14,11 +15,11 @@ import {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 const fmt = {
   money:    (n)         => `$${(n || 0).toFixed(2)}`,
-  time:     (d)         => d ? new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—',
-  date:     (d)         => d ? new Date(d).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—',
+  time:     (d)         => d ? parseDbDate(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—',
+  date:     (d)         => d ? parseDbDate(d).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—',
   initials: (name)      => (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2),
   dur: (start, end) => {
-    const mins = Math.round((new Date(end || Date.now()) - new Date(start)) / 60000)
+    const mins = Math.round((parseDbDate(end || new Date()) - parseDbDate(start)) / 60000)
     if (mins < 0) return '—'
     const h = Math.floor(mins / 60), m = mins % 60
     return h === 0 ? `${m}m` : `${h}h ${m}m`
@@ -39,12 +40,13 @@ export default function EndOfDay() {
   const [todaysRecord, setTodaysRecord] = useState(null)
   const [allRecords, setAllRecords] = useState([])
   const [shifts, setShifts]         = useState([])   // [{...shift, summary:{}}]
-  const [cashInputs, setCashInputs] = useState({})     // {shiftId: string}
-  const [notes, setNotes]           = useState('')
+  const [cashInputs, setCashInputs]         = useState({})  // {shiftId: string}
+  const [transferInputs, setTransferInputs] = useState({})  // {shiftId: string}
+  const [notes, setNotes]                   = useState('')
   const [closing, setClosing]       = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = localDateStr()
 
   // ── Load ────────────────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -59,8 +61,12 @@ export default function EndOfDay() {
       const record = records.find(r => r.date === today) || null
       setTodaysRecord(record)
 
-      // Filter to today's shifts (started_at begins with today's date)
-      const rawShifts = allRawShifts.filter(s => s.started_at && s.started_at.slice(0, 10) === today)
+      // Today's shifts, plus ANY shift still open regardless of start date —
+      // an overnight shift must never be invisible to End of Day.
+      const rawShifts = allRawShifts.filter(s =>
+        s.status === 'open' ||
+        (s.started_at && localDateStr(parseDbDate(s.started_at)) === today)
+      )
 
       // Load shift summaries in parallel
       const withSummaries = await Promise.all(
@@ -109,9 +115,21 @@ export default function EndOfDay() {
   const totalVariance = totalReceived - totalExpected
   const dayVarStatus  = varianceStatus(totalVariance)
 
+  const totalTransferReceived = shifts.reduce((sum, s) => {
+    const v = parseFloat(transferInputs[s.id])
+    return sum + (isNaN(v) ? 0 : v)
+  }, 0)
+  const totalTransferVariance = totalTransferReceived - totalExpectedTransfer
+
   const allOpenInputted = openShifts.every(s => {
     const c = parseFloat(cashInputs[s.id])
-    return cashInputs[s.id] !== '' && !isNaN(c)
+    const hasCash = cashInputs[s.id] !== '' && !isNaN(c)
+    const et = s.summary?.expected_transfer || 0
+    if (et > 0) {
+      const t = parseFloat(transferInputs[s.id])
+      return hasCash && transferInputs[s.id] !== '' && !isNaN(t)
+    }
+    return hasCash
   })
   const canClose = openShifts.length === 0 || allOpenInputted
 
@@ -135,8 +153,10 @@ export default function EndOfDay() {
       }
 
       // 2. Save EOD record
-      const diff   = totalReceived - totalExpected
-      const status = Math.abs(diff) < 0.01 ? 'Balanced' : diff > 0 ? 'Overage' : 'Shortage'
+      const diff        = totalReceived - totalExpected
+      const cashOk      = Math.abs(diff) < 0.01
+      const transferOk  = totalExpectedTransfer === 0 || Math.abs(totalTransferVariance) < 0.01
+      const status      = (cashOk && transferOk) ? 'Balanced' : diff > 0 ? 'Overage' : 'Shortage'
       await addEndOfDay({
         date:           today,
         cashier:        user?.username || 'System',
@@ -272,6 +292,8 @@ export default function EndOfDay() {
                     shift={shift}
                     cashVal={cashInputs[shift.id] || ''}
                     onCashChange={val => setCashInputs(prev => ({ ...prev, [shift.id]: val }))}
+                    transferVal={transferInputs[shift.id] || ''}
+                    onTransferChange={val => setTransferInputs(prev => ({ ...prev, [shift.id]: val }))}
                   />
                 ))}
               </div>
@@ -279,23 +301,48 @@ export default function EndOfDay() {
               {/* ── Totals bar ── */}
               <div className={`eod-totals-bar ${dayVarStatus}`}>
                 <div className="eod-tb-item">
-                  <span className="eod-tb-label">Total Expected</span>
+                  <span className="eod-tb-label">Expected Cash</span>
                   <span className="eod-tb-val">{fmt.money(totalExpected)}</span>
                 </div>
                 <div className="eod-tb-divider" />
                 <div className="eod-tb-item">
-                  <span className="eod-tb-label">Total Received</span>
+                  <span className="eod-tb-label">Cash Received</span>
                   <span className="eod-tb-val">{fmt.money(totalReceived)}</span>
                 </div>
                 <div className="eod-tb-divider" />
                 <div className={`eod-tb-item variance ${dayVarStatus}`}>
                   <span className="eod-tb-label">
-                    {dayVarStatus === 'balanced' ? 'Balanced' : dayVarStatus === 'overage' ? 'Overage' : 'Shortage'}
+                    {dayVarStatus === 'balanced' ? 'Cash OK' : dayVarStatus === 'overage' ? 'Cash Over' : 'Cash Short'}
                   </span>
                   <span className="eod-tb-val">
                     {totalVariance >= 0 ? '+' : ''}{fmt.money(totalVariance)}
                   </span>
                 </div>
+                {totalExpectedTransfer > 0 && (
+                  <>
+                    <div className="eod-tb-divider" />
+                    <div className="eod-tb-item">
+                      <span className="eod-tb-label" style={{ color: '#1d4ed8' }}>Expected Transfer</span>
+                      <span className="eod-tb-val" style={{ color: '#1d4ed8' }}>{fmt.money(totalExpectedTransfer)}</span>
+                    </div>
+                    <div className="eod-tb-divider" />
+                    <div className="eod-tb-item">
+                      <span className="eod-tb-label" style={{ color: '#1d4ed8' }}>Transfer Received</span>
+                      <span className="eod-tb-val" style={{ color: '#1d4ed8' }}>{fmt.money(totalTransferReceived)}</span>
+                    </div>
+                    <div className="eod-tb-divider" />
+                    <div className={`eod-tb-item variance ${varianceStatus(totalTransferVariance)}`}>
+                      <span className="eod-tb-label">
+                        {varianceStatus(totalTransferVariance) === 'balanced' ? 'Transfer OK'
+                          : varianceStatus(totalTransferVariance) === 'overage' ? 'Transfer Over'
+                          : 'Transfer Short'}
+                      </span>
+                      <span className="eod-tb-val">
+                        {totalTransferVariance >= 0 ? '+' : ''}{fmt.money(totalTransferVariance)}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* ── Close Day section ── */}
@@ -443,14 +490,27 @@ export default function EndOfDay() {
 }
 
 // ─── CashierRow ────────────────────────────────────────────────────────────────
-function CashierRow({ shift, cashVal, onCashChange }) {
-  const s      = shift.summary || {}
-  const isOpen = shift.status === 'open'
+function CashierRow({ shift, cashVal, onCashChange, transferVal, onTransferChange }) {
+  const s               = shift.summary || {}
+  const isOpen          = shift.status === 'open'
+  const expectedCash     = s.expected_cash || 0
+  const expectedTransfer = s.expected_transfer || 0
 
-  const parsedCash    = parseFloat(cashVal)
-  const totalExpected = s.expected_cash || 0
-  const totalVariance = cashVal !== '' ? (isNaN(parsedCash) ? null : parsedCash - totalExpected) : null
-  const varSt = varianceStatus(totalVariance)
+  const parsedCash     = parseFloat(cashVal)
+  const parsedTransfer = parseFloat(transferVal)
+
+  const cashVariance     = cashVal !== '' ? (isNaN(parsedCash) ? null : parsedCash - expectedCash) : null
+  const cashVarSt        = varianceStatus(cashVariance)
+
+  const transferVariance = expectedTransfer > 0 && transferVal !== ''
+    ? (isNaN(parsedTransfer) ? null : parsedTransfer - expectedTransfer)
+    : null
+  const transferVarSt    = varianceStatus(transferVariance)
+
+  const allEntered      = cashVal !== '' && (expectedTransfer === 0 || transferVal !== '')
+  const overallBalanced = allEntered
+    && cashVarSt === 'balanced'
+    && (expectedTransfer === 0 || transferVarSt === 'balanced')
 
   return (
     <div className={`eod-cr ${isOpen ? 'eod-cr-open' : 'eod-cr-closed'}`}>
@@ -500,10 +560,10 @@ function CashierRow({ shift, cashVal, onCashChange }) {
           <span className="eod-cr-ml">Expected Cash</span>
           <span className="eod-cr-mv">{fmt.money(s.expected_cash)}</span>
         </div>
-        {(s.expected_transfer || 0) > 0 && (
+        {expectedTransfer > 0 && (
           <div className="eod-cr-m">
             <span className="eod-cr-ml" style={{ color: '#1d4ed8' }}>Expected Transfer</span>
-            <span className="eod-cr-mv" style={{ color: '#1d4ed8' }}>{fmt.money(s.expected_transfer)}</span>
+            <span className="eod-cr-mv" style={{ color: '#1d4ed8' }}>{fmt.money(expectedTransfer)}</span>
           </div>
         )}
       </div>
@@ -525,11 +585,46 @@ function CashierRow({ shift, cashVal, onCashChange }) {
               />
             </div>
           </div>
-          {totalVariance !== null && (
-            <div className={`eod-cr-var ${varSt}`} style={{ marginTop: 6 }}>
-              {varSt === 'balanced' && <><FiCheckCircle size={12} /> Balanced</>}
-              {varSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(totalVariance)} over</>}
-              {varSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(totalVariance)} short</>}
+          {cashVariance !== null && expectedTransfer > 0 && (
+            <div className={`eod-cr-var ${cashVarSt}`} style={{ marginTop: 6 }}>
+              {cashVarSt === 'balanced' && <><FiCheckCircle size={12} /> Cash balanced</>}
+              {cashVarSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(cashVariance)} cash over</>}
+              {cashVarSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(cashVariance)} cash short</>}
+            </div>
+          )}
+
+          {expectedTransfer > 0 && (
+            <>
+              <label style={{ marginTop: 10, display: 'block' }}>Transfer received from cashier</label>
+              <div className="eod-cr-input-row">
+                <div className="eod-cr-input-wrap">
+                  <span className="eod-cr-prefix">$</span>
+                  <input
+                    type="number" step="any" min="0"
+                    value={transferVal}
+                    onChange={e => onTransferChange(e.target.value)}
+                    placeholder="0.00"
+                    className="eod-cr-input"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+              {transferVariance !== null && (
+                <div className={`eod-cr-var ${transferVarSt}`} style={{ marginTop: 6 }}>
+                  {transferVarSt === 'balanced' && <><FiCheckCircle size={12} /> Transfer balanced</>}
+                  {transferVarSt === 'overage'  && <><FiAlertCircle size={12} /> +{fmt.money(transferVariance)} transfer over</>}
+                  {transferVarSt === 'shortage' && <><FiAlertCircle size={12} /> {fmt.money(transferVariance)} transfer short</>}
+                </div>
+              )}
+            </>
+          )}
+
+          {allEntered && (
+            <div className={`eod-cr-var ${overallBalanced ? 'balanced' : cashVariance > 0 || (transferVariance || 0) > 0 ? 'overage' : 'shortage'}`} style={{ marginTop: 8 }}>
+              {overallBalanced
+                ? <><FiCheckCircle size={12} /> Balanced</>
+                : <><FiAlertCircle size={12} /> {expectedTransfer > 0 ? 'Discrepancy found' : cashVarSt === 'overage' ? `+${fmt.money(cashVariance)} over` : `${fmt.money(cashVariance)} short`}</>
+              }
             </div>
           )}
         </div>

@@ -1,0 +1,37 @@
+.numpad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.numpad-key {
+  height: 52px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  background: white;
+  color: #0f172a;
+  font-size: 21px;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  transition: background 0.1s, border-color 0.1s;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.numpad-key:hover:not(:disabled) { background: #f8fafc; }
+
+.numpad-key:active:not(:disabled) {
+  background: #f0fdf4;
+  border-color: #2e7d32;
+  color: #15803d;
+}
+
+.numpad-key:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.numpad-key--back { color: #64748b; background: #f8fafc; }

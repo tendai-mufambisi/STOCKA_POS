@@ -24,8 +24,10 @@ import ActivityLogs from './ActivityLogs'
 import MyTransactions from './MyTransactions'
 import Notifications from '../components/Notifications'
 import LanStatusBar from '../components/LanStatusBar'
-import { getDashboardStats, getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary } from '../database/db'
+import { getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary, getDailyRevenue, getDailyCOGS } from '../database/db'
 import { useLanSync } from '../hooks/useLanSync'
+import { isToday, todayCompletedSales, localDateStr, formatDbTime } from '../utils/salesDay'
+import { parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
 import ShiftForceClosedModal from '../components/ShiftForceClosedModal'
@@ -119,6 +121,9 @@ function Dashboard() {
   const [isClosingShift, setIsClosingShift] = useState(false)
   const [showOpeningFloatModal, setShowOpeningFloatModal] = useState(false)
   const [isStartingShift, setIsStartingShift] = useState(false)
+  // Why the shift is being closed: 'closeOnly' keeps the user logged in (e.g. an
+  // admin cashing up their own drawer); 'signout' logs them out afterwards.
+  const [closeShiftIntent, setCloseShiftIntent] = useState('closeOnly')
 
   const { shiftForceClosed } = useShiftGuard()
 
@@ -127,32 +132,71 @@ function Dashboard() {
   useEffect(() => {
     const lan = window.stocka?.lan
     if (!lan?.onEodClosed) return
+    // Admin/Manager is the one closing the day — never show them this modal
+    if (user?.role === 'Admin' || user?.role === 'Manager') return
     const off = lan.onEodClosed((data) => setEodClosed(data))
     return () => off?.()
-  }, [])
+  }, [user?.role])
 
   const loadCurrentShift = async () => {
     try {
       const shift = await getCurrentShift(user?.username)
       setCurrentShift(shift)
-      if (!shift) {
-        setShowOpeningFloatModal(true)
-      }
+      // No forced opening-float modal here — the prompt appears when the user
+      // opens the Sales page (see the activePage effect below) and is cancellable.
     } catch (err) {
       console.error('Failed to load shift:', err)
     }
   }
 
+  // Prompt for an opening float when entering Sales without an open shift.
+  // Cancelling leaves Sales in a browse-only "shift not started" state.
+  useEffect(() => {
+    if (activePage === 'sales' && !currentShift) setShowOpeningFloatModal(true)
+  }, [activePage])
+
+  // Refetch on page change too, so toggling a setting (e.g. admin sales) applies
+  // as soon as the user navigates back — not only after an app restart.
   useEffect(() => {
     getShop().then(s => setShopSettings(s)).catch(() => {})
-  }, [])
+  }, [activePage])
+
+  // Admins may only sell when the shop-level toggle allows it (Settings → Business Rules)
+  const adminCanSell = user?.role !== 'Admin' || !!shopSettings?.allow_admin_sales
+
+  // If the admin revokes the tab this user is sitting on, send them home
+  useEffect(() => {
+    if (!shopSettings) return
+    const privs = parseRolePrivileges(shopSettings.role_privileges)
+    if (!canRoleAccessNav(user?.role || 'Cashier', activePage, privs)) setActivePage('dashboard')
+  }, [shopSettings, activePage])
 
 
   const handleOpeningFloatSubmit = async (floatData) => {
     setIsStartingShift(true)
     try {
       const shift = await startShift(user, floatData)
-      setCurrentShift(shift)
+      if (shift?.__queued) {
+        // Main couldn't be reached at this exact moment — the real shift-start is
+        // safely queued and will land once reconnected, but it has no id yet.
+        // Storing that raw placeholder used to be the bug: every sale made before
+        // it resolved silently wrote shift_id: null and became invisible to Shift
+        // Management / End of Day forever. Instead we mark a PROVISIONAL shift —
+        // selling still works immediately, but shift_id honestly stays null until
+        // useShiftGuard confirms the real shift and reconciles anything made in
+        // the gap (see useShiftGuard.js).
+        setCurrentShift({
+          __provisional: true,
+          id: null,
+          cashier_username: user.username,
+          cashier_display_name: user.name || user.username,
+          opening_cash: (typeof floatData === 'object' ? floatData.opening_cash : floatData) || 0,
+          started_at: new Date().toISOString(),
+          status: 'open',
+        })
+      } else {
+        setCurrentShift(shift)
+      }
       setShowOpeningFloatModal(false)
     } catch (err) {
       console.error('Failed to start shift:', err)
@@ -162,8 +206,9 @@ function Dashboard() {
   }
 
 
-  const handleCloseShiftClick = async () => {
+  const handleCloseShiftClick = async (intent = 'closeOnly') => {
     if (!currentShift) return
+    setCloseShiftIntent(intent)
     // Fetch the real sales/expenses totals from the DB so the closing modal
     // shows the correct expected cash (opening float + actual sales − expenses).
     // The shifts.total_sales_value column is never incremented after sales, so
@@ -190,9 +235,16 @@ function Dashboard() {
     try {
       await closeShift(currentShift.id, closingFloat, notes)
       setShowClosingFloatModal(false)
+      setClosingShiftData(null)
       clearShift()
-      logout()
-      navigate('/login', { replace: true })
+      if (closeShiftIntent === 'signout') {
+        logout()
+        navigate('/login', { replace: true })
+      } else {
+        // Closing your own drawer is not signing out — admins keep working.
+        setIsClosingShift(false)
+        loadDashboardData()
+      }
     } catch (err) {
       console.error('Failed to close shift:', err)
       setIsClosingShift(false)
@@ -205,21 +257,9 @@ function Dashboard() {
   }
 
   const performLogout = async () => {
-    try {
-      // Close any active shift on logout (all roles)
-      if (user?.current_shift_id) {
-        try {
-          const closingFloat = { closing_cash: 0 }
-          await closeShift(user.current_shift_id, closingFloat, 'Shift auto-closed on logout')
-        } catch (err) {
-          console.warn('Could not close shift on logout:', err)
-          // Continue with logout even if shift close fails
-        }
-      }
-    } catch (err) {
-      console.warn('Error during logout cleanup:', err)
-    }
-    
+    // "Sign Out Only" deliberately leaves any open shift untouched — the
+    // SignOutModal promises "another admin can close it later", and the stale-shift
+    // auto-close sweeps up anything forgotten overnight.
     try { await logAuditAction(user?.username || 'unknown', 'LOGOUT', 'USER', String(user?.id || ''), `${user?.role || ''} signed out`) } catch (_) {}
 
     // Clear all authentication and session data
@@ -269,8 +309,7 @@ function Dashboard() {
 
   const loadDashboardData = async () => {
     try {
-      const [stats, sales, expenses, products] = await Promise.all([
-        getDashboardStats(),
+      const [sales, expenses, products] = await Promise.all([
         getSales(),
         getExpenses(),
         getProducts()
@@ -290,25 +329,24 @@ function Dashboard() {
         }
       }
       
-      const today = new Date().toISOString().split('T')[0]
-      const todayStart = new Date(today).getTime()
-      const todayEnd = todayStart + 24 * 60 * 60 * 1000
+      const todaysSales = todayCompletedSales(sales)
+      const todaysExpenses = expenses.filter(e => isToday(e.date))
 
-      const todaysSales = sales.filter(s => {
-        const saleDate = new Date(s.created_at).getTime()
-        return s.status === 'completed' && saleDate >= todayStart && saleDate < todayEnd
-      })
-      
-      const todaysExpenses = expenses.filter(e => {
-        const expenseDate = new Date(e.date).getTime()
-        return expenseDate >= todayStart && expenseDate < todayEnd
-      })
+      // Gross profit so far today = completed revenue − cost of goods sold
+      let grossProfit = null
+      try {
+        const day = localDateStr()
+        const [rev, cogs] = await Promise.all([getDailyRevenue(day), getDailyCOGS(day)])
+        grossProfit = (rev || 0) - (cogs || 0)
+      } catch { /* leave null — card shows a dash */ }
 
       const lowStockItems = products.filter(p => p.current_quantity <= p.reorder_level)
       const stockValue = products.reduce((sum, p) => sum + ((p.current_quantity || 0) * (p.selling_price || 0)), 0)
       
       setDashboardStats({
+        grossProfit,
         todaysSales: todaysSales.reduce((sum, s) => sum + (s.total || 0), 0),
+        todaysSalesCount: todaysSales.length,
         totalProducts: products.length,
         lowStockCount: lowStockItems.length,
         stockValue: stockValue,
@@ -325,30 +363,30 @@ function Dashboard() {
   }
 
   const navItems = [
-    { id: 'dashboard',  icon: 'home',       label: 'Dashboard',       group: 'main',    roles: ['Admin', 'Manager', 'Cashier'] },
-    { id: 'products',   icon: 'package',    label: 'Products',         group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'inventory',  icon: 'package',    label: 'Current Inventory', group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'reconciliation', icon: 'bar-chart-2', label: 'Reconciliation',   group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'stock',      icon: 'trending-down', label: 'Receive Stock',    group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'my-transactions', icon: 'file-text', label: 'Transactions',   group: 'sales',   roles: ['Admin', 'Manager', 'Cashier'] },
-    { id: 'expenses',   icon: 'credit-card', label: 'Expenses',         group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance', roles: ['Admin', 'Manager'] },
-    { id: 'expiry',       icon: 'calendar',   label: 'Expiry Tracking',  group: 'stock',   roles: ['Admin', 'Manager'] },
-    { id: 'activitylogs', icon: 'list',       label: 'Activity Logs',    group: 'ops',     roles: ['Admin', 'Manager'] },
-    { id: 'settings',   icon: 'settings',   label: 'Settings',         group: 'ops',     roles: ['Admin', 'Manager', 'Cashier'] },
+    { id: 'dashboard',  icon: 'home',       label: 'Dashboard',       group: 'main' },
+    { id: 'products',   icon: 'package',    label: 'Products',         group: 'stock' },
+    { id: 'inventory',  icon: 'package',    label: 'Current Inventory', group: 'stock' },
+    { id: 'reconciliation', icon: 'bar-chart-2', label: 'Reconciliation',   group: 'stock' },
+    { id: 'stock',      icon: 'trending-down', label: 'Receive Stock',    group: 'stock' },
+    { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock' },
+    { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock' },
+    { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock' },
+    { id: 'my-transactions', icon: 'file-text', label: 'Transactions',   group: 'sales' },
+    { id: 'expenses',   icon: 'credit-card', label: 'Expenses',         group: 'finance' },
+    { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance' },
+    { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance' },
+    { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance' },
+    { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance' },
+    { id: 'expiry',       icon: 'calendar',   label: 'Expiry Tracking',  group: 'stock' },
+    { id: 'activitylogs', icon: 'list',       label: 'Activity Logs',    group: 'ops' },
+    { id: 'settings',   icon: 'settings',   label: 'Settings',         group: 'ops' },
   ]
 
-  // Filter nav items based on user role
+  // Role defaults + admin overrides (Settings → Role Privileges) decide which
+  // tabs this user sees — see src/utils/rolePrivileges.js
   const userRole = user?.role || 'Cashier'
-  const filteredNavItems = navItems.filter(item => 
-    !item.roles || item.roles.some(role => role.toLowerCase() === userRole.toLowerCase())
-  )
+  const rolePrivileges = parseRolePrivileges(shopSettings?.role_privileges)
+  const filteredNavItems = navItems.filter(item => canRoleAccessNav(userRole, item.id, rolePrivileges))
 
   const groupLabels = {
     main:    '',
@@ -403,7 +441,14 @@ function Dashboard() {
       icon: 'dollar-sign',
       label: "Today's Sales",
       value: `$${dashboardStats.todaysSales.toFixed(2)}`,
-      sub: `${dashboardStats.recentSales?.length || 0} sales today`,
+      sub: `${dashboardStats.todaysSalesCount || 0} ${dashboardStats.todaysSalesCount === 1 ? 'sale' : 'sales'} today`,
+      type: 'gold'
+    },
+    {
+      icon: 'trending-up',
+      label: "Today's Gross Profit",
+      value: dashboardStats.grossProfit === null ? '—' : `$${dashboardStats.grossProfit.toFixed(2)}`,
+      sub: 'Sales minus cost of goods',
       type: 'gold'
     },
     {
@@ -429,6 +474,13 @@ function Dashboard() {
       type: 'gold'
     },
     {
+      icon: 'trending-up',
+      label: "Today's Gross Profit",
+      value: '$0.00',
+      sub: 'Sales minus cost of goods',
+      type: 'gold'
+    },
+    {
       icon: 'alert-triangle',
       label: 'Low Stock Items',
       value: '0',
@@ -445,7 +497,7 @@ function Dashboard() {
   ]
 
   const quickActions = [
-    { icon: 'shopping-cart', label: 'New Sale',       hint: 'Open the POS terminal',          page: 'sales',    theme: 'green'  },
+    ...(adminCanSell ? [{ icon: 'shopping-cart', label: 'New Sale', hint: 'Open the POS terminal', page: 'sales', theme: 'green' }] : []),
     { icon: 'plus',          label: 'Add Product',    hint: 'Register a new stock item',       page: 'products', theme: 'blue'   },
     { icon: 'download',      label: 'Receive Stock',  hint: 'Record incoming inventory',       page: 'stock',    theme: 'teal'   },
     { icon: 'credit-card',   label: 'Add Expense',    hint: 'Log a business expense',          page: 'expenses', theme: 'red'    },
@@ -487,7 +539,10 @@ function Dashboard() {
       case 'suppliers':
         return <Suppliers />
       case 'sales':
-        return <Sales />
+        return <Sales
+                 onRequestStartShift={() => setShowOpeningFloatModal(true)}
+                 onRequestCloseShift={() => handleCloseShiftClick('closeOnly')}
+               />
       case 'expenses':
         return <Expenses />
       case 'reports':
@@ -539,17 +594,19 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* Sales / POS — primary CTA, always at top */}
-        <div className="sidebar-pos-cta-wrap">
-          <button
-            className={`sidebar-pos-cta ${activePage === 'sales' ? 'active' : ''}`}
-            onClick={() => setActivePage('sales')}
-            title={!sidebarExpanded ? 'Sales / POS' : ''}
-          >
-            <span className="pos-cta-icon"><FiShoppingCart size={22} /></span>
-            <span className="pos-cta-label">New Sale</span>
-          </button>
-        </div>
+        {/* Sales / POS — primary CTA (hidden for admins unless the shop allows admin sales) */}
+        {adminCanSell && (
+          <div className="sidebar-pos-cta-wrap">
+            <button
+              className={`sidebar-pos-cta ${activePage === 'sales' ? 'active' : ''}`}
+              onClick={() => setActivePage('sales')}
+              title={!sidebarExpanded ? 'Sales / POS' : ''}
+            >
+              <span className="pos-cta-icon"><FiShoppingCart size={22} /></span>
+              <span className="pos-cta-label">New Sale</span>
+            </button>
+          </div>
+        )}
 
         {/* Navigation */}
         <nav className="sidebar-nav">
@@ -691,6 +748,7 @@ function Dashboard() {
         <OpeningFloatModal
           user={user}
           onConfirm={handleOpeningFloatSubmit}
+          onCancel={() => setShowOpeningFloatModal(false)}
           isLoading={isStartingShift}
         />
       )}
@@ -698,7 +756,7 @@ function Dashboard() {
       {showSignOutModal && (
         <SignOutModal
           hasShift={!!currentShift}
-          onCloseShift={() => { setShowSignOutModal(false); handleCloseShiftClick() }}
+          onCloseShift={() => { setShowSignOutModal(false); handleCloseShiftClick('signout') }}
           onSignOutOnly={() => { setShowSignOutModal(false); performLogout() }}
           onStay={() => setShowSignOutModal(false)}
         />
@@ -721,8 +779,8 @@ function Dashboard() {
         <EodClosedModal
           date={eodClosed.date}
           closedBy={eodClosed.closedBy}
-          onDismiss={() => setEodClosed(null)}
-          onCloseShift={currentShift ? () => { setEodClosed(null); handleCloseShiftClick() } : null}
+          onCloseShift={currentShift ? () => { setEodClosed(null); handleCloseShiftClick('signout') } : null}
+          onLogout={!currentShift ? forceLogout : null}
         />
       )}
     </div>
@@ -927,7 +985,9 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
                   <div className="stat-box-number">{activeCashiers.length}</div>
                 </div>
                 <div className="stat-box">
-                  <div className="stat-box-label">Total Sales Today</div>
+                  {/* Sum of the OPEN shifts only — closed shifts today are not included,
+                      so this is deliberately labelled differently from "Today's Sales". */}
+                  <div className="stat-box-label">Active Shift Sales</div>
                   <div className="stat-box-number">
                     ${activeCashiers.reduce((sum, shift) => sum + (shift.total_sales_value || 0), 0).toFixed(2)}
                   </div>
@@ -999,7 +1059,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
               {recentSales.slice(0, 5).map((sale, idx) => (
                 <div key={idx} className="sale-item">
                   <div className="sale-time">
-                    {new Date(sale.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })}
+                    {formatDbTime(sale.created_at)}
                   </div>
                   <div className="sale-amount">${sale.total?.toFixed(2)}</div>
                 </div>

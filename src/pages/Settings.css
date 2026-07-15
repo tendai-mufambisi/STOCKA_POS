@@ -746,3 +746,94 @@
 }
 
 .s-update-status { font-size: 13px; color: #64748b; }
+
+/* ── License key reveal ───────────────────────────── */
+.s-license-row { flex-wrap: wrap; }
+
+.s-license-reveal-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.s-code-masked {
+  letter-spacing: 2px;
+  color: #94a3b8;
+}
+
+.s-license-pin-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.s-input-sm {
+  padding: 5px 10px;
+  font-size: 13px;
+  width: 110px;
+  border-radius: 7px;
+  border: 1.5px solid #e2e8f0;
+  outline: none;
+}
+.s-input-sm:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+
+.s-license-error {
+  font-size: 12px;
+  color: #dc2626;
+  font-weight: 500;
+}
+
+.s-license-countdown {
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+/* ── Role privileges ──────────────────────────────── */
+.s-role-pills {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.s-role-pill {
+  padding: 8px 20px;
+  background: white;
+  color: #374151;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.13s;
+}
+
+.s-role-pill:hover { border-color: #94a3b8; }
+
+.s-role-pill.active {
+  border-color: #2e7d32;
+  background: #f0fdf4;
+  color: #2e7d32;
+}
+
+.s-priv-group {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin: 16px 0 8px;
+}
+
+.s-priv-row { margin-bottom: 8px; }
+
+.s-toggle-row--locked {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.s-toggle-row--locked:hover { background: transparent; }
+
+.s-toggle-row--locked .s-switch-track { cursor: default; }

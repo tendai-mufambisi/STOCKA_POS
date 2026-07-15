@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getAllShifts, getShiftSummary, closeShift, getSalesByShift, reopenShift } from '../database/db'
+import { getAllShifts, getShiftSummary, closeShift, getSalesByShift, reopenShift, previewOrphanedSales, reconcileOrphanedSales } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
 import ConfirmModal from '../components/ConfirmModal'
@@ -28,6 +28,14 @@ function ShiftDashboard() {
   const [selectedReceipt, setSelectedReceipt] = useState(null)
   const [isReopening, setIsReopening] = useState(false)
   const [confirmReopen, setConfirmReopen] = useState(null) // shiftId
+
+  // Orphaned-sales repair: sales made while a shift-start was still queued (offline
+  // hiccup) can end up with no shift_id, invisible to this page and End of Day even
+  // though Transactions shows them fine. This preview-then-apply tool finds and
+  // reattaches them for a specific shift.
+  const [checkingOrphans, setCheckingOrphans] = useState(false)
+  const [orphanPreview, setOrphanPreview]     = useState(null) // { shiftId, count, total, sales }
+  const [relinkingOrphans, setRelinkingOrphans] = useState(false)
 
   useEffect(() => { loadShifts() }, [filterStatus])
   useLanSync(() => loadShifts(true))
@@ -103,6 +111,39 @@ function ShiftDashboard() {
 
   const handleReopenShift = (shiftId) => {
     setConfirmReopen(shiftId)
+  }
+
+  const handleCheckOrphans = async (shiftId) => {
+    setCheckingOrphans(true)
+    setOrphanPreview(null)
+    try {
+      const preview = await previewOrphanedSales(shiftId)
+      if (preview.count === 0) {
+        setError('✓ No unlinked sales found for this shift — everything already agrees.')
+      } else {
+        setOrphanPreview(preview)
+      }
+    } catch (err) {
+      setError(`Failed to check for unlinked sales: ${err.message}`)
+    } finally {
+      setCheckingOrphans(false)
+    }
+  }
+
+  const handleConfirmRelink = async () => {
+    if (!orphanPreview) return
+    setRelinkingOrphans(true)
+    try {
+      const result = await reconcileOrphanedSales(orphanPreview.shiftId)
+      setOrphanPreview(null)
+      setError(`✓ Relinked ${result.relinked} sale(s) totalling ${fmt.money(result.total)} to this shift.`)
+      await loadShifts(true)
+      if (selectedShift) await handleViewShift(selectedShift)
+    } catch (err) {
+      setError(`Failed to relink sales: ${err.message}`)
+    } finally {
+      setRelinkingOrphans(false)
+    }
   }
 
   const handleConfirmReopen = async () => {
@@ -448,6 +489,25 @@ function ShiftDashboard() {
             </div>
           )}
 
+          {/* ── Orphaned-sales check (admin/manager, any shift) ── */}
+          <div className="sd-reopen-card">
+            <div className="sd-reopen-info">
+              <FiAlertTriangle size={15} />
+              <span>
+                Sales total not matching Transactions for this cashier? A brief connection hiccup
+                when the shift started can leave sales unlinked. Check for any and reattach them.
+              </span>
+            </div>
+            <button
+              className="sd-btn ghost outline sd-reopen-btn"
+              onClick={() => handleCheckOrphans(shiftDetail.id)}
+              disabled={checkingOrphans}
+            >
+              <FiRefreshCw size={14} />
+              {checkingOrphans ? 'Checking…' : 'Check for unlinked sales'}
+            </button>
+          </div>
+
           {/* ── Reopen shift (admin only, closed shifts) ── */}
           {shiftDetail.status === 'closed' && (user?.role === 'Admin' || user?.role === 'Manager') && (
             <div className="sd-reopen-card">
@@ -546,6 +606,38 @@ function ShiftDashboard() {
         onConfirm={handleConfirmReopen}
         onCancel={() => setConfirmReopen(null)}
       />
+    )}
+
+    {orphanPreview && (
+      <div className="confirm-modal-overlay" onClick={() => !relinkingOrphans && setOrphanPreview(null)}>
+        <div className="confirm-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+          <p className="confirm-modal-message">
+            Relink {orphanPreview.count} unlinked sale{orphanPreview.count !== 1 ? 's' : ''}?
+          </p>
+          <p className="confirm-modal-detail">
+            These sales for <strong>{orphanPreview.cashier}</strong> total{' '}
+            <strong>{fmt.money(orphanPreview.total)}</strong> and fall inside this shift's time
+            window, but were never attached to it — Transactions already shows them; this shift's
+            totals and End of Day currently do not.
+          </p>
+          <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, margin: '0 0 16px' }}>
+            {orphanPreview.sales.map(s => (
+              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '6px 10px', fontSize: 12, borderBottom: '1px solid #f1f5f9' }}>
+                <span>{fmt.time(s.created_at)}</span>
+                <span>{s.receipt_number || `#${s.id}`}</span>
+                <span>{s.payment_method || 'Cash'}</span>
+                <span style={{ fontWeight: 700 }}>{fmt.money(s.total)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="confirm-modal-actions">
+            <button className="confirm-btn-cancel" onClick={() => setOrphanPreview(null)} disabled={relinkingOrphans}>Cancel</button>
+            <button className="confirm-btn-ok" onClick={handleConfirmRelink} disabled={relinkingOrphans} autoFocus>
+              {relinkingOrphans ? 'Relinking…' : 'Relink to this shift'}
+            </button>
+          </div>
+        </div>
+      </div>
     )}
     </>
   )

@@ -3,6 +3,7 @@ import { FiDownload, FiLock, FiPrinter, FiCheck, FiBarChart2 } from 'react-icons
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
+import { parseDbDate, formatDbTime } from '../utils/salesDay'
 import * as XLSX from 'xlsx'
 import { useAuthStore } from '../store/useAuthStore'
 import './Reports.css'
@@ -125,25 +126,27 @@ function Reports() {
   }
 
   const generateDailySalesReport = (sales, expenses, saleItems) => {
-    const selectedTime = new Date(selectedDate).getTime()
+    // parseDbDate throughout: created_at is UTC in the DB while selectedDate is a
+    // local calendar day — mixing raw new Date() parses shifts the window by 2h.
+    const selectedTime = parseDbDate(selectedDate).getTime()
     const dayStart = selectedTime
     const dayEnd = selectedTime + 24 * 60 * 60 * 1000
 
     const daySales = sales.filter(s => {
-      const saleTime = new Date(s.created_at).getTime()
+      const saleTime = parseDbDate(s.created_at)?.getTime()
       return s.status === 'completed' && saleTime >= dayStart && saleTime < dayEnd
     })
 
     const dayExpenses = expenses.filter(e => {
-      const expenseTime = new Date(e.date).getTime()
+      const expenseTime = parseDbDate(e.date)?.getTime()
       return expenseTime >= dayStart && expenseTime < dayEnd
     })
 
     const dayItems = saleItems.filter(si => {
       const sale = sales.find(s => s.id === si.sale_id)
-      return sale && sale.status === 'completed' &&
-        new Date(sale.created_at).getTime() >= dayStart &&
-        new Date(sale.created_at).getTime() < dayEnd
+      if (!sale || sale.status !== 'completed') return false
+      const saleTime = parseDbDate(sale.created_at)?.getTime()
+      return saleTime >= dayStart && saleTime < dayEnd
     })
 
     const totalRevenue = daySales.reduce((sum, s) => sum + (s.total || 0), 0)
@@ -175,27 +178,29 @@ function Reports() {
     })
     setPaymentBreakdown(paymentData)
     setChartData(daySales.map(s => ({
-      time: new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' }),
+      time: formatDbTime(s.created_at),
       amount: s.total || 0
     })))
     setTableData(daySales.map(s => ({
       ...s,
-      time: new Date(s.created_at).toLocaleTimeString('en-ZW', { hour: '2-digit', minute: '2-digit' })
+      time: formatDbTime(s.created_at)
     })))
   }
 
   const generateDateRangeSalesReport = (sales, expenses, saleItems) => {
-    const start = new Date(startDate).getTime()
-    const end = new Date(endDate).getTime() + 24 * 60 * 60 * 1000
+    // parseDbDate: created_at is UTC in the DB, start/end are local calendar days —
+    // parsing both through the same helper keeps the range boundaries honest.
+    const start = parseDbDate(startDate).getTime()
+    const end = parseDbDate(endDate).getTime() + 24 * 60 * 60 * 1000
 
     const dayData = {}
     const rangedSales = sales.filter(s => {
-      const saleTime = new Date(s.created_at).getTime()
+      const saleTime = parseDbDate(s.created_at)?.getTime()
       return s.status === 'completed' && saleTime >= start && saleTime < end
     })
 
     rangedSales.forEach(s => {
-      const date = new Date(s.created_at).toLocaleDateString('en-ZW')
+      const date = parseDbDate(s.created_at).toLocaleDateString('en-ZW')
       if (!dayData[date]) {
         dayData[date] = { date, revenue: 0, count: 0, cash: 0, transfer: 0, split: 0 }
       }
@@ -299,23 +304,23 @@ function Reports() {
   }
 
   const generateProfitLossReport = (sales, expenses, saleItems) => {
-    const start = new Date(startDate).getTime()
-    const end = new Date(endDate).getTime() + 24 * 60 * 60 * 1000
+    const start = parseDbDate(startDate).getTime()
+    const end = parseDbDate(endDate).getTime() + 24 * 60 * 60 * 1000
 
     const monthData = {}
-    
+
     const rangedSales = sales.filter(s => {
-      const saleTime = new Date(s.created_at).getTime()
+      const saleTime = parseDbDate(s.created_at)?.getTime()
       return s.status === 'completed' && saleTime >= start && saleTime < end
     })
 
     const rangedExpenses = expenses.filter(e => {
-      const expenseTime = new Date(e.date).getTime()
+      const expenseTime = parseDbDate(e.date)?.getTime()
       return expenseTime >= start && expenseTime < end
     })
 
     rangedSales.forEach(s => {
-      const date = new Date(s.created_at)
+      const date = parseDbDate(s.created_at)
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
       const monthLabel = date.toLocaleDateString('en-ZW', { month: 'short', year: 'numeric' })
       
@@ -326,7 +331,7 @@ function Reports() {
     })
 
     rangedExpenses.forEach(e => {
-      const date = new Date(e.date)
+      const date = parseDbDate(e.date)
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
       const monthLabel = date.toLocaleDateString('en-ZW', { month: 'short', year: 'numeric' })
       
@@ -338,13 +343,15 @@ function Reports() {
 
     const rangedSaleItems = saleItems.filter(si => {
       const sale = sales.find(s => s.id === si.sale_id && s.status === 'completed')
-      return sale && new Date(sale.created_at).getTime() >= start && new Date(sale.created_at).getTime() < end
+      if (!sale) return false
+      const saleTime = parseDbDate(sale.created_at)?.getTime()
+      return saleTime >= start && saleTime < end
     })
 
     rangedSaleItems.forEach(si => {
       const sale = sales.find(s => s.id === si.sale_id)
       if (sale) {
-        const date = new Date(sale.created_at)
+        const date = parseDbDate(sale.created_at)
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
         if (monthData[monthKey]) {
           monthData[monthKey].cogs += (si.quantity || 0) * (si.cost_price || 0)

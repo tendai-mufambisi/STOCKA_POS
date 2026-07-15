@@ -5,7 +5,7 @@ const fs = require('fs')
 // @plick/electron-pos-printer is incompatible with Electron 29 (sandbox defaults break its renderer IPC)
 // We use Electron's native webContents.print() directly instead.
 const logger = require('./logger')
-const { verifyLicense, saveLicense, loadLicense } = require('./license')
+const { verifyLicense, saveLicense, loadLicense, getRawKey } = require('./license')
 const { initDb, saveDb, closeDb } = require('./database/index')
 const { createTables, runMigrations } = require('./database/schema')
 const { registerAll: registerDomainIpc } = require('./database/ipc')
@@ -113,6 +113,26 @@ app.whenReady().then(async () => {
     app.on('before-quit', () => _stopLan())
     logger.info('✅ Database ready')
     logger.info('✅ LAN subsystem ready')
+
+    // Auto-close shifts left open from a previous day. Only on the authoritative DB
+    // (standalone/server) — satellites mirror shifts from Main via delta sync.
+    // Re-check every 30 min so a machine left running across midnight also rolls over.
+    const runStaleShiftCheck = () => {
+      try {
+        const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+        if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) return
+        const { closeStaleShifts } = require('./database/domains/shifts')
+        const closed = closeStaleShifts()
+        if (closed.length > 0) {
+          logger.info(`⏱️ Auto-closed ${closed.length} stale shift(s): ${closed.map(r => `${r.cashier}#${r.shiftId}`).join(', ')}`)
+          try { require('./lan/lanServer').broadcastChange('domain:shifts:close') } catch (_) {}
+        }
+      } catch (err) {
+        logger.error('Stale shift check failed: ' + err.message)
+      }
+    }
+    runStaleShiftCheck()
+    setInterval(runStaleShiftCheck, 30 * 60 * 1000)
   } catch (err) {
     logger.error('❌ Database init failed: ' + err.message)
     dialog.showErrorBox('Stocka - Database Error', 'Failed to initialize database: ' + err.message)
@@ -765,8 +785,12 @@ function generateReceiptCommands(receipt, shopInfo, isDuplicate = false) {
   // Left align for details
   commands.push(ESC + 'a' + String.fromCharCode(0))
 
-  // Sale info
-  const date = new Date(receipt.created_at || new Date())
+  // Sale info — DB timestamps are UTC without a zone marker; force UTC so the
+  // printed time is Zimbabwe local, not two hours in the past
+  const rawDate = String(receipt.created_at || '')
+  const date = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(rawDate)
+    ? new Date(rawDate.replace(' ', 'T') + 'Z')
+    : new Date(receipt.created_at || new Date())
   commands.push(`Date: ${formatDate(date)}  Time: ${formatTime(date)}\n`)
   commands.push(`Receipt No: ${receipt.receipt_number || 'N/A'}\n`)
   commands.push(`Cashier: ${receipt.cashier || 'N/A'}\n`)
@@ -945,6 +969,22 @@ ipcMain.handle('license:get-info', async () => {
   return { data: data || null }
 })
 
+ipcMain.handle('license:get-raw', async (event, { username, pin } = {}) => {
+  try {
+    if (!username || !pin) return { success: false, error: 'Missing credentials' }
+    const { getUserByUsername, validateUserPassword } = require('./database/domains/users')
+    const user = getUserByUsername(username)
+    if (!user || !validateUserPassword(user, String(pin))) {
+      return { success: false, error: 'Incorrect PIN' }
+    }
+    const key = getRawKey()
+    if (!key) return { success: false, error: 'No license found on this machine' }
+    return { success: true, key }
+  } catch (err) {
+    return { success: false, error: 'Failed to retrieve license key' }
+  }
+})
+
 // ══════════════════════════════════════════════════════════
 // DATABASE FILE OPERATIONS (backup/restore handled here)
 // ══════════════════════════════════════════════════════════
@@ -1021,6 +1061,67 @@ ipcMain.handle('db:restore', async (event, filename) => {
 
 ipcMain.handle('db:get-paths', async () => {
   return { success: true, dbPath: dbFilePath, backupsPath: backupsDirPath, userDataPath }
+})
+
+// ══════════════════════════════════════════════════════════
+// TILL IDENTITY — local-only per-machine code + label used to scope receipt
+// numbering (no cross-machine collisions) and to tag which till rang up a sale.
+// ══════════════════════════════════════════════════════════
+
+const tillIdentity = require('./lan/tillIdentity')
+
+ipcMain.handle('till:get-identity', () => tillIdentity.getTillIdentity(userDataPath) || { code: 'M', label: 'Main' })
+
+ipcMain.handle('till:set-label', (event, label) => {
+  if (typeof label !== 'string' || !label.trim() || label.length > 40) {
+    return { success: false, error: 'Label must be 1-40 characters.' }
+  }
+  return { success: true, identity: tillIdentity.setTillLabel(userDataPath, label.trim()) }
+})
+
+ipcMain.handle('till:next-receipt-number', () => {
+  const identity = tillIdentity.getTillIdentity(userDataPath) || { code: 'M' }
+  const { getDb } = require('./database/index')
+  return tillIdentity.nextReceiptNumber(userDataPath, identity.code, getDb)
+})
+
+// Test-data reset: wipe transactional history (sales, shifts, stock/expense/audit
+// history) while keeping products, stock levels, users, suppliers, branches and
+// shop settings. Admin PIN required; an automatic .db backup is taken first.
+ipcMain.handle('maintenance:reset-transactions', async (event, { username, pin } = {}) => {
+  try {
+    // Only the authoritative DB may be reset — a satellite mirrors Main's data
+    const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+    if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) {
+      return { success: false, error: 'This till mirrors the Main computer. Run the reset on the Main computer instead.' }
+    }
+
+    if (!username || !pin) return { success: false, error: 'Missing credentials' }
+    const { getUserByUsername, validateUserPassword } = require('./database/domains/users')
+    const user = getUserByUsername(username)
+    if (!user || user.role !== 'Admin' || !validateUserPassword(user, String(pin))) {
+      return { success: false, error: 'Incorrect admin PIN' }
+    }
+
+    // Safety net: full DB file backup before anything is deleted
+    await ensureBackupsDir()
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupFilename = `stocka_pre-reset_${timestamp}.db`
+    await fsPromises.copyFile(dbFilePath, path.join(backupsDirPath, backupFilename))
+
+    const { resetTransactionalData } = require('./database/domains/maintenance')
+    const result = resetTransactionalData()
+
+    logger.info(`🧹 Test-data reset by ${username} (backup: ${backupFilename})`)
+
+    // Satellites can't delete rows via delta sync — tell them to re-mirror
+    try { require('./lan/lanServer').broadcastResyncRequired() } catch (_) {}
+
+    return { ...result, backupFilename }
+  } catch (err) {
+    logger.error('maintenance:reset-transactions failed: ' + err.message)
+    return { success: false, error: err.message }
+  }
 })
 
 ipcMain.handle('db:export-file', async (event, destPath) => {

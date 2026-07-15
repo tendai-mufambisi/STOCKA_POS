@@ -32,7 +32,8 @@ function updateShop(id, shopData) {
       name = ?, address = ?, phone = ?, email = ?, currency = ?,
       printer_name = ?, printer_port = ?, auto_print = ?, print_duplicate = ?,
       receipt_width_mm = ?, receipt_footer = ?, receipt_name_size = ?,
-      vat_rate = ?, default_reorder_level = ?, variance_tolerance = ?
+      vat_rate = ?, default_reorder_level = ?, variance_tolerance = ?,
+      allow_admin_sales = ?, role_privileges = ?
      WHERE id = ?`
   ).run(
     shopData.name || '',
@@ -50,6 +51,8 @@ function updateShop(id, shopData) {
     shopData.vat_rate !== undefined ? shopData.vat_rate : 0,
     shopData.default_reorder_level || 5,
     shopData.variance_tolerance !== undefined ? shopData.variance_tolerance : 0.01,
+    shopData.allow_admin_sales ? 1 : 0,
+    shopData.role_privileges !== undefined ? shopData.role_privileges : null,
     id
   )
 }

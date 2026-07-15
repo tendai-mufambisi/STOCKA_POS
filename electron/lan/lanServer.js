@@ -14,6 +14,7 @@ const branches     = require('../database/domains/branches')
 const audit        = require('../database/domains/audit')
 const eod          = require('../database/domains/eod')
 const holds        = require('../database/domains/holds')
+const { allocateSatelliteCode } = require('./tillIdentity')
 
 // Channels that mutate data — used to decide what to broadcast over SSE and
 // notify the main-window renderer after a satellite write via /lan/invoke.
@@ -23,12 +24,13 @@ const WRITE_CHANNELS_SERVER = new Set([
   'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings', 'domain:stock:recordInitialCost',
-  'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
+  'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts', 'domain:stock:correctReceiving',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
   'domain:users:add', 'domain:users:update', 'domain:users:deactivate',
   'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales', 'domain:shifts:closeAll', 'domain:shifts:reopen',
+  'domain:shifts:reconcileOrphaned',
   'domain:notifications:create', 'domain:notifications:clearForProduct', 'domain:notifications:markRead',
   'domain:eod:add',
   'domain:audit:log', 'domain:audit:cleanup',
@@ -61,8 +63,20 @@ function broadcastEodClosed(date, closedBy) {
   }
 }
 
+// Called after Main wipes/resets its data. Delta sync can't remove rows on
+// satellites (upsert-only), so they must re-mirror from a full snapshot.
+function broadcastResyncRequired() {
+  if (sseClients.size === 0) return
+  const event = `data: ${JSON.stringify({ type: 'resync_required' })}\n\n`
+  for (const [id, res] of sseClients) {
+    try { res.write(event) }
+    catch (_) { sseClients.delete(id) }
+  }
+}
+
 // Set by createServer(); used inside route handlers (defined at module scope).
 let _notifyMain = null
+let _userDataPath = null
 
 // Unified dispatch table: maps IPC channel → domain function.
 // Used by POST /lan/invoke so client satellites can proxy any domain call.
@@ -107,6 +121,7 @@ const DISPATCH = {
   'domain:stock:recordInitialCost':   (...a) => stockDomain.recordInitialCost(...a),
   'domain:stock:reconcileProduct':    (...a) => stockDomain.reconcileProduct(...a),
   'domain:stock:reconcileProducts':   (...a) => stockDomain.reconcileProducts(...a),
+  'domain:stock:correctReceiving':    (...a) => stockDomain.correctStockReceiving(...a),
 
   'domain:sales:add':           (...a) => sales.addSale(...a),
   'domain:sales:getAll':        () => sales.getSales(),
@@ -123,6 +138,7 @@ const DISPATCH = {
   'domain:sales:getReceipt':    (...a) => sales.getReceiptBySaleId(...a),
   'domain:sales:updateReceipt': (...a) => sales.updateSaleReceiptNumber(...a),
   'domain:sales:getByShift':    (...a) => sales.getSalesByShift(...a),
+  'domain:sales:getByTill':     (...a) => sales.getSalesByTillCode(...a),
 
   'domain:expenses:add':    (...a) => expenses.addExpense(...a),
   'domain:expenses:getAll': () => expenses.getExpenses(),
@@ -151,6 +167,8 @@ const DISPATCH = {
   'domain:shifts:getSummary':     (...a) => shifts.getShiftSummary(...a),
   'domain:shifts:closeAll':       (...a) => shifts.closeAllOpenShifts(...a),
   'domain:shifts:reopen':         (...a) => shifts.reopenShift(...a),
+  'domain:shifts:previewOrphaned':   (...a) => shifts.previewOrphanedSales(...a),
+  'domain:shifts:reconcileOrphaned': (...a) => shifts.reconcileOrphanedSales(...a),
 
   'domain:notifications:create':          (...a) => notifications.createNotification(...a),
   'domain:notifications:getActive':       () => notifications.getActiveNotifications(),
@@ -426,7 +444,14 @@ const ROUTES = [
     // SQLite string comparison: space (0x20) < T (0x54), so any SQLite-format date
     // is always "less than" a JS ISO string at the same instant — making every delta
     // query return nothing after the first sync. Convert before querying.
-    const sinceForSql = since.replace('T', ' ').replace(/\.\d{3}Z?$|Z$/, '')
+    //
+    // Overlap window: timestamps have 1-second resolution and the queries use strict '>',
+    // so a row written in the same second as the cursor would be skipped forever once the
+    // cursor advances. Rewind the cursor 3s; client upserts are INSERT OR REPLACE, so the
+    // few re-sent rows are harmless.
+    const sinceMs = Date.parse(since)
+    const sinceForSql = (Number.isFinite(sinceMs) ? new Date(sinceMs - 3000).toISOString() : since)
+      .replace('T', ' ').replace(/\.\d{3}Z?$|Z$/, '')
     const { getDb } = require('../database/index')
     const db = getDb()
     send(res, 200, {
@@ -472,8 +497,9 @@ const ROUTES = [
 
 // ── Server factory ────────────────────────────────────────────────────────────
 
-function createServer(secret, port, notifyMain) {
+function createServer(secret, port, notifyMain, userDataPath) {
   _notifyMain = notifyMain || null
+  _userDataPath = userDataPath || null
   async function router(req, res) {
     const url = new URL(req.url, 'http://x')
     const pathname = url.pathname
@@ -486,7 +512,8 @@ function createServer(secret, port, notifyMain) {
         mode: 'server',
         version: 2,
         shopName: shopInfo?.name || 'Stocka',
-        port
+        port,
+        serverTime: new Date().toISOString(),
       })
     }
 
@@ -515,9 +542,13 @@ function createServer(secret, port, notifyMain) {
       }
 
       _pairing = null // one-time use
-      logger.info(`[LAN Server] Satellite at ${remoteIp} paired successfully`)
+      // Hand out a till code this satellite will keep forever — its receipt
+      // numbers are scoped to this code, so it can never collide with Main's
+      // or another satellite's numbering, even fully offline.
+      const tillCode = allocateSatelliteCode(_userDataPath)
+      logger.info(`[LAN Server] Satellite at ${remoteIp} paired successfully — assigned till code ${tillCode}`)
       const shopInfo = (() => { try { return shop.getShop() } catch (_) { return null } })()
-      return send(res, 200, { secret, shopName: shopInfo?.name || 'Stocka' })
+      return send(res, 200, { secret, shopName: shopInfo?.name || 'Stocka', tillCode })
     }
 
     // Auth check
@@ -577,4 +608,4 @@ function getConnectedClients() {
   return [...clients.values()].filter(c => c.lastSeen > cutoff)
 }
 
-module.exports = { createServer, getConnectedClients, generatePairingCode, getPairingInfo, broadcastEodClosed, broadcastChange, WRITE_CHANNELS_SERVER }
+module.exports = { createServer, getConnectedClients, generatePairingCode, getPairingInfo, broadcastEodClosed, broadcastChange, broadcastResyncRequired, WRITE_CHANNELS_SERVER }

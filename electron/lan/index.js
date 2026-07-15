@@ -5,6 +5,7 @@ const { createServer, getConnectedClients, generatePairingCode, getPairingInfo, 
 const { startBeacon, scanForServers, getLocalIp } = require('./lanDiscovery')
 const { OfflineQueue } = require('./offlineQueue')
 const { updateMakeHandler } = require('../database/ipc')
+const { setTillIdentityFromPairing, ensureMainIdentity } = require('./tillIdentity')
 
 let _server = null
 let _stopBeacon = null
@@ -34,10 +35,30 @@ function getStatus() {
     clientCount: clients.length,
     clients,
     queueSize:   rawQueue.length,
-    queueItems:  rawQueue.map(item => ({ id: item.id, channel: item.channel, timestamp: item.timestamp })),
-    serverIp:    cfg.serverIp || null,
-    clientOnline: clientStatus?.online ?? null,
-    lastSync:    clientStatus?.lastSync ?? null,
+    // Enrich sale writes so a "this till" view can show real details (amount,
+    // receipt number, item count) for sales still waiting to reach Main —
+    // not just an opaque "1 write pending".
+    queueItems:  rawQueue.map(item => {
+      const base = { id: item.id, channel: item.channel, timestamp: item.timestamp }
+      if (item.channel === 'domain:sales:add' && item.args?.[0]) {
+        const sale = item.args[0]
+        base.summary = {
+          total: sale.total || 0,
+          cashier: sale.cashier || null,
+          receiptNumber: sale.receipt_number || null,
+          paymentMethod: sale.payment_method || null,
+          itemCount: Array.isArray(item.args[1]) ? item.args[1].length : 0,
+        }
+      }
+      return base
+    }),
+    serverIp:         cfg.serverIp || null,
+    clientOnline:     clientStatus?.online ?? null,
+    clientConnecting: clientStatus?.connecting ?? false,
+    lastSync:         clientStatus?.lastSync ?? null,
+    lastSyncAt:       clientStatus?.lastSyncAt ?? null,
+    lastSyncError:    clientStatus?.lastSyncError ?? null,
+    clockSkewMs:      clientStatus?.clockSkewMs ?? 0,
   }
 }
 
@@ -72,7 +93,7 @@ function startServerMode(cfg, secret) {
   const shopName = shop?.name || 'Stocka'
 
   logger.info(`[LAN] Starting Main Computer (server) mode on port ${port}`)
-  _server = createServer(secret, port, (ch, data) => notifyRenderer(ch, data))
+  _server = createServer(secret, port, (ch, data) => notifyRenderer(ch, data), _userDataPath)
   _server.listen(port, '0.0.0.0', () => {
     logger.info(`[LAN Server] Listening on 0.0.0.0:${port}`)
     notifyRenderer('lan:status-changed', getStatus())
@@ -95,7 +116,12 @@ function startClientMode(cfg, secret) {
   _clientMod.startClient(
     { serverIp: cfg.serverIp, serverPort: cfg.serverPort || DEFAULT_PORT, secret },
     _queue,
-    (ch, data) => notifyRenderer(ch, data)
+    (ch, data) => {
+      // Always send the full status shape for lan:status-changed so the renderer
+      // always gets mode + all fields, not just the partial client status object.
+      if (ch === 'lan:status-changed') notifyRenderer(ch, getStatus())
+      else notifyRenderer(ch, data)
+    }
   )
 }
 
@@ -112,6 +138,10 @@ function initLan(userDataPath, getMainWindow) {
 
   const cfg = getLanConfig(userDataPath)
   const secret = getOrCreateSecret(userDataPath)
+
+  // Main is always its own authority — standalone and server modes both get
+  // the fixed till code 'M', assigned once and kept forever.
+  if (cfg.mode !== LAN_MODES.CLIENT) ensureMainIdentity(userDataPath)
 
   let lanMakeHandler = null
 
@@ -155,6 +185,7 @@ function initLan(userDataPath, getMainWindow) {
       saveLanConfig(_userDataPath, merged)
 
       const sec = getOrCreateSecret(_userDataPath)
+      if (merged.mode !== LAN_MODES.CLIENT) ensureMainIdentity(_userDataPath)
 
       // Stop everything, then restart in the new mode
       stopLan()
@@ -206,7 +237,8 @@ function initLan(userDataPath, getMainWindow) {
       const lanClient = require('./lanClient')
       const port = parseInt(serverPort) || DEFAULT_PORT
       try {
-        const { secret, shopName } = await lanClient.pair(serverIp, port, code)
+        const { secret, shopName, tillCode } = await lanClient.pair(serverIp, port, code)
+        if (tillCode) setTillIdentityFromPairing(_userDataPath, tillCode)
 
         const current = getLanConfig(_userDataPath)
         const merged = { ...current, mode: LAN_MODES.CLIENT, serverIp, serverPort: port, secret }
@@ -256,6 +288,13 @@ function initLan(userDataPath, getMainWindow) {
         return { ok: true, status: getStatus() }
       }
       return { ok: false, error: 'Not in client mode' }
+    }],
+
+    ['lan:clear-queue', () => {
+      if (!_queue) return { ok: false, error: 'No queue.' }
+      _queue.clear()
+      notifyRenderer('lan:status-changed', getStatus())
+      return { ok: true }
     }],
   ]
 

@@ -1,4 +1,7 @@
 const http = require('http')
+const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
 const logger = require('../logger')
 
 // Channels whose writes must be proxied to the server (reads use local DB cache).
@@ -10,11 +13,13 @@ const WRITE_CHANNELS = new Set([
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings',
   'domain:stock:recordInitialCost', 'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
+  'domain:stock:correctReceiving',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
   'domain:users:add', 'domain:users:update', 'domain:users:deactivate',
   'domain:shifts:start', 'domain:shifts:close', 'domain:shifts:updateSales', 'domain:shifts:closeAll', 'domain:shifts:reopen',
+  'domain:shifts:reconcileOrphaned',
   'domain:notifications:create', 'domain:notifications:clearForProduct', 'domain:notifications:markRead',
   'domain:eod:add',
   'domain:audit:log', 'domain:audit:cleanup',
@@ -27,6 +32,7 @@ const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handle
 
 let _cfg = null          // { serverIp, serverPort, secret }
 let _online = false
+let _connecting = false  // true from startClient() until the first ping result arrives
 let _lastSync = '1970-01-01T00:00:00.000Z'
 let _pingTimer = null
 let _syncTimer = null
@@ -34,6 +40,11 @@ let _queue = null
 let _notify = null       // (channel, data) => void
 let _lastPingError = null // last network error code/message from a failed ping, for diagnostics
 let _eventStream = null  // active SSE request (held open for push notifications)
+// Sync health, kept on THIS machine's clock (the cursor `_lastSync` is Main's clock
+// and lies to the user whenever Main's clock/timezone is wrong):
+let _lastSyncSuccessAt = null // Date.now() of the last successfully applied delta
+let _lastSyncError = null     // message of the most recent delta failure, null when healthy
+let _clockSkewMs = 0          // |this machine − Main| from the last ping
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -87,8 +98,9 @@ function pair(serverIp, serverPort, code) {
             logger.warn(`[LAN Client] Pairing rejected by ${serverIp}:${serverPort} (HTTP ${res.statusCode}): ${parsed.error}`)
             return reject(new Error(parsed.error || `Pairing failed (HTTP ${res.statusCode})`))
           }
-          logger.info(`[LAN Client] Paired successfully with "${parsed.shopName}" at ${serverIp}:${serverPort}`)
-          resolve(parsed) // { secret, shopName }
+          logger.info(`[LAN Client] Paired successfully with "${parsed.shopName}" at ${serverIp}:${serverPort}` +
+            (parsed.tillCode ? ` — assigned till code ${parsed.tillCode}` : ''))
+          resolve(parsed) // { secret, shopName, tillCode }
         } catch { reject(new Error('Invalid response from server')) }
       })
     })
@@ -118,7 +130,8 @@ const SNAPSHOT_WIPE_TABLES = [
 ]
 
 async function applyFullSnapshot(serverIp, serverPort, secret) {
-  const { status, body } = await httpRequestTo(serverIp, serverPort, secret, 'GET', '/lan/snapshot', null, 20000)
+  // 60s: the snapshot carries the whole catalog including base64 product images
+  const { status, body } = await httpRequestTo(serverIp, serverPort, secret, 'GET', '/lan/snapshot', null, 60000)
   if (status !== 200) throw new Error(body?.error || `Snapshot fetch failed (HTTP ${status})`)
 
   const { getDb } = require('../database/index')
@@ -126,7 +139,10 @@ async function applyFullSnapshot(serverIp, serverPort, secret) {
 
   const upsert = (table, rows) => {
     if (!Array.isArray(rows) || !rows.length) return
-    const cols = Object.keys(rows[0])
+    // Skip columns this machine's schema doesn't have (mixed-version safety)
+    const tableCols = new Set(db.pragma(`table_info(${table})`).map(c => c.name))
+    const cols = Object.keys(rows[0]).filter(c => tableCols.has(c))
+    if (!cols.length) return
     const stmt = db.prepare(
       `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
     )
@@ -177,15 +193,29 @@ async function lanRequest(channel, args) {
 }
 
 async function ping() {
+  if (!_cfg) return false
   return new Promise((resolve) => {
     const opts = {
       hostname: _cfg.serverIp, port: _cfg.serverPort,
       path: '/lan/ping', method: 'GET', timeout: 3000,
     }
     const req = http.request(opts, (res) => {
-      res.resume() // drain
-      _lastPingError = null
-      resolve(res.statusCode === 200)
+      let raw = ''
+      res.on('data', c => raw += c)
+      res.on('end', () => {
+        _lastPingError = null
+        try {
+          const body = JSON.parse(raw)
+          if (body.serverTime) {
+            const skewMs = Math.abs(Date.now() - new Date(body.serverTime).getTime())
+            _clockSkewMs = skewMs
+            if (skewMs > 60000 && _notify) {
+              _notify('lan:clock-skew', { skewMs, serverTime: body.serverTime })
+            }
+          }
+        } catch (_) {}
+        resolve(res.statusCode === 200)
+      })
     })
     req.on('timeout', () => { req.destroy(); _lastPingError = 'ETIMEDOUT'; resolve(false) })
     req.on('error', (e) => { _lastPingError = e.code || e.message; resolve(false) })
@@ -200,20 +230,40 @@ const PRINTER_COLS = ['printer_name', 'printer_port', 'auto_print', 'print_dupli
 // ── Sync: pull changes from server and apply to local DB ──────────────────────
 
 async function syncFromServer() {
+  if (!_cfg) return
   try {
-    const { status, body } = await httpRequest('GET', `/lan/changes?since=${encodeURIComponent(_lastSync)}`, null, 10000)
-    if (status !== 200) return
+    // 30s: product deltas can carry base64 images and must survive slow shop WiFi —
+    // a timeout here doesn't advance the cursor, so a too-tight limit can wedge sync.
+    const { status, body } = await httpRequest('GET', `/lan/changes?since=${encodeURIComponent(_lastSync)}`, null, 30000)
+    if (status !== 200) {
+      _lastSyncError = `Main answered HTTP ${status}`
+      return
+    }
 
     const { getDb } = require('../database/index')
     const db = getDb()
 
     const upsert = (table, rows) => {
       if (!Array.isArray(rows) || !rows.length) return
-      const cols = Object.keys(rows[0])
+      // Only insert columns this satellite's table actually has — a newer Main can
+      // ship columns an older satellite lacks, and that must not wedge sync forever.
+      const tableCols = new Set(db.pragma(`table_info(${table})`).map(c => c.name))
+      const cols = Object.keys(rows[0]).filter(c => tableCols.has(c))
+      if (!cols.length) return
       const stmt = db.prepare(
         `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
       )
-      db.transaction((r) => { for (const row of r) stmt.run(cols.map(c => row[c])) })(rows)
+      try {
+        db.transaction((r) => { for (const row of r) stmt.run(cols.map(c => row[c])) })(rows)
+      } catch (err) {
+        // One poison row must not freeze the cursor forever: apply what we can,
+        // log what we can't, and let the sync advance.
+        logger.error(`[LAN Client] Delta apply failed for ${table} (${err.message}) — retrying row-by-row`)
+        for (const row of rows) {
+          try { stmt.run(cols.map(c => row[c])) }
+          catch (rowErr) { logger.error(`[LAN Client] Skipped ${table} row id=${row.id}: ${rowErr.message}`) }
+        }
+      }
     }
 
     // Snapshot row counts for always-full tables BEFORE upserting so we can
@@ -242,7 +292,8 @@ async function syncFromServer() {
           if (localShop[col] !== undefined) merged[col] = localShop[col]
         }
       }
-      const cols = Object.keys(merged)
+      const shopCols = new Set(db.pragma('table_info(shops)').map(c => c.name))
+      const cols = Object.keys(merged).filter(c => shopCols.has(c))
       db.prepare(
         `INSERT OR REPLACE INTO shops (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
       ).run(cols.map(c => merged[c]))
@@ -264,29 +315,82 @@ async function syncFromServer() {
       JSON.stringify(db.prepare('SELECT * FROM shops LIMIT 1').get() || {}) !== prevShopHash
 
     _lastSync = body.fetched_at || new Date().toISOString()
+    _lastSyncSuccessAt = Date.now()
+    _lastSyncError = null
     if (hasChanges && _notify) _notify('lan:synced', { lastSync: _lastSync })
   } catch (err) {
+    _lastSyncError = err.code || err.message
     logger.warn(`[LAN Client] Sync from server failed: ${err.code || err.message}`)
   }
 }
 
 // ── Offline queue flush ───────────────────────────────────────────────────────
 
-async function flushQueue() {
-  if (!_queue || _queue.size() === 0) return
-  const failures = await _queue.flush(async (channel, args) => {
-    const result = await lanRequest(channel, args)
-    // lanRequest throws on error, so reaching here means success
-    return result
-  })
-  if (failures.length > 0 && _notify) {
-    _notify('lan:sync-failures', failures.map(f => ({
-      channel: f.item.channel,
-      error: f.error,
-      queuedAt: f.item.timestamp,
-    })))
+let _flushing = false
+let _lastFailureSig = null
+
+// Writes the server permanently rejected are archived here (next to the queue file)
+// so they are never lost even after being taken off the retry queue.
+function archiveDeadLetters(deadLettered) {
+  try {
+    const file = path.join(path.dirname(_queue.path), 'failed_writes.json')
+    let existing = []
+    try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) } catch (_) {}
+    existing.push(...deadLettered.map(f => ({ ...f.item, error: f.error, failedAt: new Date().toISOString() })))
+    fs.writeFileSync(file, JSON.stringify(existing, null, 2), 'utf8')
+  } catch (err) {
+    logger.error('[LAN Client] Could not archive rejected writes: ' + err.message)
   }
-  if (_notify) _notify('lan:status-changed', getClientStatus())
+}
+
+async function flushQueue() {
+  if (!_queue || _queue.size() === 0 || _flushing) return
+  _flushing = true
+  try {
+    const { failed, deadLettered } = await _queue.flush(async (channel, args) => {
+      // Replayed sales must always be recorded on Main — the cashier already took
+      // the money. The server clamps stock at 0 and raises a discrepancy
+      // notification instead of rejecting (sales.addSale `replayed` flag).
+      if (channel === 'domain:sales:add' && args[0]) {
+        args = [{ ...args[0], replayed: true }, ...args.slice(1)]
+      }
+      try {
+        return await lanRequest(channel, args)
+      } catch (err) {
+        // 4xx = the server examined and refused this write; retrying is pointless.
+        // Mark permanent so the queue dead-letters it (same rule as the inline path).
+        if (err.httpStatus && err.httpStatus >= 400 && err.httpStatus < 500) err.permanent = true
+        throw err
+      }
+    })
+
+    if (deadLettered.length > 0) {
+      archiveDeadLetters(deadLettered)
+      logger.error(`[LAN Client] ${deadLettered.length} queued write(s) permanently rejected by Main — archived to failed_writes.json: ` +
+        deadLettered.map(f => `${f.item.channel} (${f.error})`).join('; '))
+    }
+
+    // Surface EVERY failure — including items queued before this app launch.
+    // (Silently dropping pre-launch items is how a whole day of sales once
+    // vanished without anyone being told.) Dedup so the periodic retry doesn't
+    // re-notify the same unchanged failure set every few seconds.
+    const all = [
+      ...deadLettered.map(f => ({ channel: f.item.channel, error: f.error, queuedAt: f.item.timestamp, permanent: true })),
+      ...failed.map(f => ({ channel: f.item.channel, error: f.error, queuedAt: f.item.timestamp, permanent: false })),
+    ]
+    if (all.length > 0 && _notify) {
+      const sig = [...deadLettered, ...failed].map(f => `${f.item.id}:${f.error}`).join('|')
+      if (sig !== _lastFailureSig) {
+        _lastFailureSig = sig
+        _notify('lan:sync-failures', all)
+      }
+    } else if (all.length === 0) {
+      _lastFailureSig = null
+    }
+    if (_notify) _notify('lan:status-changed', getClientStatus())
+  } finally {
+    _flushing = false
+  }
 }
 
 // ── Online/offline transition ────────────────────────────────────────────────
@@ -320,6 +424,13 @@ function makeHandler(channel, fn) {
 
   // WRITE: proxy to server; queue if offline
   return async (event, ...args) => {
+    // Stamp a unique key onto sales before they are sent or queued so that if the
+    // network drops after the server commits but before the response arrives, the
+    // queued retry is deduplicated on the server and won't create a duplicate sale.
+    if (channel === 'domain:sales:add' && args[0] && !args[0].external_id) {
+      args = [{ ...args[0], external_id: crypto.randomUUID() }, ...args.slice(1)]
+    }
+
     if (!_online) {
       if (_queue) _queue.enqueue(channel, args)
       if (_notify) _notify('lan:status-changed', getClientStatus())
@@ -332,7 +443,13 @@ function makeHandler(channel, fn) {
       await syncFromServer()
       return result
     } catch (err) {
-      // Network died mid-request — queue it
+      // Server rejected the write (validation, constraint, auth) — return the error
+      // directly to the renderer. These failures are permanent; retrying won't help.
+      if (err.httpStatus && err.httpStatus >= 400 && err.httpStatus < 500) {
+        logger.warn(`[LAN Client] Write "${channel}" rejected by server (HTTP ${err.httpStatus}): ${err.message}`)
+        return { __error: err.message }
+      }
+      // Network died mid-request — queue it for retry when connection comes back
       logger.warn(`[LAN Client] Write "${channel}" failed (${err.code || err.message}) — queued for retry`)
       if (_queue) _queue.enqueue(channel, args)
       setOnline(false)
@@ -373,6 +490,11 @@ function connectEventStream() {
             const ev = JSON.parse(line.slice(6))
             if (ev.type === 'change') syncFromServer()
             if (ev.type === 'eod_closed' && _notify) _notify('lan:eod-closed', { date: ev.date, closedBy: ev.closedBy })
+            // Main wiped/reset its data — a delta pull can't remove rows, so re-mirror from scratch
+            if (ev.type === 'resync_required' && _cfg) {
+              applyFullSnapshot(_cfg.serverIp, _cfg.serverPort, _cfg.secret)
+                .catch(err => logger.error(`[LAN Client] Resync after server reset failed: ${err.message}`))
+            }
           } catch (_) {}
         }
       }
@@ -398,10 +520,11 @@ function startClient(cfg, queue, notifyFn) {
   _queue = queue
   _notify = notifyFn
   _online = false
+  _connecting = true
   _lastSync = '1970-01-01T00:00:00.000Z'
 
-  // Kick off first ping immediately
-  ping().then(setOnline)
+  // Kick off first ping immediately; clear connecting flag once we have a result
+  ping().then(ok => { _connecting = false; setOnline(ok) })
 
   _pingTimer = setInterval(async () => {
     const up = await ping()
@@ -409,7 +532,12 @@ function startClient(cfg, queue, notifyFn) {
   }, PING_INTERVAL_MS)
 
   _syncTimer = setInterval(() => {
-    if (_online) syncFromServer()
+    if (_online) {
+      syncFromServer()
+      // Retry queued writes continuously, not just on the offline→online edge —
+      // a queue carried across an app restart previously never retried.
+      if (_queue && _queue.size() > 0) flushQueue()
+    }
   }, SYNC_INTERVAL_MS)
 
   // Open SSE channel for instant push notifications from the server
@@ -421,13 +549,18 @@ function stopClient() {
   if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null }
   if (_eventStream) { try { _eventStream.destroy() } catch (_) {} ; _eventStream = null }
   _online = false
+  _connecting = false
   _cfg = null
 }
 
 function getClientStatus() {
   return {
     online: _online,
-    lastSync: _lastSync,
+    connecting: _connecting,
+    lastSync: _lastSync,               // sync cursor — Main's clock, for sync logic only
+    lastSyncAt: _lastSyncSuccessAt,    // local Date.now() of last applied delta — use for display
+    lastSyncError: _lastSyncError,     // most recent delta failure, null when healthy
+    clockSkewMs: _clockSkewMs,         // |this machine − Main| from the last ping
     queueSize: _queue ? _queue.size() : 0,
     serverIp: _cfg?.serverIp || null,
     serverPort: _cfg?.serverPort || null,

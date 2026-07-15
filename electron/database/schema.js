@@ -247,6 +247,10 @@ function runMigrations(db) {
     addColIfMissing('sales', 'voided_at', 'TEXT')
     addColIfMissing('sales', 'shift_id', 'INTEGER')
     addColIfMissing('sales', 'receipt_number', 'TEXT')
+    // Which till (Main='M' or satellite='S1','S2'…) rang this sale up — local-only
+    // identity, never reassigned, used to scope receipt numbering per-till so two
+    // machines can never issue the same receipt number.
+    addColIfMissing('sales', 'till_code', 'TEXT')
 
     // products
     addColIfMissing('products', 'shop_id', 'TEXT')
@@ -255,6 +259,11 @@ function runMigrations(db) {
 
     // transaction_audit_log
     addColIfMissing('transaction_audit_log', 'machine_name', 'TEXT')
+
+    // stock_receivings — corrections are append-only rows whose total_units/total_value
+    // hold the signed delta and which point at the receiving they correct
+    addColIfMissing('stock_receivings', 'corrects_receiving_id', 'INTEGER')
+    addColIfMissing('stock_receivings', 'correction_reason', 'TEXT')
 
     // expenses
     addColIfMissing('expenses', 'shift_id', 'INTEGER')
@@ -273,6 +282,11 @@ function runMigrations(db) {
     addColIfMissing('shops', 'vat_rate', 'REAL DEFAULT 0')
     addColIfMissing('shops', 'default_reorder_level', 'INTEGER DEFAULT 5')
     addColIfMissing('shops', 'variance_tolerance', 'REAL DEFAULT 0.01')
+    // 0 = admins cannot sell (default) — grantable via Settings → Business Rules
+    addColIfMissing('shops', 'allow_admin_sales', 'INTEGER DEFAULT 0')
+    // JSON per-role sidebar overrides, e.g. {"Cashier":{"my-transactions":false}}
+    // NULL = defaults from src/utils/rolePrivileges.js — set via Settings → Role Privileges
+    addColIfMissing('shops', 'role_privileges', 'TEXT')
 
     // expenses
     addColIfMissing('expenses', 'payment_method', "TEXT DEFAULT 'Cash'")
