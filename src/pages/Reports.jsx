@@ -6,6 +6,7 @@ import { hasPermission } from '../utils/permissions'
 import { parseDbDate, formatDbTime } from '../utils/salesDay'
 import * as XLSX from 'xlsx'
 import { useAuthStore } from '../store/useAuthStore'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import './Reports.css'
 
 function Reports() {
@@ -26,6 +27,7 @@ function Reports() {
   const [shopInfo, setShopInfo] = useState(null)
   const [printerSettings, setPrinterSettings] = useState(null)
   const [reprintingId, setReprintingId] = useState(null)
+  const { printReceipt, printError } = useReceiptPrinter()
 
   useEffect(() => {
     loadReportData()
@@ -48,7 +50,7 @@ function Reports() {
   }
 
   const handleReprintReceipt = async (saleId) => {
-    if (!printerSettings?.printer_port) {
+    if (!printerSettings?.printer_name && !printerSettings?.printer_port) {
       setError('Printer not configured. Please set up a printer in Settings.')
       setTimeout(() => setError(''), 4000)
       return
@@ -65,20 +67,17 @@ function Reports() {
         return
       }
 
-      // Send to printer
-      const printResult = await window.stocka.printer.printReceipt(
-        printerSettings.printer_port,
-        receipt,
-        shopInfo,
-        true // Mark as reprint
-      )
+      // Send to printer — same path as the Sales page (Windows printer name,
+      // falling back to Bluetooth serial port when no name is configured)
+      const ok = await printReceipt(receipt, shopInfo, {
+        printerName: printerSettings.printer_name || '',
+        portPath: printerSettings.printer_port || '',
+        isDuplicate: true
+      })
 
-      if (printResult.success) {
+      if (ok) {
         setSuccess('Receipt reprinted successfully')
         setTimeout(() => setSuccess(''), 3000)
-      } else {
-        setError(`Reprint failed: ${printResult.error || 'Unknown error'}`)
-        setTimeout(() => setError(''), 4000)
       }
     } catch (err) {
       console.error('Reprint error:', err)
@@ -508,7 +507,7 @@ function Reports() {
 
   return (
     <div className="reports-page">
-      {error && <div className="error-banner">{error}</div>}
+      {(error || printError) && <div className="error-banner">{error || printError}</div>}
       {success && <div className="success-banner">{success}</div>}
 
       <div className="report-controls">
@@ -723,7 +722,7 @@ function Reports() {
                       <td>{row.payment_method || 'Cash'}</td>
                       <td>{row.cashier || 'System'}</td>
                       <td>
-                        {row.id && printerSettings?.printer_port && (
+                        {row.id && (printerSettings?.printer_name || printerSettings?.printer_port) && (
                           <button
                             className="btn btn-small btn-secondary"
                             onClick={() => handleReprintReceipt(row.id)}

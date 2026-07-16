@@ -4,6 +4,7 @@ import {
   getAllShifts, getShiftSummary, closeAllOpenShifts,
 } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
+import { useShiftStore } from '../store/useShiftStore'
 import { parseDbDate, localDateStr } from '../utils/salesDay'
 import './EndOfDay.css'
 import {
@@ -35,6 +36,7 @@ function varianceStatus(v) {
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function EndOfDay() {
   const { user } = useAuthStore()
+  const { clearShift } = useShiftStore()
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState('')
   const [todaysRecord, setTodaysRecord] = useState(null)
@@ -142,14 +144,17 @@ export default function EndOfDay() {
     setClosing(true)
     setError('')
     try {
-      // 1. Force-close all still-open shifts with the admin-entered cash
-      const shiftsToClose = openShifts.filter(s => s.cashier_username !== user?.username)
-      if (shiftsToClose.length > 0) {
-        const closingData = shiftsToClose.map(s => ({
+      // 1. Force-close all still-open shifts with the admin-entered cash —
+      // including the admin's own shift. Excluding it deadlocked Close Day:
+      // the shift stayed open, so the page bounced back here on every attempt.
+      if (openShifts.length > 0) {
+        const closingData = openShifts.map(s => ({
           shiftId:     s.id,
           closingCash: parseFloat(cashInputs[s.id]) || 0,
         }))
         await closeAllOpenShifts(closingData, 'Closed by End of Day')
+        // If our own shift was among them, the shift store is now stale.
+        if (openShifts.some(s => s.cashier_username === user?.username)) clearShift()
       }
 
       // 2. Save EOD record

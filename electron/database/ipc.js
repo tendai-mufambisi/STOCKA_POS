@@ -82,6 +82,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:stock:getExpiring',     h('domain:stock:getExpiring',     stock.getExpiringProducts))
   ipcMain.handle('domain:stock:getExpired',      h('domain:stock:getExpired',      stock.getExpiredProducts))
   ipcMain.handle('domain:stock:getExpiryReport',    h('domain:stock:getExpiryReport',    stock.getExpiryReport))
+  ipcMain.handle('domain:stock:discardExpiredBatch', h('domain:stock:discardExpiredBatch', stock.discardExpiredBatch))
   ipcMain.handle('domain:stock:importReceivings',   h('domain:stock:importReceivings',   stock.importStockReceivings))
   ipcMain.handle('domain:stock:reconcileProduct',   h('domain:stock:reconcileProduct',   stock.reconcileProduct))
   ipcMain.handle('domain:stock:reconcileProducts',  h('domain:stock:reconcileProducts',  stock.reconcileProducts))

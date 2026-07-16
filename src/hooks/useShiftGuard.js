@@ -70,13 +70,16 @@ export function useShiftGuard() {
     return () => off?.()
   }, [checkShift])
 
-  // Local machine: react to the IPC push that fires right after closeAllOpenShifts
+  // Local machine: react to the IPC push that fires right after closeAllOpenShifts.
+  // Cashiers only — the admin/manager who ran Close Day (whose own shift may be in
+  // the batch) must not be shown the force-close logout modal for their own action.
   useEffect(() => {
+    if (!user || user.role !== 'Cashier') return
     const shifts = window.stocka?.shifts
     if (!shifts?.onForceClose) return
     const off = shifts.onForceClose(triggerForceClose)
     return () => off?.()
-  }, [triggerForceClose])
+  }, [user, triggerForceClose])
 
   // ── Provisional-shift auto-heal (all roles) ──────────────────────────────
   // If startShift got queued (Main unreachable at that instant), Dashboard stores a

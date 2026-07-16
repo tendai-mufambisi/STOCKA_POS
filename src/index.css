@@ -24,6 +24,31 @@ body {
   --text-primary: #1a1a1a;
   --text-secondary: #555555;
   --shadow: 0 4px 20px rgba(0,0,0,0.1);
+
+  /* Neutral scale (slate) */
+  --slate-900: #0f172a;
+  --slate-600: #475569;
+  --slate-500: #64748b;
+  --slate-400: #94a3b8;
+  --slate-300: #cbd5e1;
+  --slate-200: #e2e8f0;
+  --slate-100: #f1f5f9;
+  --slate-50:  #f8fafc;
+
+  /* Bright gold used for sidebar active accents */
+  --gold-bright: #f5c842;
+
+  /* Surfaces & elevation */
+  --surface: #ffffff;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-xs: 0 1px 4px rgba(0,0,0,0.04);
+  --shadow-sm: 0 4px 14px rgba(0,0,0,0.07);
+  --shadow-md: 0 8px 24px rgba(15,23,42,0.10);
+
+  /* Sidebar */
+  --sidebar-w-collapsed: 64px;
+  --sidebar-w-expanded: 240px;
 }
 
 @keyframes pulse {

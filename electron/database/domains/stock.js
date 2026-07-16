@@ -9,11 +9,11 @@ function addStockReceiving(receiving) {
 
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(receiving.supplier_id, receiving.product_id, receiving.date_received, receiving.cartons,
       receiving.units_per_carton, receiving.total_units, receiving.cost_per_carton,
-      receiving.cost_per_unit, receiving.total_value, receiving.recorded_by)
+      receiving.cost_per_unit, receiving.total_value, receiving.recorded_by, receiving.expiry_date || null)
     // sync_updated_at bump is what carries the new quantity to satellite tills —
     // the products delta only ships rows whose created/last_sold/sync stamp moved.
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
@@ -50,7 +50,7 @@ function getAllPurchaseHistory() {
            COALESCE(s.name, 'Direct Purchase') as supplier_name,
            sr.cartons, sr.units_per_carton, sr.total_units,
            sr.cost_per_unit, sr.cost_per_carton, sr.total_value,
-           sr.recorded_by, sr.corrects_receiving_id, sr.correction_reason,
+           sr.recorded_by, sr.corrects_receiving_id, sr.correction_reason, sr.expiry_date,
            (SELECT COUNT(*) FROM stock_receivings c WHERE c.corrects_receiving_id = sr.id) as correction_count,
            CASE WHEN sr.supplier_id IS NULL THEN 'direct' ELSE 'supplier' END as purchase_type
     FROM stock_receivings sr
@@ -106,10 +106,12 @@ function correctStockReceiving(receivingId, corrected, recordedBy) {
 
   let correctionId = null
   db.transaction(() => {
+    // Correction rows inherit the original's expiry batch identity so grouped
+    // batch sums in the expiry queries net out correctly.
     const info = db.prepare(
-      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, corrects_receiving_id, correction_reason)
-       VALUES (?, ?, ?, 0, 0, ?, 0, ?, ?, ?, ?, ?)`
-    ).run(original.supplier_id, original.product_id, original.date_received, qtyDelta, newCpu, valueDelta, recordedBy || 'System', receivingId, reason)
+      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, corrects_receiving_id, correction_reason, expiry_date, expiry_discarded_at)
+       VALUES (?, ?, ?, 0, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(original.supplier_id, original.product_id, original.date_received, qtyDelta, newCpu, valueDelta, recordedBy || 'System', receivingId, reason, original.expiry_date || null, original.expiry_discarded_at || null)
     correctionId = info.lastInsertRowid
 
     if (qtyDelta !== 0) {
@@ -159,9 +161,9 @@ function recordDirectPurchase(purchase) {
 
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
-       VALUES (NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?)`
-    ).run(purchase.product_id, dateReceived, qty, qty, totalCost, cpu, totalCost, purchase.recorded_by || 'System')
+      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date)
+       VALUES (NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(purchase.product_id, dateReceived, qty, qty, totalCost, cpu, totalCost, purchase.recorded_by || 'System', purchase.expiry_date || null)
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run((product.current_quantity || 0) + qty, purchase.product_id)
     db.prepare(
@@ -210,40 +212,104 @@ function getProductSalesVelocity(days = 30) {
   `).all(days, startDate)
 }
 
+// Expiry is tracked per receiving batch = (product, expiry_date). Corrections
+// carry the original batch's expiry_date, so SUM(total_units) nets to the true
+// batch size. A batch drops out of tracking when it is discarded, when its
+// summed units hit 0, or when the product has no stock left on hand.
 function getExpiringProducts(days = 7) {
-  const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
   const today = new Date().toISOString().split('T')[0]
+  const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
   return getDb().prepare(`
-    SELECT p.*, si.expiry_date,
-           (julianday(si.expiry_date) - julianday('now')) as days_until_expiry
-    FROM products p
-    JOIN sale_items si ON p.id = si.product_id
-    WHERE si.expiry_date IS NOT NULL AND si.expiry_date <= ? AND si.expiry_date >= ?
-    ORDER BY si.expiry_date ASC
-  `).all(cutoff, today)
+    SELECT p.*, sr.expiry_date,
+           SUM(sr.total_units) as batch_units,
+           CAST(julianday(sr.expiry_date) - julianday(?) AS INTEGER) as days_until_expiry
+    FROM stock_receivings sr
+    JOIN products p ON p.id = sr.product_id
+    WHERE sr.expiry_date IS NOT NULL AND sr.expiry_discarded_at IS NULL
+      AND sr.expiry_date >= ? AND sr.expiry_date <= ?
+      AND p.current_quantity > 0
+    GROUP BY sr.product_id, sr.expiry_date
+    HAVING SUM(sr.total_units) > 0
+    ORDER BY sr.expiry_date ASC
+  `).all(today, today, cutoff)
 }
 
 function getExpiredProducts() {
   const today = new Date().toISOString().split('T')[0]
   return getDb().prepare(`
-    SELECT p.*, si.expiry_date,
-           (julianday('now') - julianday(si.expiry_date)) as days_expired
-    FROM products p
-    JOIN sale_items si ON p.id = si.product_id
-    WHERE si.expiry_date IS NOT NULL AND si.expiry_date < ?
-    GROUP BY p.id
-    ORDER BY si.expiry_date DESC
-  `).all(today)
+    SELECT p.*, sr.expiry_date,
+           SUM(sr.total_units) as batch_units,
+           CAST(julianday(?) - julianday(sr.expiry_date) AS INTEGER) as days_expired
+    FROM stock_receivings sr
+    JOIN products p ON p.id = sr.product_id
+    WHERE sr.expiry_date IS NOT NULL AND sr.expiry_discarded_at IS NULL
+      AND sr.expiry_date < ?
+      AND p.current_quantity > 0
+    GROUP BY sr.product_id, sr.expiry_date
+    HAVING SUM(sr.total_units) > 0
+    ORDER BY sr.expiry_date DESC
+  `).all(today, today)
 }
 
 function getExpiryReport() {
   const db = getDb()
-  const week = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-  const month = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-  const expired = db.prepare(`SELECT COUNT(*) FROM sale_items WHERE expiry_date IS NOT NULL AND expiry_date < date('now')`).pluck().get() || 0
-  const expiringWeek = db.prepare(`SELECT COUNT(*) FROM sale_items WHERE expiry_date IS NOT NULL AND expiry_date >= date('now') AND expiry_date <= ?`).pluck().get(week) || 0
-  const expiringMonth = db.prepare(`SELECT COUNT(*) FROM sale_items WHERE expiry_date IS NOT NULL AND expiry_date > ? AND expiry_date <= ?`).pluck().get(week, month) || 0
-  return { expired, expiringThisWeek: expiringWeek, expiringThisMonth: expiringMonth }
+  const today = new Date().toISOString().split('T')[0]
+  const week = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  const month = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  // Same batch definition as the two list queries, so the summary cards always
+  // agree with the tabs below them.
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN expiry_date < ? THEN 1 ELSE 0 END), 0) as expired,
+      COALESCE(SUM(CASE WHEN expiry_date >= ? AND expiry_date <= ? THEN 1 ELSE 0 END), 0) as expiringWeek,
+      COALESCE(SUM(CASE WHEN expiry_date > ? AND expiry_date <= ? THEN 1 ELSE 0 END), 0) as expiringMonth
+    FROM (
+      SELECT sr.expiry_date
+      FROM stock_receivings sr
+      JOIN products p ON p.id = sr.product_id
+      WHERE sr.expiry_date IS NOT NULL AND sr.expiry_discarded_at IS NULL
+        AND p.current_quantity > 0
+      GROUP BY sr.product_id, sr.expiry_date
+      HAVING SUM(sr.total_units) > 0
+    )
+  `).get(today, today, week, week, month)
+  return { expired: row.expired, expiringThisWeek: row.expiringWeek, expiringThisMonth: row.expiringMonth }
+}
+
+// Discard an expiring/expired batch: writes off up to `units` from stock (capped
+// at what's on hand — batch units may already be partly sold) and stamps every
+// receiving row in the (product, expiry_date) group so the batch stops appearing
+// in expiry tracking. `units` may be 0 to just clear the batch from the tracker.
+function discardExpiredBatch(productId, expiryDate, units, recordedBy) {
+  const db = getDb()
+  const product = getProductById(productId)
+  if (!product) throw new Error(`Product with ID ${productId} not found`)
+  if (!expiryDate) throw new Error('Expiry date is required')
+  const qty = parseInt(units)
+  if (!Number.isFinite(qty) || qty < 0) throw new Error('Units to discard must be 0 or more')
+  const writeOff = Math.min(qty, product.current_quantity || 0)
+  const stockAfter = (product.current_quantity || 0) - writeOff
+
+  db.transaction(() => {
+    if (writeOff > 0) {
+      db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
+        .run(stockAfter, productId)
+      db.prepare(
+        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'EXPIRED_DISCARD', ?, ?, ?)`
+      ).run(productId, product.name, -writeOff, `Discarded expired batch (expiry ${expiryDate})`, recordedBy || 'System')
+    }
+    db.prepare(`UPDATE stock_receivings SET expiry_discarded_at = datetime('now') WHERE product_id = ? AND expiry_date = ?`)
+      .run(productId, expiryDate)
+  })()
+
+  logAuditAction(
+    recordedBy || 'System', 'DISCARD', 'stock_receiving', String(productId),
+    `Discarded expired batch of "${product.name}" (expiry ${expiryDate}): wrote off ${writeOff} units, stock now ${stockAfter}`,
+    JSON.stringify({ current_quantity: product.current_quantity || 0 }),
+    JSON.stringify({ current_quantity: stockAfter, written_off: writeOff })
+  )
+
+  return { product_id: productId, product_name: product.name, expiry_date: expiryDate, written_off: writeOff, new_stock_qty: stockAfter }
 }
 
 function importStockReceivings(rows, recordedBy) {
@@ -253,8 +319,8 @@ function importStockReceivings(rows, recordedBy) {
   const findSupplier   = db.prepare(`SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) LIMIT 1`)
   const insertSupplier = db.prepare(`INSERT INTO suppliers (name) VALUES (?)`)
   const insertReceiving = db.prepare(
-    `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const updateQty      = db.prepare(`UPDATE products SET current_quantity = current_quantity + ?, sync_updated_at = datetime('now') WHERE id = ?`)
   const insertMovementReceived = db.prepare(
@@ -280,6 +346,9 @@ function importStockReceivings(rows, recordedBy) {
         const date = new Date().toISOString().split('T')[0]
         const type = String(row.purchase_type || 'supplier').toLowerCase().trim() === 'direct' ? 'direct' : 'supplier'
         const by   = recordedBy || 'Import'
+        // Only accept well-formed dates — anything else imports as "no expiry"
+        const expiryRaw = String(row.expiry_date || '').trim()
+        const expiry = /^\d{4}-\d{2}-\d{2}$/.test(expiryRaw) ? expiryRaw : null
 
         let product = findProduct.get(productName)
         if (!product) {
@@ -300,11 +369,11 @@ function importStockReceivings(rows, recordedBy) {
 
         const totalValue = qty * cpu
         if (type === 'supplier') {
-          insertReceiving.run(supplierId, product.id, date, 0, 0, qty, 0, cpu, totalValue, by)
+          insertReceiving.run(supplierId, product.id, date, 0, 0, qty, 0, cpu, totalValue, by, expiry)
           updateQty.run(qty, product.id)
           insertMovementReceived.run(product.id, product.name, qty, by)
         } else {
-          insertReceiving.run(null, product.id, date, 1, qty, qty, totalValue, cpu, totalValue, by)
+          insertReceiving.run(null, product.id, date, 1, qty, qty, totalValue, cpu, totalValue, by, expiry)
           updateQty.run(qty, product.id)
           insertMovementDirect.run(product.id, product.name, qty, row.notes || '', by)
         }
@@ -357,6 +426,6 @@ function reconcileProducts(adjustments, recordedBy) {
 module.exports = {
   addStockReceiving, getStockReceivings, getStockReceivingById, getAllPurchaseHistory, correctStockReceiving,
   recordDirectPurchase, recordInitialCost, getDeadStockProducts, getRestockNeeded, getProductSalesVelocity,
-  getExpiringProducts, getExpiredProducts, getExpiryReport, importStockReceivings,
+  getExpiringProducts, getExpiredProducts, getExpiryReport, discardExpiredBatch, importStockReceivings,
   reconcileProduct, reconcileProducts
 }

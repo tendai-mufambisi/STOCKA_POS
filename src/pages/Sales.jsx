@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLanSync } from '../hooks/useLanSync'
 import ConfirmModal from '../components/ConfirmModal'
-import NumericKeypad from '../components/NumericKeypad'
 import {
   getProducts, addSale, completeHeldSale, getAllLatestCostPrices, getMostSoldProducts,
   getHeldSales, holdSale, recallHeldSale, discardHeldSale, voidSale,
@@ -134,6 +133,8 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
   // Tracks the stable display order so reloads never reorder the list mid-sale.
   // Set once on first load; subsequent loads sort to match it instead of re-sorting.
   const productOrderRef  = useRef([])
+  // Timestamp of the last Space keydown — powers the double-tap-Space checkout gesture
+  const lastSpaceRef     = useRef(0)
 
   // ── Till identity (local-only; scopes this till's receipt numbers) ──
   const [tillCode, setTillCode] = useState(null)
@@ -216,6 +217,16 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
         return
       }
 
+      // Payment-method screen is fully keyboard-driven:
+      // Enter = exact cash, C = cash (count change), T = transfer, S = split
+      if (checkoutStep === 'paymentSelect' && !isProcessing) {
+        if (e.key === 'Enter') { e.preventDefault(); handleExactCash(); return }
+        const k = e.key.toLowerCase()
+        if (k === 'c') { e.preventDefault(); handleSelectPaymentMethod('Cash'); return }
+        if (k === 't') { e.preventDefault(); handleSelectPaymentMethod('Transfer'); return }
+        if (k === 's') { e.preventDefault(); handleSelectPaymentMethod('Split'); return }
+      }
+
       // Enter in cash input: complete sale
       if (e.key === 'Enter' && checkoutStep === 'cashTendered' && tag === 'INPUT') {
         e.preventDefault()
@@ -235,6 +246,24 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
         e.preventDefault()
         if (!checkoutStep && cart.length > 0 && !isProcessing) handleChargeClick()
         return
+      }
+
+      // Double-tap Space: open checkout, even mid-typing in the search box.
+      // Two spaces within 350ms is a deliberate gesture — typing a product
+      // name with spaces ("coca cola") never produces that. Excluded in
+      // textareas (void reason) where double spaces are legitimate text.
+      if (e.key === ' ' && !e.repeat && tag !== 'TEXTAREA' && !checkoutStep && !showVoidModal) {
+        const now = Date.now()
+        const isDoubleTap = now - lastSpaceRef.current < 350
+        lastSpaceRef.current = now
+        if (isDoubleTap && cart.length > 0 && !isProcessing) {
+          e.preventDefault()
+          lastSpaceRef.current = 0
+          // Drop the space the first tap typed into the search box
+          setSearch(s => s.replace(/\s+$/, ''))
+          handleChargeClick()
+          return
+        }
       }
 
       // Don't fire other shortcuts when typing in inputs
@@ -759,6 +788,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
           <span>Recall {heldSales.length > 0 ? `(${heldSales.length})` : ''}</span>
         </div>
         <div className="pos-shortcut">
+          <span className="pos-key">Space ×2</span>
           <span className="pos-key">F9</span>
           <span>Pay</span>
         </div>
@@ -1126,10 +1156,10 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                   className="pos-charge-btn"
                   onClick={handleChargeClick}
                   disabled={isProcessing}
-                  title="Proceed to payment [F9]"
+                  title="Proceed to payment [double-tap Space, or F9]"
                 >
                   Charge ${cartTotal.toFixed(2)}
-                  <span className="pos-charge-shortcut">F9</span>
+                  <span className="pos-charge-shortcut">Space ×2</span>
                 </button>
               </div>
             </>
@@ -1196,6 +1226,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
               >
                 <FiCheck size={18} />
                 {isProcessing ? 'Processing…' : <>Exact Cash — ${cartTotal.toFixed(2)}</>}
+                {!isProcessing && <span className="pay-enter-hint">↵</span>}
               </button>
               <div className="pay-method-label">How is the customer paying?</div>
               <div className="pay-method-row">
@@ -1207,6 +1238,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                   <div className="pay-method-icon"><FiBriefcase size={26} color="#16a34a" /></div>
                   <div className="pay-method-name">Cash</div>
                   <div className="pay-method-sub">Count change</div>
+                  <span className="pay-method-key">C</span>
                 </button>
                 <button
                   className="pay-method-btn pay-method-transfer"
@@ -1216,6 +1248,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                   <div className="pay-method-icon"><FiCreditCard size={26} color="#1d4ed8" /></div>
                   <div className="pay-method-name">Transfer</div>
                   <div className="pay-method-sub">EcoCash / Card</div>
+                  <span className="pay-method-key">T</span>
                 </button>
                 <button
                   className="pay-method-btn pay-method-split"
@@ -1225,6 +1258,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                   <div className="pay-method-icon"><FiSmartphone size={26} color="#b45309" /></div>
                   <div className="pay-method-name">Split</div>
                   <div className="pay-method-sub">Cash + Transfer</div>
+                  <span className="pay-method-key">S</span>
                 </button>
               </div>
               <div className="pay-actions" style={{ marginTop: 16 }}>
@@ -1290,11 +1324,6 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                 </div>
               )}
 
-              <NumericKeypad
-                value={checkoutCashTendered}
-                onChange={setCheckoutCashTendered}
-                disabled={isProcessing}
-              />
 
               {/* Actions */}
               <div className="pay-actions">
@@ -1354,11 +1383,6 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
                   </div>
                 )}
 
-                <NumericKeypad
-                  value={splitCashAmt}
-                  onChange={setSplitCashAmt}
-                  disabled={isProcessing}
-                />
                 <div className="pay-actions">
                   <button className="pay-cancel-btn" onClick={handleBackNavigation}>
                     <FiChevronLeft size={15} /> Back

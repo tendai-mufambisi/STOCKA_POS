@@ -105,6 +105,7 @@ contextBridge.exposeInMainWorld('stocka', {
     getExpiring:     (days)    => invoke('domain:stock:getExpiring', days),
     getExpired:      ()        => invoke('domain:stock:getExpired'),
     getExpiryReport:    ()           => invoke('domain:stock:getExpiryReport'),
+    discardExpiredBatch: (productId, expiryDate, units, by) => invoke('domain:stock:discardExpiredBatch', productId, expiryDate, units, by),
     importReceivings:   (rows, by)   => invoke('domain:stock:importReceivings', rows, by),
     reconcileProduct:   (id, qty, notes, by) => invoke('domain:stock:reconcileProduct', id, qty, notes, by),
     reconcileProducts:  (adjs, by)   => invoke('domain:stock:reconcileProducts', adjs, by),

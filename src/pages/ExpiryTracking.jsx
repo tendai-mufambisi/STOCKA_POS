@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { getExpiringProducts, getExpiredProducts, getExpiryReport } from '../database/db'
+import { getExpiringProducts, getExpiredProducts, getExpiryReport, discardExpiredBatch } from '../database/db'
+import { useAuthStore } from '../store/useAuthStore'
+import { useLanSync } from '../hooks/useLanSync'
 import './ExpiryTracking.css'
-import { FiCalendar, FiAlertTriangle, FiClock, FiShield } from 'react-icons/fi'
+import { FiCalendar, FiAlertTriangle, FiClock, FiShield, FiTrash2, FiX, FiCheck } from 'react-icons/fi'
 
 function ExpiryTracking() {
   const [expiryReport, setExpiryReport] = useState({})
@@ -9,21 +11,31 @@ function ExpiryTracking() {
   const [expiredProducts, setExpiredProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
   const [activeTab, setActiveTab] = useState('expiring') // expiring | expired
+  const { user } = useAuthStore()
+
+  // Discarding writes off stock — same privilege bar as receiving corrections
+  const canDiscard = user?.role === 'Admin' || user?.role === 'Manager'
+  const [discardTarget, setDiscardTarget] = useState(null) // batch row being discarded
+  const [discardUnits, setDiscardUnits] = useState('')
+  const [discardError, setDiscardError] = useState('')
+  const [discardSaving, setDiscardSaving] = useState(false)
 
   useEffect(() => {
     loadData()
   }, [])
+  useLanSync(() => loadData(true))
 
-  const loadData = async () => {
+  const loadData = async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const [report, expiring, expired] = await Promise.all([
         getExpiryReport(),
         getExpiringProducts(7),
         getExpiredProducts()
       ])
-      
+
       setExpiryReport(report)
       setExpiringProducts(expiring)
       setExpiredProducts(expired)
@@ -31,7 +43,7 @@ function ExpiryTracking() {
       setError('Failed to load expiry data')
       console.error(err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -55,11 +67,56 @@ function ExpiryTracking() {
     return 'caution'
   }
 
+  const openDiscard = (batch) => {
+    // Batch units may already be partly sold — default to what can actually be removed
+    const suggested = Math.min(batch.batch_units || 0, batch.current_quantity || 0)
+    setDiscardTarget(batch)
+    setDiscardUnits(String(suggested))
+    setDiscardError('')
+  }
+
+  const closeDiscard = () => {
+    if (discardSaving) return
+    setDiscardTarget(null)
+    setDiscardError('')
+  }
+
+  const handleDiscardConfirm = async () => {
+    if (!discardTarget) return
+    const units = parseInt(discardUnits)
+    if (discardUnits === '' || !Number.isFinite(units) || units < 0) {
+      setDiscardError('Enter how many units to remove (0 or more)')
+      return
+    }
+    setDiscardSaving(true)
+    setDiscardError('')
+    try {
+      const result = await discardExpiredBatch(
+        discardTarget.id,
+        discardTarget.expiry_date,
+        units,
+        user?.username || 'System'
+      )
+      setDiscardTarget(null)
+      setSuccessMessage(
+        `Batch of "${result.product_name}" (expiry ${new Date(result.expiry_date).toLocaleDateString('en-ZW')}) discarded — ` +
+        `${result.written_off} unit${result.written_off !== 1 ? 's' : ''} written off, stock is now ${result.new_stock_qty}.`
+      )
+      setTimeout(() => setSuccessMessage(''), 6000)
+      await loadData(true)
+    } catch (err) {
+      setDiscardError(err.message || 'Failed to discard batch')
+    } finally {
+      setDiscardSaving(false)
+    }
+  }
+
   if (loading) return <div className="expiry-page"><div className="loading">Loading...</div></div>
 
   return (
     <div className="expiry-page">
       {error && <div className="error-banner">{error}</div>}
+      {successMessage && <div className="success-banner">{successMessage}</div>}
 
       {/* Summary Cards */}
       <div className="summary-cards">
@@ -68,7 +125,7 @@ function ExpiryTracking() {
             <FiAlertTriangle />
           </div>
           <div className="content">
-            <div className="label">Expired Items</div>
+            <div className="label">Expired Batches</div>
             <div className="value">{expiryReport.expired || 0}</div>
             <div className="details">Must be removed immediately</div>
           </div>
@@ -123,9 +180,10 @@ function ExpiryTracking() {
                   <tr>
                     <th>Product</th>
                     <th>Expiry Date</th>
+                    <th>Batch Units</th>
                     <th>Days Until Expiry</th>
                     <th>Status</th>
-                    <th>Action</th>
+                    {canDiscard && <th>Action</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -133,15 +191,18 @@ function ExpiryTracking() {
                     const daysUntil = getDaysUntilExpiry(product.expiry_date)
                     const urgency = getUrgencyClass(daysUntil)
                     const expiryDateStr = new Date(product.expiry_date).toLocaleDateString('en-ZW')
-                    
+
                     return (
-                      <tr key={product.id} className={`urgency-${urgency}`}>
+                      <tr key={`${product.id}-${product.expiry_date}`} className={`urgency-${urgency}`}>
                         <td className="product-name">
                           <span className="name">{product.name}</span>
-                          <span className="details">ID: {product.id}</span>
+                          <span className="details">{product.current_quantity} in stock</span>
                         </td>
                         <td className="date">
                           {expiryDateStr}
+                        </td>
+                        <td className="days">
+                          {product.batch_units} units
                         </td>
                         <td className="days">
                           {daysUntil === 0 ? (
@@ -159,14 +220,13 @@ function ExpiryTracking() {
                           {urgency === 'warning' && 'Warning'}
                           {urgency === 'caution' && 'Notice'}
                         </td>
-                        <td className="action">
-                          {daysUntil <= 3 && (
-                            <button className="action-btn promote">Mark On Sale</button>
-                          )}
-                          {daysUntil <= 1 && (
-                            <button className="action-btn discard">Discard</button>
-                          )}
-                        </td>
+                        {canDiscard && (
+                          <td className="action">
+                            <button className="action-btn discard" onClick={() => openDiscard(product)}>
+                              <FiTrash2 size={12} /> Discard
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -177,7 +237,7 @@ function ExpiryTracking() {
             <div className="empty-state">
               <FiCalendar className="icon" />
               <h3>No products expiring soon!</h3>
-              <p>All items have plenty of shelf life remaining</p>
+              <p>All items have plenty of shelf life remaining. Record expiry dates when receiving stock to track batches here.</p>
             </div>
           )}
         </div>
@@ -193,24 +253,28 @@ function ExpiryTracking() {
                   <tr>
                     <th>Product</th>
                     <th>Expiry Date</th>
+                    <th>Batch Units</th>
                     <th>Days Expired</th>
                     <th>Status</th>
-                    <th>Action</th>
+                    {canDiscard && <th>Action</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {expiredProducts.map(product => {
                     const daysExpired = getDaysExpired(product.expiry_date)
                     const expiryDateStr = new Date(product.expiry_date).toLocaleDateString('en-ZW')
-                    
+
                     return (
-                      <tr key={product.id} className="urgency-critical">
+                      <tr key={`${product.id}-${product.expiry_date}`} className="urgency-critical">
                         <td className="product-name">
                           <span className="name">{product.name}</span>
-                          <span className="details">ID: {product.id}</span>
+                          <span className="details">{product.current_quantity} in stock</span>
                         </td>
                         <td className="date">
                           {expiryDateStr}
+                        </td>
+                        <td className="days">
+                          {product.batch_units} units
                         </td>
                         <td className="days">
                           <span className="expired-by">{daysExpired} days ago</span>
@@ -218,10 +282,13 @@ function ExpiryTracking() {
                         <td className="status critical">
                           Expired
                         </td>
-                        <td className="action">
-                          <button className="action-btn remove">Remove</button>
-                          <button className="action-btn report">Report</button>
-                        </td>
+                        {canDiscard && (
+                          <td className="action">
+                            <button className="action-btn remove" onClick={() => openDiscard(product)}>
+                              <FiTrash2 size={12} /> Remove
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -238,16 +305,60 @@ function ExpiryTracking() {
         </div>
       )}
 
+      {/* ── Discard Batch Modal ── */}
+      {discardTarget && (
+        <div className="form-overlay" onClick={closeDiscard}>
+          <div className="product-form discard-modal" onClick={e => e.stopPropagation()}>
+            <div className="form-header">
+              <h2>Discard Batch</h2>
+              <button className="close-btn" onClick={closeDiscard}><FiX size={14} /></button>
+            </div>
+
+            <div className="discard-summary">
+              <div className="ds-row"><span className="ds-label">Product</span><span>{discardTarget.name}</span></div>
+              <div className="ds-row"><span className="ds-label">Expiry date</span><span>{new Date(discardTarget.expiry_date).toLocaleDateString('en-ZW')}</span></div>
+              <div className="ds-row"><span className="ds-label">Batch received</span><span>{discardTarget.batch_units} units</span></div>
+              <div className="ds-row"><span className="ds-label">Currently in stock</span><span>{discardTarget.current_quantity} units (all batches)</span></div>
+            </div>
+
+            {discardError && <div className="error-banner">{discardError}</div>}
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Units to Remove from Stock *</label>
+                <input
+                  type="number" min="0" step="1" autoFocus
+                  max={discardTarget.current_quantity || 0}
+                  value={discardUnits}
+                  onChange={e => { setDiscardUnits(e.target.value); if (discardError) setDiscardError('') }}
+                />
+                <p className="field-hint">
+                  Some of this batch may already be sold — enter what you are actually throwing away.
+                  Enter 0 to clear the batch from tracking without changing stock.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-actions">
+              <button className="btn btn-secondary" onClick={closeDiscard} disabled={discardSaving}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleDiscardConfirm} disabled={discardSaving}>
+                {discardSaving ? 'Saving…' : <><FiCheck size={14} /> Confirm Discard</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Best Practices */}
       <div className="best-practices">
         <h3><FiShield size={16} /> Best Practices</h3>
         <ul>
+          <li><strong>Record expiry on receiving:</strong> Enter the expiry date in Stock Control when goods arrive so batches show up here automatically</li>
           <li><strong>Check daily:</strong> Review this page every morning to catch upcoming expirations</li>
           <li><strong>FIFO method:</strong> Use First-In-First-Out to minimize waste</li>
           <li><strong>Clear promotions:</strong> Run discounts on items expiring soon to move inventory</li>
           <li><strong>Proper disposal:</strong> Remove expired items immediately - never sell expired products</li>
           <li><strong>Track trends:</strong> If certain products expire frequently, reduce order quantities</li>
-          <li><strong>Staff training:</strong> Ensure all employees understand expiry date importance</li>
         </ul>
       </div>
     </div>

@@ -13,7 +13,7 @@ const WRITE_CHANNELS = new Set([
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings',
   'domain:stock:recordInitialCost', 'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
-  'domain:stock:correctReceiving',
+  'domain:stock:correctReceiving', 'domain:stock:discardExpiredBatch',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',

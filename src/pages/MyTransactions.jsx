@@ -28,7 +28,7 @@ function MyTransactions() {
   const [tillOnly, setTillOnly]           = useState(false)
   const [pendingSales, setPendingSales]   = useState([]) // queued domain:sales:add not yet synced to Main
 
-  const { printReceipt, isPrinting } = useReceiptPrinter()
+  const { printReceipt, isPrinting, printError, printSuccess } = useReceiptPrinter()
 
   const loadData = useCallback(async () => {
     try {
@@ -309,12 +309,18 @@ function MyTransactions() {
         <ReceiptModal
           sale={selectedSale}
           onClose={() => setSelectedSale(null)}
-          onReprint={printerName ? handleReprint : undefined}
+          onReprint={(printerName || shopInfo?.printer_port) ? handleReprint : undefined}
         />
       )}
 
       {isPrinting && (
         <div className="txn-printing-toast">Printing…</div>
+      )}
+      {!isPrinting && printError && (
+        <div className="txn-printing-toast txn-toast-error">{printError}</div>
+      )}
+      {!isPrinting && !printError && printSuccess && (
+        <div className="txn-printing-toast txn-toast-success">Receipt sent to printer</div>
       )}
     </div>
   )

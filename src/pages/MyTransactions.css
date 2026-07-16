@@ -319,3 +319,13 @@
   z-index: 9999;
   pointer-events: none;
 }
+
+.txn-toast-error {
+  background: #b91c1c;
+  max-width: 90vw;
+  text-align: center;
+}
+
+.txn-toast-success {
+  background: #15803d;
+}

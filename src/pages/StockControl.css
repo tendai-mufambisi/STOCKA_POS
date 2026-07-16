@@ -393,6 +393,12 @@
   margin-top: 2px;
 }
 
+.expiry-detail {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
 .delta-pos { color: #15803d; font-weight: 600; }
 .delta-neg { color: #b91c1c; font-weight: 600; }
 

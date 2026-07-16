@@ -36,30 +36,70 @@ import SignOutModal from '../components/SignOutModal'
 import { useShiftGuard } from '../hooks/useShiftGuard'
 
 import {
-  FiHome,
-  FiPackage,
-  FiTrendingDown,
-  FiTruck,
-  FiShoppingCart,
-  FiCreditCard,
-  FiClock,
-  FiSettings,
-  FiDollarSign,
-  FiAlertTriangle,
-  FiBarChart2,
-  FiPlus,
-  FiDownload,
-  FiLogOut,
-  FiMenu,
-  FiTrendingUp,
-  FiCalendar,
-  FiArrowRight,
-  FiUsers,
-  FiList,
-  FiFileText,
-  FiX
-} from 'react-icons/fi'
+  LuLayoutDashboard,
+  LuScanBarcode,
+  LuReceiptText,
+  LuPackage,
+  LuBoxes,
+  LuClipboardCheck,
+  LuPackagePlus,
+  LuTruck,
+  LuPackageSearch,
+  LuPackageX,
+  LuCalendarClock,
+  LuWallet,
+  LuChartColumn,
+  LuSunset,
+  LuTimer,
+  LuUsers,
+  LuHistory,
+  LuSettings,
+  LuLogOut,
+  LuChevronDown,
+  LuCircleDollarSign,
+  LuTrendingUp,
+  LuTrendingDown,
+  LuTriangleAlert,
+  LuShoppingCart,
+  LuPlus,
+  LuDownload,
+  LuX,
+  LuArrowRight,
+  LuClock
+} from 'react-icons/lu'
 
+// Standalone Dashboard item + collapsible sections. Section order and item
+// order here IS the sidebar order; role filtering happens at render time.
+const NAV_HOME = { id: 'dashboard', icon: LuLayoutDashboard, label: 'Dashboard' }
+
+const NAV_SECTIONS = [
+  { id: 'sales', label: 'Sales', items: [
+    { id: 'my-transactions',  icon: LuReceiptText,    label: 'Transactions' },
+  ]},
+  { id: 'inventory', label: 'Inventory', items: [
+    { id: 'products',         icon: LuPackage,        label: 'Products' },
+    { id: 'inventory',        icon: LuBoxes,          label: 'Current Inventory' },
+    { id: 'reconciliation',   icon: LuClipboardCheck, label: 'Reconciliation' },
+    { id: 'stock',            icon: LuPackagePlus,    label: 'Receive Stock' },
+    { id: 'suppliers',        icon: LuTruck,          label: 'Suppliers' },
+    { id: 'restock',          icon: LuPackageSearch,  label: 'Restock Needed' },
+    { id: 'deadstock',        icon: LuPackageX,       label: 'Dead Stock' },
+    { id: 'expiry',           icon: LuCalendarClock,  label: 'Expiry Tracking' },
+  ]},
+  { id: 'finance', label: 'Finance', items: [
+    { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
+    { id: 'reports',          icon: LuChartColumn,    label: 'Reports' },
+    { id: 'endofday',         icon: LuSunset,         label: 'End of Day' },
+    { id: 'shifts',           icon: LuTimer,          label: 'Shift Management' },
+    { id: 'cashier-sessions', icon: LuUsers,          label: 'Cashier Sessions' },
+  ]},
+  { id: 'operations', label: 'Operations', items: [
+    { id: 'activitylogs',     icon: LuHistory,        label: 'Activity Logs' },
+    { id: 'settings',         icon: LuSettings,       label: 'Settings' },
+  ]},
+]
+
+const SIDEBAR_SECTIONS_KEY = 'stocka_sidebar_sections'
 
 function Dashboard() {
   const navigate = useNavigate()
@@ -69,6 +109,10 @@ function Dashboard() {
   const [dashboardStats, setDashboardStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [sidebarExpanded, setSidebarExpanded] = useState(false)
+  // Missing key = open, so every section shows on first run
+  const [expandedSections, setExpandedSections] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SIDEBAR_SECTIONS_KEY)) || {} } catch { return {} }
+  })
   const [shopSettings, setShopSettings] = useState(null)
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
@@ -362,147 +406,64 @@ function Dashboard() {
     }
   }
 
-  const navItems = [
-    { id: 'dashboard',  icon: 'home',       label: 'Dashboard',       group: 'main' },
-    { id: 'products',   icon: 'package',    label: 'Products',         group: 'stock' },
-    { id: 'inventory',  icon: 'package',    label: 'Current Inventory', group: 'stock' },
-    { id: 'reconciliation', icon: 'bar-chart-2', label: 'Reconciliation',   group: 'stock' },
-    { id: 'stock',      icon: 'trending-down', label: 'Receive Stock',    group: 'stock' },
-    { id: 'suppliers',  icon: 'truck',      label: 'Suppliers',        group: 'stock' },
-    { id: 'restock',    icon: 'trending-up', label: 'Restock Needed',    group: 'stock' },
-    { id: 'deadstock',  icon: 'trending-down', label: 'Dead Stock',       group: 'stock' },
-    { id: 'my-transactions', icon: 'file-text', label: 'Transactions',   group: 'sales' },
-    { id: 'expenses',   icon: 'credit-card', label: 'Expenses',         group: 'finance' },
-    { id: 'reports',    icon: 'bar-chart-2', label: 'Reports',          group: 'finance' },
-    { id: 'endofday',   icon: 'clock',      label: 'End of Day',       group: 'finance' },
-    { id: 'shifts',     icon: 'clock',      label: 'Shift Management', group: 'finance' },
-    { id: 'cashier-sessions',  icon: 'shopping-cart', label: 'Cashier Sessions', group: 'finance' },
-    { id: 'expiry',       icon: 'calendar',   label: 'Expiry Tracking',  group: 'stock' },
-    { id: 'activitylogs', icon: 'list',       label: 'Activity Logs',    group: 'ops' },
-    { id: 'settings',   icon: 'settings',   label: 'Settings',         group: 'ops' },
-  ]
-
   // Role defaults + admin overrides (Settings → Role Privileges) decide which
   // tabs this user sees — see src/utils/rolePrivileges.js
   const userRole = user?.role || 'Cashier'
   const rolePrivileges = parseRolePrivileges(shopSettings?.role_privileges)
-  const filteredNavItems = navItems.filter(item => canRoleAccessNav(userRole, item.id, rolePrivileges))
 
-  const groupLabels = {
-    main:    '',
-    stock:   'INVENTORY',
-    sales:   'SALES',
-    finance: 'FINANCE',
-    ops:     'OPERATIONS',
+  const isSectionOpen = (id) => expandedSections[id] !== false
+
+  const toggleSection = (id) => {
+    setExpandedSections(prev => {
+      const next = { ...prev, [id]: !isSectionOpen(id) }
+      try { localStorage.setItem(SIDEBAR_SECTIONS_KEY, JSON.stringify(next)) } catch { /* non-fatal */ }
+      return next
+    })
   }
 
-
-  // Function to render nav icons
-  const renderNavIcon = (iconName) => {
-    const iconProps = { size: 20 }
-    switch (iconName) {
-      case 'home': return <FiHome {...iconProps} />
-      case 'package': return <FiPackage {...iconProps} />
-      case 'trending-down': return <FiTrendingDown {...iconProps} />
-      case 'trending-up': return <FiTrendingUp {...iconProps} />
-      case 'truck': return <FiTruck {...iconProps} />
-      case 'shopping-cart': return <FiShoppingCart {...iconProps} />
-      case 'credit-card': return <FiCreditCard {...iconProps} />
-      case 'bar-chart-2': return <FiBarChart2 {...iconProps} />
-      case 'clock': return <FiClock {...iconProps} />
-      case 'calendar': return <FiCalendar {...iconProps} />
-      case 'settings': return <FiSettings {...iconProps} />
-      case 'list': return <FiList {...iconProps} />
-      case 'file-text': return <FiFileText {...iconProps} />
-      default: return null
-    }
-  }
-
-  // Function to render stat/action icons
-  const renderIcon = (iconName, size = 24) => {
-    const iconProps = { size }
-    switch (iconName) {
-      case 'dollar-sign': return <FiDollarSign {...iconProps} />
-      case 'package': return <FiPackage {...iconProps} />
-      case 'alert-triangle': return <FiAlertTriangle {...iconProps} />
-      case 'bar-chart-2': return <FiBarChart2 {...iconProps} />
-      case 'trending-down': return <FiTrendingDown {...iconProps} />
-      case 'shopping-cart': return <FiShoppingCart {...iconProps} />
-      case 'plus': return <FiPlus {...iconProps} />
-      case 'download': return <FiDownload {...iconProps} />
-      case 'credit-card': return <FiCreditCard {...iconProps} />
-      case 'clock': return <FiClock {...iconProps} />
-      default: return null
-    }
-  }
-
-  const stats = dashboardStats ? [
+  const d = dashboardStats
+  const stats = [
     {
-      icon: 'dollar-sign',
+      icon: LuCircleDollarSign,
       label: "Today's Sales",
-      value: `$${dashboardStats.todaysSales.toFixed(2)}`,
-      sub: `${dashboardStats.todaysSalesCount || 0} ${dashboardStats.todaysSalesCount === 1 ? 'sale' : 'sales'} today`,
-      type: 'gold'
+      value: `$${(d?.todaysSales ?? 0).toFixed(2)}`,
+      sub: d ? `${d.todaysSalesCount || 0} ${d.todaysSalesCount === 1 ? 'sale' : 'sales'} today` : 'No sales recorded yet',
+      type: 'green',
+      page: 'sales',
     },
     {
-      icon: 'trending-up',
+      icon: LuTrendingUp,
       label: "Today's Gross Profit",
-      value: dashboardStats.grossProfit === null ? '—' : `$${dashboardStats.grossProfit.toFixed(2)}`,
+      value: d?.grossProfit == null ? (d ? '—' : '$0.00') : `$${d.grossProfit.toFixed(2)}`,
       sub: 'Sales minus cost of goods',
-      type: 'gold'
+      type: 'gold',
+      page: null,
     },
     {
-      icon: 'alert-triangle',
+      icon: LuTriangleAlert,
       label: 'Low Stock Items',
-      value: dashboardStats.lowStockCount.toString(),
-      sub: 'Below reorder level',
-      type: 'danger'
+      value: String(d?.lowStockCount ?? 0),
+      sub: (d?.lowStockCount ?? 0) > 0 ? 'Below reorder level' : 'All stock levels good',
+      type: 'danger',
+      page: 'stock',
     },
     {
-      icon: 'trending-down',
+      icon: LuTrendingDown,
       label: "Today's Expenses",
-      value: `$${dashboardStats.todaysExpenses.toFixed(2)}`,
-      sub: 'Recorded expenses',
-      type: 'expense'
-    },
-  ] : [
-    {
-      icon: 'dollar-sign',
-      label: "Today's Sales",
-      value: '$0.00',
-      sub: 'No sales recorded yet',
-      type: 'gold'
-    },
-    {
-      icon: 'trending-up',
-      label: "Today's Gross Profit",
-      value: '$0.00',
-      sub: 'Sales minus cost of goods',
-      type: 'gold'
-    },
-    {
-      icon: 'alert-triangle',
-      label: 'Low Stock Items',
-      value: '0',
-      sub: 'All stock levels good',
-      type: 'danger'
-    },
-    {
-      icon: 'trending-down',
-      label: "Today's Expenses",
-      value: '$0.00',
-      sub: 'No expenses recorded',
-      type: 'expense'
+      value: `$${(d?.todaysExpenses ?? 0).toFixed(2)}`,
+      sub: d ? 'Recorded expenses' : 'No expenses recorded',
+      type: 'expense',
+      page: 'expenses',
     },
   ]
 
   const quickActions = [
-    ...(adminCanSell ? [{ icon: 'shopping-cart', label: 'New Sale', hint: 'Open the POS terminal', page: 'sales', theme: 'green' }] : []),
-    { icon: 'plus',          label: 'Add Product',    hint: 'Register a new stock item',       page: 'products', theme: 'blue'   },
-    { icon: 'download',      label: 'Receive Stock',  hint: 'Record incoming inventory',       page: 'stock',    theme: 'teal'   },
-    { icon: 'credit-card',   label: 'Add Expense',    hint: 'Log a business expense',          page: 'expenses', theme: 'red'    },
-    { icon: 'bar-chart-2',   label: 'View Reports',   hint: 'Sales and stock analytics',       page: 'reports',  theme: 'purple' },
-    { icon: 'clock',         label: 'End of Day',     hint: 'Close out and reconcile',         page: 'endofday', theme: 'orange' },
+    ...(adminCanSell ? [{ icon: LuShoppingCart, label: 'New Sale', hint: 'Open the POS terminal', page: 'sales', theme: 'green' }] : []),
+    { icon: LuPlus,        label: 'Add Product',   hint: 'Register a new stock item', page: 'products', theme: 'blue'   },
+    { icon: LuPackagePlus, label: 'Receive Stock', hint: 'Record incoming inventory', page: 'stock',    theme: 'teal'   },
+    { icon: LuWallet,      label: 'Add Expense',   hint: 'Log a business expense',    page: 'expenses', theme: 'red'    },
+    { icon: LuChartColumn, label: 'View Reports',  hint: 'Sales and stock analytics', page: 'reports',  theme: 'purple' },
+    { icon: LuSunset,      label: 'End of Day',    hint: 'Close out and reconcile',   page: 'endofday', theme: 'orange' },
   ]
 
   // Sales and Settings manage their own layout — no outer padding/header
@@ -521,8 +482,6 @@ function Dashboard() {
                   shopSettings={shopSettings}
                   lowStockItems={dashboardStats?.lowStockItems || []}
                   recentSales={dashboardStats?.recentSales || []}
-                  renderIcon={renderIcon}
-                  renderNavIcon={renderNavIcon}
                   activeCashiers={activeCashiers}
                   activeCashiersLoading={activeCashiersLoading}
                   totalProducts={dashboardStats?.totalProducts ?? null}
@@ -569,9 +528,6 @@ function Dashboard() {
         return <ComingSoon page={activePage} />
     }
   }
-  // Group nav items for sidebar sections
-  let lastGroup = null
-
   // Don't render dashboard if user is not authenticated
   if (!user?.id) {
     return null
@@ -583,6 +539,8 @@ function Dashboard() {
         className={`sidebar ${sidebarExpanded ? 'expanded' : 'collapsed'}`}
         onMouseEnter={() => setSidebarExpanded(true)}
         onMouseLeave={() => { setSidebarExpanded(false) }}
+        onFocus={() => setSidebarExpanded(true)}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setSidebarExpanded(false) }}
       >
         {/* Logo area */}
         <div className="sidebar-logo">
@@ -602,7 +560,7 @@ function Dashboard() {
               onClick={() => setActivePage('sales')}
               title={!sidebarExpanded ? 'Sales / POS' : ''}
             >
-              <span className="pos-cta-icon"><FiShoppingCart size={22} /></span>
+              <span className="pos-cta-icon"><LuScanBarcode size={22} /></span>
               <span className="pos-cta-label">New Sale</span>
             </button>
           </div>
@@ -610,22 +568,46 @@ function Dashboard() {
 
         {/* Navigation */}
         <nav className="sidebar-nav">
-          {filteredNavItems.map(item => {
-            const showGroupLabel = item.group !== lastGroup && groupLabels[item.group] !== ''
-            lastGroup = item.group
+          <button
+            className={`nav-item ${activePage === NAV_HOME.id ? 'active' : ''}`}
+            onClick={() => setActivePage(NAV_HOME.id)}
+            title={!sidebarExpanded ? NAV_HOME.label : ''}
+          >
+            <span className="nav-icon"><NAV_HOME.icon size={20} /></span>
+            <span className="nav-label">{NAV_HOME.label}</span>
+            {activePage === NAV_HOME.id && <span className="nav-active-dot" />}
+          </button>
+
+          {NAV_SECTIONS.map(section => {
+            const items = section.items.filter(item => canRoleAccessNav(userRole, item.id, rolePrivileges))
+            if (items.length === 0) return null
+            const open = isSectionOpen(section.id)
+            const containsActive = items.some(item => item.id === activePage)
             return (
-              <div key={item.id}>
-                {showGroupLabel && (
-                  <div className="nav-group-label">{groupLabels[item.group]}</div>
-                )}
-                <div
-                  className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-                  onClick={() => setActivePage(item.id)}
-                  title={!sidebarExpanded ? item.label : ''}
+              <div key={section.id} className={`nav-section${open ? ' open' : ''}`}>
+                <button
+                  className="nav-section-header"
+                  onClick={() => toggleSection(section.id)}
+                  aria-expanded={open}
+                  tabIndex={sidebarExpanded ? 0 : -1}
                 >
-                  <span className="nav-icon">{renderNavIcon(item.icon)}</span>
-                  <span className="nav-label">{item.label}</span>
-                  {activePage === item.id && <span className="nav-active-dot" />}
+                  <span className="nav-section-label">{section.label}</span>
+                  {!open && containsActive && <span className="nav-section-active-dot" />}
+                  <LuChevronDown size={15} className="nav-section-chevron" />
+                </button>
+                <div className="nav-section-items">
+                  {items.map(item => (
+                    <button
+                      key={item.id}
+                      className={`nav-item ${activePage === item.id ? 'active' : ''}`}
+                      onClick={() => setActivePage(item.id)}
+                      title={!sidebarExpanded ? item.label : ''}
+                    >
+                      <span className="nav-icon"><item.icon size={20} /></span>
+                      <span className="nav-label">{item.label}</span>
+                      {activePage === item.id && <span className="nav-active-dot" />}
+                    </button>
+                  ))}
                 </div>
               </div>
             )
@@ -653,7 +635,7 @@ function Dashboard() {
               onClick={() => setShowSignOutModal(true)}
               title={!sidebarExpanded ? 'Sign Out' : ''}
             >
-              <span className="footer-btn-icon"><FiLogOut size={18} /></span>
+              <span className="footer-btn-icon"><LuLogOut size={18} /></span>
               <span className="btn-label">Sign Out</span>
             </button>
           </div>
@@ -696,7 +678,7 @@ function Dashboard() {
 
         {(updateInfo || updateDownloading || updateReady) && (
           <div className={`update-banner ${updateReady ? 'ready' : ''}`}>
-            <FiDownload size={15} />
+            <LuDownload size={15} />
             {updateReady ? (
               <>
                 <span className="update-text">Update ready — restart to apply the new version.</span>
@@ -729,14 +711,14 @@ function Dashboard() {
 
         {lanSyncFailures.length > 0 && (
           <div className="sync-failure-banner">
-            <FiAlertTriangle size={15} style={{ flexShrink: 0 }} />
+            <LuTriangleAlert size={15} style={{ flexShrink: 0 }} />
             <span>
               <strong>{lanSyncFailures.length} operation{lanSyncFailures.length !== 1 ? 's' : ''} failed to sync</strong>
               {' '}after reconnecting to the Main computer. Please verify that the following records were saved:
               {' '}{[...new Set(lanSyncFailures.map(f => f.channel?.split(':')[2] || 'data'))].join(', ')}.
             </span>
             <button onClick={() => setLanSyncFailures([])}>
-              <FiX size={14} />
+              <LuX size={14} />
             </button>
           </div>
         )}
@@ -856,7 +838,7 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
   )
 }
 
-function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, renderIcon, renderNavIcon, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
+function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -883,19 +865,10 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
               className="cashier-action-btn primary"
               onClick={() => setActivePage('sales')}
             >
-              <span className="action-icon">{renderIcon('shopping-cart', 32)}</span>
+              <span className="action-icon"><LuShoppingCart size={32} /></span>
               <span className="action-label">Process Sale</span>
               <span className="action-hint">Record a new transaction</span>
             </button>
-
-            {/* <button
-              className="cashier-action-btn"
-              onClick={() => setActivePage('endofday')}
-            >
-              <span className="action-icon">{renderIcon('bar-chart-2', 32)}</span>
-              <span className="action-label">End of Day</span>
-              <span className="action-hint">Close and reconcile</span>
-            </button> */}
           </div>
         </div>
       </>
@@ -919,31 +892,23 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
       )}
 
       <div className="stats-grid">
-        {stats.map((stat, i) => {
-          // Define navigation based on stat type
-          let navPage = null
-          if (stat.label === "Low Stock Items") navPage = 'stock'
-          else if (stat.label === "Total Products") navPage = 'products'
-          else if (stat.label === "Stock Value") navPage = 'products'
-          else if (stat.label === "Today's Sales") navPage = 'sales'
-          else if (stat.label === "Today's Expenses") navPage = 'expenses'
-
-          return (
-            <div 
-              key={i} 
-              className={`stat-card ${stat.type} ${navPage ? 'clickable' : ''}`}
-              onClick={() => navPage && setActivePage(navPage)}
-              role={navPage ? 'button' : undefined}
-              tabIndex={navPage ? 0 : undefined}
-              onKeyDown={(e) => navPage && (e.key === 'Enter' || e.key === ' ') && setActivePage(navPage)}
-            >
-              <div className="stat-icon">{renderIcon(stat.icon, 28)}</div>
+        {stats.map((stat, i) => (
+          <div
+            key={i}
+            className={`stat-card ${stat.type} ${stat.page ? 'clickable' : ''}`}
+            onClick={() => stat.page && setActivePage(stat.page)}
+            role={stat.page ? 'button' : undefined}
+            tabIndex={stat.page ? 0 : undefined}
+            onKeyDown={(e) => stat.page && (e.key === 'Enter' || e.key === ' ') && setActivePage(stat.page)}
+          >
+            <div className="stat-top">
               <div className="stat-label">{stat.label}</div>
-              <div className="stat-value">{stat.value}</div>
-              <div className="stat-sub">{stat.sub}</div>
+              <div className="stat-icon"><stat.icon size={20} /></div>
             </div>
-          )
-        })}
+            <div className="stat-value">{stat.value}</div>
+            <div className="stat-sub">{stat.sub}</div>
+          </div>
+        ))}
       </div>
 
       <div className="quick-actions">
@@ -955,12 +920,12 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
               className={`action-btn theme-${action.theme}`}
               onClick={() => setActivePage(action.page)}
             >
-              <span className="action-icon-wrap">{renderIcon(action.icon, 18)}</span>
+              <span className="action-icon-wrap"><action.icon size={18} /></span>
               <span className="action-text">
                 <span className="action-label">{action.label}</span>
                 <span className="action-hint">{action.hint}</span>
               </span>
-              <FiArrowRight className="action-arrow" size={14} />
+              <LuArrowRight className="action-arrow" size={14} />
             </button>
           ))}
         </div>
@@ -970,7 +935,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
       {(user.role === 'Admin' || user.role === 'Manager') && (
         <div className="dashboard-section live-cashiers-widget">
           <div className="section-header">
-            <h3><FiUsers size={15} /> Live Cashiers</h3>
+            <h3><LuUsers size={15} /> Live Cashiers</h3>
             <button className="section-link" onClick={() => setActivePage('cashier-sessions')}>
               View All Sessions
             </button>
@@ -995,7 +960,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
               </div>
               {activeCashiers.some(shift => Math.abs(shift.overall_variance || 0) > 0.01) && (
                 <div className="variance-alerts">
-                  <div className="alert-header"><FiAlertTriangle size={12} /> Shifts with Variances</div>
+                  <div className="alert-header"><LuTriangleAlert size={12} /> Shifts with Variances</div>
                   {activeCashiers.filter(shift => Math.abs(shift.overall_variance || 0) > 0.01).map((shift, idx) => (
                     <div key={idx} className="variance-alert-item">
                       <span className="cashier-name">{shift.cashier_username}</span>
@@ -1009,7 +974,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
             </div>
           ) : (
             <div className="empty-state">
-              <FiClock size={32} />
+              <LuClock size={32} />
               <p>No active cashier sessions</p>
             </div>
           )}
@@ -1019,29 +984,38 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
       <div className="dashboard-grid">
         <div className="dashboard-section">
           <div className="section-header">
-            <h3><FiAlertTriangle size={15} /> Low Stock ({lowStockItems?.length || 0})</h3>
+            <h3><LuTriangleAlert size={15} /> Low Stock ({lowStockItems?.length || 0})</h3>
             {lowStockItems && lowStockItems.length > 0 && (
               <button className="section-link" onClick={() => setActivePage('stock')}>View All</button>
             )}
           </div>
           {lowStockItems && lowStockItems.length > 0 ? (
             <div className="low-stock-list">
-              {lowStockItems.slice(0, 5).map((item, idx) => (
-                <div key={idx} className="stock-item">
-                  <div className="item-name">{item.name}</div>
-                  <div className="item-qty">
-                    <span className="current">{item.current_quantity}</span>
-                    <span className="reorder">/ {item.reorder_level}</span>
+              {lowStockItems.slice(0, 5).map((item, idx) => {
+                const qty = item.current_quantity || 0
+                const reorder = item.reorder_level || 1
+                return (
+                  <div key={idx} className="stock-row">
+                    <div className="stock-row-top">
+                      <span className="item-name">{item.name}</span>
+                      <span className={`qty-pill${qty === 0 ? ' zero' : ''}`}>{qty} / {item.reorder_level}</span>
+                    </div>
+                    <div className="stock-meter">
+                      <div
+                        className={`stock-meter-fill${qty === 0 ? ' zero' : ''}`}
+                        style={{ width: `${Math.min(100, (qty / reorder) * 100)}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
               {lowStockItems.length > 5 && (
                 <div className="more-items">+{lowStockItems.length - 5} more items</div>
               )}
             </div>
           ) : (
             <div className="empty-state">
-              <FiPackage size={32} />
+              <LuPackage size={32} />
               <p>All stock levels are good</p>
             </div>
           )}
@@ -1049,7 +1023,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
 
         <div className="dashboard-section">
           <div className="section-header">
-            <h3><FiBarChart2 size={15} /> Recent Sales ({recentSales?.length || 0})</h3>
+            <h3><LuReceiptText size={15} /> Recent Sales ({recentSales?.length || 0})</h3>
             {recentSales && recentSales.length > 0 && (
               <button className="section-link" onClick={() => setActivePage('sales')}>New Sale</button>
             )}
@@ -1067,7 +1041,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
             </div>
           ) : (
             <div className="empty-state">
-              <FiShoppingCart size={32} />
+              <LuShoppingCart size={32} />
               <p>No sales yet today</p>
             </div>
           )}
@@ -1092,7 +1066,7 @@ function ComingSoon({ page }) {
 
   return (
     <div className="coming-soon">
-      <div className="coming-icon"><FiPlus size={64} /></div>
+      <div className="coming-icon"><LuPlus size={64} /></div>
       <h2>{labels[page] || page}</h2>
       <p>This module is being built. Check back soon!</p>
     </div>

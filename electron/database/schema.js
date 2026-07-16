@@ -264,6 +264,10 @@ function runMigrations(db) {
     // hold the signed delta and which point at the receiving they correct
     addColIfMissing('stock_receivings', 'corrects_receiving_id', 'INTEGER')
     addColIfMissing('stock_receivings', 'correction_reason', 'TEXT')
+    // expiry tracking lives on receivings (batches) — expiry_discarded_at marks a
+    // batch as handled (discarded/written off) so it stops appearing in the tracker
+    addColIfMissing('stock_receivings', 'expiry_date', 'TEXT')
+    addColIfMissing('stock_receivings', 'expiry_discarded_at', 'TEXT')
 
     // expenses
     addColIfMissing('expenses', 'shift_id', 'INTEGER')

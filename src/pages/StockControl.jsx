@@ -113,6 +113,7 @@ function StockControl() {
     product_id: '',
     supplier_id: '',
     date_received: new Date().toISOString().split('T')[0],
+    expiry_date: '',
     cartons: '',
     units_per_carton: '',
     cost_per_carton: '',
@@ -405,6 +406,9 @@ function StockControl() {
     setSuccessMessage('')
 
     if (!formData.product_id) { setError('Please select a product'); return }
+    if (formData.expiry_date && formData.expiry_date < formData.date_received) {
+      setError('Expiry date cannot be before the date received'); return
+    }
 
     try {
       let msg = ''
@@ -422,7 +426,8 @@ function StockControl() {
           cost_per_carton: 0,
           cost_per_unit: directCpu,
           total_value: directTotalValue,
-          recorded_by: user?.username || 'System'
+          recorded_by: user?.username || 'System',
+          expiry_date: formData.expiry_date || null
         })
         msg = 'Stock received and inventory updated!'
       } else {
@@ -434,7 +439,8 @@ function StockControl() {
           cost_per_unit: directCpu,
           date_received: formData.date_received,
           notes: formData.notes,
-          recorded_by: user?.username || 'System'
+          recorded_by: user?.username || 'System',
+          expiry_date: formData.expiry_date || null
         })
         const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || ''
         msg = `${directQty} units of "${productName}" added to stock!`
@@ -478,15 +484,28 @@ function StockControl() {
     if (['datereceived', 'date', 'receiveddate'].includes(s))          return 'date_received'
     if (['quantity', 'qty', 'units', 'totalunits'].includes(s))        return 'quantity'
     if (['costperunit', 'costunit', 'unitcost', 'cpu', 'cost'].includes(s)) return 'cost_per_unit'
+    if (['expirydate', 'expiry', 'expirationdate', 'expdate', 'bestbefore', 'bestbeforedate', 'bbd'].includes(s)) return 'expiry_date'
     if (['notes', 'note', 'description', 'remarks'].includes(s))       return 'notes'
     return null
   }
 
+  // Excel cells may hold dates as serial numbers, Date objects, or text —
+  // normalize all of them to YYYY-MM-DD (or '' when blank/unreadable)
+  const toISODate = (v) => {
+    if (v === '' || v == null) return ''
+    if (typeof v === 'number') {
+      const d = new Date(Math.round((v - 25569) * 86400 * 1000))
+      return isNaN(d) ? '' : d.toISOString().split('T')[0]
+    }
+    const d = new Date(String(v).trim())
+    return isNaN(d) ? '' : d.toISOString().split('T')[0]
+  }
+
   const downloadImportTemplate = () => {
     const templateData = [
-      { 'Product Name': 'Bread', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 48, 'Cost Per Unit': 0.80, Notes: '' },
-      { 'Product Name': 'Cooking Oil 2L', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 24, 'Cost Per Unit': 3.20, Notes: '' },
-      { 'Product Name': 'Salt 1kg', 'Purchase Type': 'direct', 'Supplier Name': '', Quantity: 10, 'Cost Per Unit': 0.50, Notes: 'Cash purchase at market' },
+      { 'Product Name': 'Bread', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 48, 'Cost Per Unit': 0.80, 'Expiry Date': '2026-08-01', Notes: '' },
+      { 'Product Name': 'Cooking Oil 2L', 'Purchase Type': 'supplier', 'Supplier Name': 'Fresh Bakers Ltd', Quantity: 24, 'Cost Per Unit': 3.20, 'Expiry Date': '', Notes: '' },
+      { 'Product Name': 'Salt 1kg', 'Purchase Type': 'direct', 'Supplier Name': '', Quantity: 10, 'Cost Per Unit': 0.50, 'Expiry Date': '', Notes: 'Cash purchase at market' },
     ]
     const ws = utils.json_to_sheet(templateData)
     const wb = utils.book_new()
@@ -537,6 +556,7 @@ function StockControl() {
             date_received: String(row.date_received ?? '').trim() || new Date().toISOString().split('T')[0],
             quantity:      qty,
             cost_per_unit: parseFloat(row.cost_per_unit) || 0,
+            expiry_date:   toISODate(row.expiry_date),
             notes:         String(row.notes ?? '').trim(),
           })
         }
@@ -754,7 +774,7 @@ function StockControl() {
               </div>
             )}
 
-            {/* ── Step 4: Date Received (both types) ── */}
+            {/* ── Step 4: Date Received + Expiry Date (both types) ── */}
             <div className="form-row">
               <div className="form-group">
                 <label>Date Received *</label>
@@ -764,6 +784,16 @@ function StockControl() {
                   onChange={e => handleFieldChange('date_received', e.target.value)}
                   required
                 />
+              </div>
+              <div className="form-group">
+                <label>Expiry Date</label>
+                <input
+                  type="date"
+                  value={formData.expiry_date}
+                  onChange={e => handleFieldChange('expiry_date', e.target.value)}
+                  min={formData.date_received}
+                />
+                <p className="field-hint">Optional — leave blank for non-perishables. Shown in Expiry Tracking.</p>
               </div>
             </div>
 
@@ -977,6 +1007,7 @@ function StockControl() {
                           <th>Date</th>
                           <th>Qty</th>
                           <th>Cost/Unit</th>
+                          <th>Expiry</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -988,11 +1019,12 @@ function StockControl() {
                             <td>{row.date_received}</td>
                             <td>{row.quantity}</td>
                             <td>${row.cost_per_unit.toFixed(2)}</td>
+                            <td>{row.expiry_date || '—'}</td>
                           </tr>
                         ))}
                         {importPreview.valid.length > 8 && (
                           <tr className="import-more-row">
-                            <td colSpan="6">… and {importPreview.valid.length - 8} more rows</td>
+                            <td colSpan="7">… and {importPreview.valid.length - 8} more rows</td>
                           </tr>
                         )}
                       </tbody>
@@ -1205,6 +1237,9 @@ function StockControl() {
                       {r.product_name}
                       {isCorrection && (
                         <div className="correction-detail">Corrects record #{r.corrects_receiving_id}{r.correction_reason ? ` — ${r.correction_reason}` : ''}</div>
+                      )}
+                      {!isCorrection && r.expiry_date && (
+                        <div className="expiry-detail">Expires {new Date(r.expiry_date).toLocaleDateString('en-ZW')}</div>
                       )}
                     </td>
                     <td>{r.supplier_name || '—'}</td>
