@@ -2,6 +2,7 @@ const { getDb } = require('../index')
 const { getProductById, updateProductQuantity } = require('./products')
 const { logAuditAction } = require('./audit')
 const { createNotification } = require('./notifications')
+const { eventNowIso, eventNowSql, eventNowMs } = require('../eventClock')
 
 function addSale(sale, saleItems) {
   const db = getDb()
@@ -29,16 +30,20 @@ function addSale(sale, saleItems) {
   // receipt_number is part of the insert so offline/queued sales keep their printed
   // receipt number — a separate update can't target a sale that has no id yet.
   // till_code records which machine rang this up (its own receipt-number namespace).
+  // created_at is stamped explicitly (not left to the datetime('now') default) so a
+  // sale replayed from a satellite's offline queue keeps the time it was actually
+  // rung up, not the time Main happened to receive it. eventNowSql() = that true
+  // time for replays, Main's own clock otherwise.
   const insertSale = db.prepare(
-    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, cash_amount, usd_amount, currency, note, status, shift_id, external_id, receipt_number, till_code)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)`
+    `INSERT INTO sales (cashier, branch_id, total, cash_tendered, change_given, payment_method, cash_amount, usd_amount, currency, note, status, shift_id, external_id, receipt_number, till_code, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`
   )
   const insertItem = db.prepare(
     `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, cost_price, selling_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
   const updateQty = db.prepare(`UPDATE products SET current_quantity = ?, last_sold_date = ?, sync_updated_at = datetime('now') WHERE id = ?`)
   const insertMovement = db.prepare(
-    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by) VALUES (?, ?, 'SOLD', ?, ?)`
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by, created_at) VALUES (?, ?, 'SOLD', ?, ?, ?)`
   )
   const updateShift = db.prepare(
     `UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`
@@ -53,13 +58,34 @@ function addSale(sale, saleItems) {
       else if (usdAmt > 0) method = 'USD'
       else method = 'Cash'
     }
+    const now = eventNowIso()
+    const nowSql = eventNowSql()
+
+    // A sale that arrives with no shift is a satellite's provisional/offline sale:
+    // its shift-start was still sitting in the queue when the cashier rang it up, so
+    // it was written with shift_id null. Attach it here to the cashier's shift whose
+    // window covers when the sale actually happened (nowSql = its true time). Doing
+    // this at insert time means the counts are right no matter what order the queued
+    // writes replay in — the time-window reconcile that runs later is now just a
+    // backstop, not the only thing linking these sales.
+    let shiftId = sale.shift_id || null
+    if (!shiftId && sale.cashier) {
+      const match = db.prepare(
+        `SELECT id FROM shifts
+           WHERE cashier_username = ?
+             AND datetime(?) >= datetime(started_at)
+             AND datetime(?) <= datetime(COALESCE(closed_at, '9999-12-31'))
+         ORDER BY started_at DESC LIMIT 1`
+      ).get(sale.cashier, nowSql, nowSql)
+      if (match) shiftId = match.id
+    }
+
     const saleId = insertSale.run(
       sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given,
-      method, cashAmt, usdAmt, sale.currency || 'USD', sale.note || '', sale.shift_id || null,
-      sale.external_id || null, sale.receipt_number || null, sale.till_code || null
+      method, cashAmt, usdAmt, sale.currency || 'USD', sale.note || '', shiftId,
+      sale.external_id || null, sale.receipt_number || null, sale.till_code || null, nowSql
     ).lastInsertRowid
 
-    const now = new Date().toISOString()
     const clamped = []
     for (const item of saleItems) {
       insertItem.run(saleId, item.product_id, item.product_name, item.quantity, item.cost_price, item.selling_price, item.subtotal)
@@ -70,10 +96,10 @@ function addSale(sale, saleItems) {
         newQty = 0
       }
       updateQty.run(newQty, now, item.product_id)
-      insertMovement.run(item.product_id, item.product_name, item.quantity, sale.cashier)
+      insertMovement.run(item.product_id, item.product_name, item.quantity, sale.cashier, nowSql)
     }
 
-    if (sale.shift_id) updateShift.run(sale.total, sale.shift_id)
+    if (shiftId) updateShift.run(sale.total, shiftId)
     return { saleId, clamped }
   })
 
@@ -131,7 +157,7 @@ function getSaleItems(saleId) {
 function holdSale(saleId, heldName) {
   getDb().prepare(
     `UPDATE sales SET status = 'held', held_name = ?, held_at = ?, sync_updated_at = datetime('now') WHERE id = ?`
-  ).run(heldName || `Hold-${saleId}`, new Date().toISOString(), saleId)
+  ).run(heldName || `Hold-${saleId}`, eventNowIso(), saleId)
 }
 
 function getHeldSales() {
@@ -141,7 +167,7 @@ function getHeldSales() {
 function recallHeldSale(saleId) {
   getDb().prepare(
     `UPDATE sales SET status = 'pending', released_from_hold_at = ?, sync_updated_at = datetime('now') WHERE id = ?`
-  ).run(new Date().toISOString(), saleId)
+  ).run(eventNowIso(), saleId)
   const sale = getSaleById(saleId)
   const items = getSaleItems(saleId)
   return { ...sale, items }
@@ -165,7 +191,9 @@ function voidSale(saleId, voidReason, voidedBy) {
   const sale = getSaleById(saleId)
   if (!sale) throw new Error('Sale not found')
 
-  const hoursDiff = (Date.now() - new Date(sale.created_at)) / (1000 * 60 * 60)
+  // Measured against the true void time (eventNowMs) so a void done offline within
+  // the 24h window isn't wrongly rejected just because Main replayed it a day later.
+  const hoursDiff = (eventNowMs() - new Date(sale.created_at)) / (1000 * 60 * 60)
   if (hoursDiff > 24) throw new Error('Cannot void sales older than 24 hours')
 
   const items = getSaleItems(saleId)
@@ -175,15 +203,16 @@ function voidSale(saleId, voidReason, voidedBy) {
 
   const updateQty = db.prepare(`UPDATE products SET current_quantity = ? WHERE id = ?`)
   const insertMovement = db.prepare(
-    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'VOIDED', ?, ?, ?)`
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'VOIDED', ?, ?, ?, ?)`
   )
 
   db.transaction(() => {
-    const now = new Date().toISOString()
+    const now = eventNowIso()
+    const nowSql = eventNowSql()
     for (const item of items) {
       const product = getProductById(item.product_id)
       updateQty.run((product.current_quantity || 0) + item.quantity, item.product_id)
-      insertMovement.run(item.product_id, item.product_name, item.quantity, `Void sale #${saleId}: ${voidReason}`, voidedBy)
+      insertMovement.run(item.product_id, item.product_name, item.quantity, `Void sale #${saleId}: ${voidReason}`, voidedBy, nowSql)
     }
     db.prepare(`UPDATE sales SET status = 'voided', void_reason = ?, voided_by = ?, voided_at = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run(voidReason, voidedBy, now, saleId)

@@ -1,6 +1,11 @@
 const { getDb } = require('../index')
 const { getProductById } = require('./products')
 const { logAuditAction } = require('./audit')
+const { eventNowIso, eventNowSql } = require('../eventClock')
+
+// Date portion (YYYY-MM-DD) of the true action time — the real receiving date for a
+// write replayed from a satellite's offline queue, today otherwise.
+function eventDate() { return eventNowIso().split('T')[0] }
 
 function addStockReceiving(receiving) {
   const db = getDb()
@@ -19,8 +24,8 @@ function addStockReceiving(receiving) {
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run((product.current_quantity || 0) + receiving.total_units, receiving.product_id)
     db.prepare(
-      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by) VALUES (?, ?, 'RECEIVED', ?, ?)`
-    ).run(receiving.product_id, product.name, receiving.total_units, receiving.recorded_by)
+      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by, created_at) VALUES (?, ?, 'RECEIVED', ?, ?, ?)`
+    ).run(receiving.product_id, product.name, receiving.total_units, receiving.recorded_by, eventNowSql())
   })()
 }
 
@@ -119,10 +124,10 @@ function correctStockReceiving(receivingId, corrected, recordedBy) {
         .run(stockAfter, original.product_id)
     }
     db.prepare(
-      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'RECEIVING_CORRECTION', ?, ?, ?)`
+      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'RECEIVING_CORRECTION', ?, ?, ?, ?)`
     ).run(original.product_id, product.name, qtyDelta,
       `Correction of receiving #${receivingId}: qty ${effectiveUnits} → ${newUnits}, cost/unit $${effectiveCpu.toFixed(2)} → $${newCpu.toFixed(2)}. Reason: ${reason}`,
-      recordedBy || 'System')
+      recordedBy || 'System', eventNowSql())
   })()
 
   logAuditAction(
@@ -146,7 +151,7 @@ function recordInitialCost(productId, costPerUnit, recordedBy) {
   db.prepare(
     `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by)
      VALUES (NULL, ?, ?, 0, 0, 0, 0, ?, 0, ?)`
-  ).run(productId, new Date().toISOString().split('T')[0], parseFloat(costPerUnit) || 0, recordedBy || 'System')
+  ).run(productId, eventDate(), parseFloat(costPerUnit) || 0, recordedBy || 'System')
 }
 
 function recordDirectPurchase(purchase) {
@@ -157,7 +162,7 @@ function recordDirectPurchase(purchase) {
   const qty = purchase.quantity || 0
   const cpu = parseFloat(purchase.cost_per_unit) || 0
   const totalCost = qty * cpu
-  const dateReceived = purchase.date_received || new Date().toISOString().split('T')[0]
+  const dateReceived = purchase.date_received || eventDate()
 
   db.transaction(() => {
     db.prepare(
@@ -167,8 +172,8 @@ function recordDirectPurchase(purchase) {
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run((product.current_quantity || 0) + qty, purchase.product_id)
     db.prepare(
-      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`
-    ).run(purchase.product_id, product.name, qty, purchase.notes || '', purchase.recorded_by || 'System')
+      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?, ?)`
+    ).run(purchase.product_id, product.name, qty, purchase.notes || '', purchase.recorded_by || 'System', eventNowSql())
   })()
 }
 
@@ -295,8 +300,8 @@ function discardExpiredBatch(productId, expiryDate, units, recordedBy) {
       db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
         .run(stockAfter, productId)
       db.prepare(
-        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'EXPIRED_DISCARD', ?, ?, ?)`
-      ).run(productId, product.name, -writeOff, `Discarded expired batch (expiry ${expiryDate})`, recordedBy || 'System')
+        `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'EXPIRED_DISCARD', ?, ?, ?, ?)`
+      ).run(productId, product.name, -writeOff, `Discarded expired batch (expiry ${expiryDate})`, recordedBy || 'System', eventNowSql())
     }
     db.prepare(`UPDATE stock_receivings SET expiry_discarded_at = datetime('now') WHERE product_id = ? AND expiry_date = ?`)
       .run(productId, expiryDate)
@@ -324,10 +329,10 @@ function importStockReceivings(rows, recordedBy) {
   )
   const updateQty      = db.prepare(`UPDATE products SET current_quantity = current_quantity + ?, sync_updated_at = datetime('now') WHERE id = ?`)
   const insertMovementReceived = db.prepare(
-    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by) VALUES (?, ?, 'RECEIVED', ?, ?)`
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by, created_at) VALUES (?, ?, 'RECEIVED', ?, ?, ?)`
   )
   const insertMovementDirect = db.prepare(
-    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?)`
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?, ?)`
   )
 
   let inserted = 0, created_products = 0, created_suppliers = 0
@@ -343,7 +348,7 @@ function importStockReceivings(rows, recordedBy) {
         if (qty <= 0) { errors.push(`Row ${i + 2}: quantity must be > 0`); continue }
 
         const cpu  = parseFloat(row.cost_per_unit) || 0
-        const date = new Date().toISOString().split('T')[0]
+        const date = eventDate()
         const type = String(row.purchase_type || 'supplier').toLowerCase().trim() === 'direct' ? 'direct' : 'supplier'
         const by   = recordedBy || 'Import'
         // Only accept well-formed dates — anything else imports as "no expiry"
@@ -371,11 +376,11 @@ function importStockReceivings(rows, recordedBy) {
         if (type === 'supplier') {
           insertReceiving.run(supplierId, product.id, date, 0, 0, qty, 0, cpu, totalValue, by, expiry)
           updateQty.run(qty, product.id)
-          insertMovementReceived.run(product.id, product.name, qty, by)
+          insertMovementReceived.run(product.id, product.name, qty, by, eventNowSql())
         } else {
           insertReceiving.run(null, product.id, date, 1, qty, qty, totalValue, cpu, totalValue, by, expiry)
           updateQty.run(qty, product.id)
-          insertMovementDirect.run(product.id, product.name, qty, row.notes || '', by)
+          insertMovementDirect.run(product.id, product.name, qty, row.notes || '', by, eventNowSql())
         }
         inserted++
       } catch (err) {
@@ -396,8 +401,8 @@ function reconcileProduct(productId, countedQty, notes, recordedBy) {
   db.transaction(() => {
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`).run(countedQty, productId)
     db.prepare(
-      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?)`
-    ).run(productId, product.name, adjustment, notes || '', recordedBy || 'System')
+      `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?, ?)`
+    ).run(productId, product.name, adjustment, notes || '', recordedBy || 'System', eventNowSql())
   })()
   return { product_id: productId, product_name: product.name, previous_qty: product.current_quantity || 0, new_qty: countedQty, adjustment }
 }
@@ -406,7 +411,7 @@ function reconcileProducts(adjustments, recordedBy) {
   const db = getDb()
   const updateQty = db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
   const insertMovement = db.prepare(
-    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?)`
+    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'ADJUSTMENT', ?, ?, ?, ?)`
   )
   const getProduct = db.prepare(`SELECT id, name, current_quantity FROM products WHERE id = ?`)
   const results = []
@@ -416,7 +421,7 @@ function reconcileProducts(adjustments, recordedBy) {
       if (!product) continue
       const adjustment = adj.counted_qty - (product.current_quantity || 0)
       updateQty.run(adj.counted_qty, adj.product_id)
-      insertMovement.run(adj.product_id, product.name, adjustment, adj.notes || '', recordedBy || 'System')
+      insertMovement.run(adj.product_id, product.name, adjustment, adj.notes || '', recordedBy || 'System', eventNowSql())
       results.push({ product_id: adj.product_id, product_name: product.name, previous_qty: product.current_quantity || 0, new_qty: adj.counted_qty, adjustment })
     }
   })()

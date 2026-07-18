@@ -1,5 +1,6 @@
 const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
+const { eventNowIso } = require('../eventClock')
 
 function getProducts() {
   return getDb().prepare('SELECT * FROM products ORDER BY name ASC').all()
@@ -56,7 +57,7 @@ function updateProductImage(productId, imageData) {
 }
 
 function updateProductLastSoldDate(productId) {
-  getDb().prepare('UPDATE products SET last_sold_date = ? WHERE id = ?').run(new Date().toISOString(), productId)
+  getDb().prepare('UPDATE products SET last_sold_date = ? WHERE id = ?').run(eventNowIso(), productId)
 }
 
 function getLatestProductPrice(productId) {

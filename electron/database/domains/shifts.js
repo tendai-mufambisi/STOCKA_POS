@@ -1,6 +1,7 @@
 const { getDb } = require('../index')
 const { createNotification } = require('./notifications')
 const { logAuditAction } = require('./audit')
+const { eventNowIso } = require('../eventClock')
 
 
 function getShiftById(shiftId) {
@@ -13,7 +14,9 @@ function startShift(userData, openingFloat, branchId = null) {
     ? (openingFloat.opening_cash ?? 0)
     : (parseFloat(openingFloat) || 0)
 
-  const startedAt = new Date().toISOString()
+  // eventNowIso() = the true shift-open time when this was queued offline and
+  // replayed later; Main's own clock for a live open.
+  const startedAt = eventNowIso()
   const { lastInsertRowid: shiftId } = db.prepare(
     `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at)
      VALUES (?, ?, ?, 'open', ?, 0, ?)`
@@ -83,7 +86,7 @@ function closeShift(shiftId, closingFloat, notes = '') {
   let reconciliationStatus = 'balanced'
   if (Math.abs(variance) > 0.01) reconciliationStatus = variance > 0 ? 'over' : 'short'
 
-  const closedAt = new Date().toISOString()
+  const closedAt = eventNowIso()
   db.prepare(
     `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
      reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',

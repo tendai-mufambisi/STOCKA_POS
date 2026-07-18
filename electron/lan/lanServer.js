@@ -14,6 +14,7 @@ const branches     = require('../database/domains/branches')
 const audit        = require('../database/domains/audit')
 const eod          = require('../database/domains/eod')
 const holds        = require('../database/domains/holds')
+const eventClock   = require('../database/eventClock')
 const { allocateSatelliteCode } = require('./tillIdentity')
 
 // Channels that mutate data — used to decide what to broadcast over SSE and
@@ -307,16 +308,21 @@ const ROUTES = [
 
   // UNIFIED INVOKE — used by satellite clients to proxy any domain call
   ['POST', '/lan/invoke', async (req, res, _p, _q, body) => {
-    const { channel, args = [] } = body
+    const { channel, args = [], occurred_at = null } = body
     if (!channel || typeof channel !== 'string') return send(res, 400, { error: 'Missing channel' })
     const fn = DISPATCH[channel]
     if (!fn) return send(res, 404, { error: `Unknown channel: ${channel}` })
     // Tag audit entries with the satellite's IP so the admin log shows which machine acted
     const clientIp = req.socket.remoteAddress || 'unknown'
     audit.setRequestMachine(clientIp)
+    // Stamp business timestamps with the real action time for replayed offline writes
+    // (occurred_at is set only by the client's queue flush; live writes leave it null,
+    // so the domain functions fall back to Main's own clock).
+    eventClock.setEventTime(occurred_at)
     try {
       const result = fn(...args)
       audit.clearRequestMachine()
+      eventClock.clearEventTime()
       send(res, 200, { result })
       if (WRITE_CHANNELS_SERVER.has(channel)) {
         broadcastChange(channel)
@@ -325,6 +331,7 @@ const ROUTES = [
       }
     } catch (err) {
       audit.clearRequestMachine()
+      eventClock.clearEventTime()
       const status = err.message.includes('Insufficient stock') ? 409
         : err.message.includes('not found') ? 404 : 500
       send(res, status, { error: err.message })

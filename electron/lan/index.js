@@ -50,6 +50,29 @@ function getStatus() {
           itemCount: Array.isArray(item.args[1]) ? item.args[1].length : 0,
         }
       }
+      // Stock received while offline — enrich so the Stock Control page can show
+      // the same "waiting to sync" highlight the Transactions page shows for sales.
+      // (product_name isn't in the payload; the renderer resolves it from product_id.)
+      if (item.channel === 'domain:stock:addReceiving' && item.args?.[0]) {
+        const r = item.args[0]
+        base.summary = {
+          kind: 'supplier',
+          productId: r.product_id ?? null,
+          units: r.total_units || 0,
+          costPerUnit: r.cost_per_unit || 0,
+          recordedBy: r.recorded_by || null,
+        }
+      }
+      if (item.channel === 'domain:stock:recordDirect' && item.args?.[0]) {
+        const p = item.args[0]
+        base.summary = {
+          kind: 'direct',
+          productId: p.product_id ?? null,
+          units: p.quantity || 0,
+          costPerUnit: p.cost_per_unit || 0,
+          recordedBy: p.recorded_by || null,
+        }
+      }
       return base
     }),
     serverIp:         cfg.serverIp || null,

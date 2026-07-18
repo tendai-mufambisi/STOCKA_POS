@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct, correctStockReceiving } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3 } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3, FiClock } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
 import './StockControl.css'
 
@@ -244,8 +244,28 @@ function StockControl() {
   const [historySupplierFilter, setHistorySupplierFilter] = useState('all')
   const [sortConfig, setSortConfig] = useState({ column: 'date', direction: 'desc' })
 
+  // Stock received on this till while offline — queued writes Main hasn't got yet.
+  // Only ever non-empty on a satellite with pending stock writes.
+  const [pendingReceivings, setPendingReceivings] = useState([])
+
   useEffect(() => { loadData() }, [])
   useLanSync(() => loadData(true))
+
+  // Mirror the Transactions page: surface queued stock receivings so nothing done
+  // offline is invisible until it syncs. Refreshed on every LAN status change.
+  useEffect(() => {
+    const lan = window.stocka?.lan
+    if (!lan) return
+    const refreshQueue = (status) => {
+      const items = (status?.queueItems || []).filter(
+        i => (i.channel === 'domain:stock:addReceiving' || i.channel === 'domain:stock:recordDirect') && i.summary
+      )
+      setPendingReceivings(items)
+    }
+    lan.getStatus().then(refreshQueue).catch(() => {})
+    const off = lan.onStatusChange?.(refreshQueue)
+    return () => { try { off?.() } catch (_) {} }
+  }, [])
 
   useEffect(() => { applyHistoryFilters() }, [receivings, historySearch, historyTypeFilter, historySupplierFilter, sortConfig])
 
@@ -1145,6 +1165,47 @@ function StockControl() {
           </div>
         )
       })()}
+
+      {/* Pending sync — stock received on this till that Main hasn't got yet.
+          Shown above the history so nothing received offline is ever hidden. */}
+      {pendingReceivings.length > 0 && (
+        <div className="receivings-list" style={{ marginBottom: 16, border: '1px solid #fde68a', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ background: '#fffbeb', padding: '8px 14px', fontSize: 12, fontWeight: 700, color: '#92400e', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FiClock size={13} /> {pendingReceivings.length} stock receiving{pendingReceivings.length !== 1 ? 's' : ''} on this till — waiting to sync to Main
+          </div>
+          <div className="receivings-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Product</th>
+                  <th>Type</th>
+                  <th className="th-right">Units</th>
+                  <th className="th-right">Cost/Unit</th>
+                  <th>By</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingReceivings.map(item => {
+                  const prod = products.find(p => p.id === item.summary.productId)
+                  return (
+                    <tr key={item.id}>
+                      <td className="th-nowrap">{new Date(item.timestamp).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })}</td>
+                      <td>{prod?.name || `#${item.summary.productId ?? '—'}`}</td>
+                      <td>{item.summary.kind === 'direct' ? 'Direct' : 'Supplier'}</td>
+                      <td className="th-right">{item.summary.units || '—'}</td>
+                      <td className="th-right">${(item.summary.costPerUnit || 0).toFixed(2)}</td>
+                      <td>{item.summary.recordedBy || '—'}</td>
+                      <td><span style={{ fontSize: 11, fontWeight: 700, color: '#d97706' }}>Pending</span></td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ── Purchase History Table ── */}
       <div className="receivings-list">

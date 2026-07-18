@@ -31,7 +31,10 @@ class OfflineQueue {
 
   peek() { return [...this.queue] }
 
-  // Call handler(channel, args) for each item; removes item on success.
+  // Call handler(channel, args, queuedAtMs) for each item; removes item on success.
+  // `queuedAtMs` is when the write was first enqueued — i.e. the real moment the
+  // cashier acted — so the caller can replay it to Main with its true event time
+  // instead of the (much later) replay time.
   // A handler error with `permanent = true` (the server rejected the write outright —
   // retrying can never succeed) ALSO removes the item, reported via `deadLettered`
   // so the caller can archive and surface it. Transient errors keep the item queued.
@@ -41,7 +44,7 @@ class OfflineQueue {
     const deadLettered = []
     for (const item of [...this.queue]) {
       try {
-        await handler(item.channel, item.args)
+        await handler(item.channel, item.args, item.timestamp)
         this.queue = this.queue.filter(q => q.id !== item.id)
         this._save()
       } catch (err) {

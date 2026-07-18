@@ -182,8 +182,11 @@ async function applyFullSnapshot(serverIp, serverPort, secret) {
 }
 
 // Proxy a domain:* IPC call to the server via the unified /lan/invoke endpoint.
-async function lanRequest(channel, args) {
-  const { status, body } = await httpRequest('POST', '/lan/invoke', { channel, args })
+// `occurredAt` (ISO string) is the real time the action happened — sent only for
+// replayed offline-queue writes so Main can stamp the true event time instead of
+// the replay time. Omitted for live writes, where Main's own clock is authoritative.
+async function lanRequest(channel, args, occurredAt = null) {
+  const { status, body } = await httpRequest('POST', '/lan/invoke', { channel, args, occurred_at: occurredAt })
   if (body.error) {
     const err = new Error(body.error)
     err.httpStatus = status
@@ -347,15 +350,18 @@ async function flushQueue() {
   if (!_queue || _queue.size() === 0 || _flushing) return
   _flushing = true
   try {
-    const { failed, deadLettered } = await _queue.flush(async (channel, args) => {
+    const { failed, deadLettered } = await _queue.flush(async (channel, args, queuedAtMs) => {
       // Replayed sales must always be recorded on Main — the cashier already took
       // the money. The server clamps stock at 0 and raises a discrepancy
       // notification instead of rejecting (sales.addSale `replayed` flag).
       if (channel === 'domain:sales:add' && args[0]) {
         args = [{ ...args[0], replayed: true }, ...args.slice(1)]
       }
+      // The write really happened when it was queued (queuedAtMs), not now — send
+      // that so Main stamps created_at/started_at/etc. with the true action time.
+      const occurredAt = new Date(queuedAtMs || Date.now()).toISOString()
       try {
-        return await lanRequest(channel, args)
+        return await lanRequest(channel, args, occurredAt)
       } catch (err) {
         // 4xx = the server examined and refused this write; retrying is pointless.
         // Mark permanent so the queue dead-letters it (same rule as the inline path).

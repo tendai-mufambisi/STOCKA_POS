@@ -1,5 +1,6 @@
 const { getDb } = require('../index')
 const os = require('os')
+const { eventNowSql } = require('../eventClock')
 
 // Module-level context set by the LAN server before each /lan/invoke call so
 // audit entries from satellite machines record the satellite's IP rather than
@@ -12,8 +13,8 @@ function logAuditAction(username, actionType, entityType, entityId, description,
   const machineName = _requestMachine || os.hostname()
   try {
     getDb().prepare(
-      `INSERT INTO transaction_audit_log (username, action_type, entity_type, entity_id, description, old_value, new_value, machine_name, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed')`
-    ).run(username, actionType, entityType, entityId, description, oldValue, newValue, machineName)
+      `INSERT INTO transaction_audit_log (username, action_type, entity_type, entity_id, description, old_value, new_value, machine_name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)`
+    ).run(username, actionType, entityType, entityId, description, oldValue, newValue, machineName, eventNowSql())
   } catch (_) {}
 }
 

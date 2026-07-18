@@ -1,9 +1,10 @@
 const { getDb } = require('../index')
+const { eventNowSql } = require('../eventClock')
 
 function createNotification(notification) {
   getDb().prepare(
-    `INSERT INTO notifications (type, message, product_id) VALUES (?, ?, ?)`
-  ).run(notification.type, notification.message, notification.product_id || null)
+    `INSERT INTO notifications (type, message, product_id, created_at) VALUES (?, ?, ?, ?)`
+  ).run(notification.type, notification.message, notification.product_id || null, eventNowSql())
 }
 
 function getActiveNotifications() {
