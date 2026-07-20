@@ -35,6 +35,10 @@ function getStatus() {
     clientCount: clients.length,
     clients,
     queueSize:   rawQueue.length,
+    // Real business writes only — what the offline banner shows a cashier. Legacy
+    // queue files can hold thousands of derived-state entries that are not
+    // "pending records" in any sense a cashier would recognise.
+    queueBusinessSize: _queue ? _queue.businessSize() : 0,
     // Enrich sale writes so a "this till" view can show real details (amount,
     // receipt number, item count) for sales still waiting to reach Main —
     // not just an opaque "1 write pending".

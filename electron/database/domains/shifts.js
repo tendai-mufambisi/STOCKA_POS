@@ -72,8 +72,33 @@ function computeDrawerTotals(db, shift) {
 
 function closeShift(shiftId, closingFloat, notes = '') {
   const db = getDb()
-  const shift = getShiftById(shiftId)
+
+  // eventNowIso() = the true close time when this was queued offline and replayed
+  // later; Main's own clock for a live close.
+  const closedAt = eventNowIso()
+
+  // A close that arrives with no shift id is a satellite's provisional/offline close:
+  // its shift-start was still sitting in the queue when the cashier closed the drawer,
+  // so the renderer never had a real id to send. The cashier travels in closingFloat
+  // instead — resolve their open shift here. Without this the replay throws
+  // 'Shift not found', the shift is left open, and the overnight stale-shift sweep
+  // discards the cashier's real closing count and variance.
+  let shift = shiftId ? getShiftById(shiftId) : null
+  const cashier = typeof closingFloat === 'object' ? closingFloat.cashier : null
+  if (!shift && cashier) {
+    // started_at <= closedAt matters: if the till stayed offline overnight and the
+    // cashier opened a fresh shift before the queue drained, the newest open shift
+    // is NOT the one this close belongs to. Pick the latest that had already begun
+    // when the drawer was actually counted.
+    shift = db.prepare(
+      `SELECT * FROM shifts
+         WHERE cashier_username = ? AND status = 'open'
+           AND datetime(started_at) <= datetime(?)
+       ORDER BY started_at DESC LIMIT 1`
+    ).get(cashier, closedAt) || null
+  }
   if (!shift) throw new Error('Shift not found')
+  shiftId = shift.id
 
   const { salesTotal, expectedCash } = computeDrawerTotals(db, shift)
 
@@ -86,7 +111,6 @@ function closeShift(shiftId, closingFloat, notes = '') {
   let reconciliationStatus = 'balanced'
   if (Math.abs(variance) > 0.01) reconciliationStatus = variance > 0 ? 'over' : 'short'
 
-  const closedAt = eventNowIso()
   db.prepare(
     `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
      reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',

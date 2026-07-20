@@ -1,6 +1,16 @@
 const fs = require('fs')
 const crypto = require('crypto')
 
+// Channels that carry derived state, not business writes. lanClient drops these
+// rather than enqueueing them; they are still counted out of the user-facing
+// "pending" figure here so that queue files written before that fix don't report
+// thousands of phantom pending records on the offline banner.
+const NON_BUSINESS_CHANNELS = new Set([
+  'domain:notifications:create',
+  'domain:notifications:clearForProduct',
+  'domain:notifications:markRead',
+])
+
 class OfflineQueue {
   constructor(queuePath) {
     this.path = queuePath
@@ -20,6 +30,10 @@ class OfflineQueue {
     fs.renameSync(tmp, this.path)
   }
 
+  // Saves eagerly, on purpose. Only business writes (sales, shifts, stock) reach the
+  // queue now that derived state is dropped upstream, and losing one of those to a
+  // power cut is far worse than the cost of a write. The 1 MB-per-enqueue problem
+  // came from the stock-alert flood, which is fixed at its source in lanClient.
   enqueue(channel, args) {
     const item = { id: crypto.randomUUID(), channel, args, timestamp: Date.now() }
     this.queue.push(item)
@@ -27,7 +41,12 @@ class OfflineQueue {
     return item.id
   }
 
+  // Everything still on disk, including legacy derived-state entries.
   size() { return this.queue.length }
+
+  // What a cashier would call "pending": real business writes only. This is the
+  // number the offline banner shows.
+  businessSize() { return this.queue.reduce((n, i) => n + (NON_BUSINESS_CHANNELS.has(i.channel) ? 0 : 1), 0) }
 
   peek() { return [...this.queue] }
 
@@ -66,4 +85,4 @@ class OfflineQueue {
   }
 }
 
-module.exports = { OfflineQueue }
+module.exports = { OfflineQueue, NON_BUSINESS_CHANNELS }
