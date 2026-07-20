@@ -43,7 +43,7 @@ function Products() {
   const [itemsPerPage, setItemsPerPage] = useState(25)
   const [defaultReorderLevel, setDefaultReorderLevel] = useState(5)
   const [showImportModal, setShowImportModal] = useState(false)
-  const [importPreview, setImportPreview] = useState({ fresh: [], duplicates: [], skipped: 0 })
+  const [importPreview, setImportPreview] = useState({ fresh: [], duplicates: [], skipped: 0, unpriced: 0 })
   const [duplicateResolutions, setDuplicateResolutions] = useState({})
   const [importError, setImportError] = useState('')
   const [importing, setImporting] = useState(false)
@@ -268,6 +268,20 @@ function Products() {
     writeFile(wb, `products_${new Date().toISOString().split('T')[0]}.xlsx`)
   }
 
+  // Spreadsheet money columns are rarely bare numbers — "$1.50", "1,250.00" and
+  // "1.50 USD" all come through as strings that parseFloat turns into NaN or,
+  // worse, 1. Returning null for "there was a value here we could not read"
+  // keeps that case distinguishable from a genuinely blank cell, so the import
+  // can warn instead of silently pricing stock at zero.
+  const parseMoney = (val) => {
+    if (val === null || val === undefined) return null
+    if (typeof val === 'number') return isFinite(val) ? val : null
+    const cleaned = String(val).replace(/[^0-9.\-]/g, '')
+    if (cleaned === '' || cleaned === '-' || cleaned === '.') return null
+    const n = parseFloat(cleaned)
+    return isFinite(n) ? n : null
+  }
+
   const normalizeHeader = (h) => {
     const s = String(h).toLowerCase().replace(/[\s_]+/g, '')
     if (['name', 'productname', 'product'].includes(s)) return 'name'
@@ -321,18 +335,33 @@ function Products() {
           setShowImportModal(true)
           return
         }
+        // A missing price column is worth stopping for. Stock imported at $0
+        // sells at $0 — the till rings up the sale, prints a receipt and takes
+        // no money, and it looks like normal trading until the totals are read.
+        const hasPriceColumn = normalized.some(r => r.selling_price !== undefined)
+        if (!hasPriceColumn) {
+          setImportError(
+            'Could not find a "Selling Price" column. Importing without it would ' +
+            'price every product at $0 and those products would sell for nothing. ' +
+            'Check your headers match the template, then try again.'
+          )
+          setShowImportModal(true)
+          return
+        }
+
         const parsed = []
         let skipped = 0
         for (const row of normalized) {
           const name = String(row.name ?? '').trim()
           if (!name) { skipped++; continue }
           const rawUnit = String(row.unit ?? '').toLowerCase().trim()
+          const sellingPrice = parseMoney(row.selling_price)
           parsed.push({
             name,
             category:         String(row.category ?? '').trim(),
             unit:             ['each', 'pack'].includes(rawUnit) ? rawUnit : 'each',
-            selling_price:    parseFloat(row.selling_price) || 0,
-            cost_price:       parseFloat(row.cost_price) || 0,
+            selling_price:    sellingPrice ?? 0,
+            cost_price:       parseMoney(row.cost_price) ?? 0,
             reorder_level:    parseInt(row.reorder_level) || 5,
             current_quantity: parseInt(row.current_quantity) || 0,
             description:      String(row.description ?? '').trim(),
@@ -349,7 +378,7 @@ function Products() {
         // Default all duplicates to 'skip'
         const resolutions = {}
         duplicates.forEach((_, i) => { resolutions[i] = { action: 'skip', useImported: {} } })
-        setImportPreview({ fresh, duplicates, skipped })
+        setImportPreview({ fresh, duplicates, skipped, unpriced: fresh.filter(r => !r.selling_price).length })
         setDuplicateResolutions(resolutions)
         setImportError('')
         setShowImportModal(true)
@@ -617,6 +646,14 @@ function Products() {
                     )}
                     {importPreview.skipped > 0 && (
                       <p className="import-count-skipped">✗ {importPreview.skipped} row{importPreview.skipped !== 1 ? 's' : ''} skipped — missing product name</p>
+                    )}
+                    {importPreview.unpriced > 0 && (
+                      <p className="import-count-dup">
+                        ⚠ <strong>{importPreview.unpriced}</strong> product{importPreview.unpriced !== 1 ? 's have' : ' has'} no
+                        selling price and would import at $0 — {importPreview.unpriced !== 1 ? 'they' : 'it'} would sell for
+                        nothing at the till. Check the price column, or set {importPreview.unpriced !== 1 ? 'their' : 'its'} price
+                        after importing.
+                      </p>
                     )}
                     {importPreview.fresh.length === 0 && importPreview.duplicates.length === 0 && (
                       <p className="import-count-skipped">No valid rows found in the spreadsheet.</p>
