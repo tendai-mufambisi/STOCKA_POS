@@ -40,7 +40,8 @@ export default function LanStatusBar() {
   const isClient    = status.mode === 'client'
   const online      = status.clientOnline
   const connecting  = status.clientConnecting ?? false
-  const queued      = status.queueSize || 0
+  // Business writes only. Falls back to the raw size for older main-process builds.
+  const queued      = status.queueBusinessSize ?? status.queueSize ?? 0
 
   let dotColor, labelText
   if (isServer) {

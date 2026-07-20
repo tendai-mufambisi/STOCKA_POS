@@ -277,7 +277,14 @@ function Dashboard() {
   const handleClosingFloatSubmit = async (closingFloat, notes) => {
     setIsClosingShift(true)
     try {
-      await closeShift(currentShift.id, closingFloat, notes)
+      // A provisional shift (started while Main was unreachable) has no id yet, so
+      // send the cashier along — Main resolves their open shift on replay. Threading
+      // it through closingFloat, which closeShift already unwraps, keeps the IPC
+      // signature unchanged across preload/ipc/lanServer.
+      const float = typeof closingFloat === 'object' && closingFloat !== null
+        ? { ...closingFloat, cashier: user?.username || currentShift?.cashier_username || null }
+        : closingFloat
+      await closeShift(currentShift.id ?? null, float, notes)
       setShowClosingFloatModal(false)
       setClosingShiftData(null)
       clearShift()

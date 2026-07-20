@@ -3,6 +3,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const logger = require('../logger')
+const { NON_BUSINESS_CHANNELS } = require('./offlineQueue')
 
 // Channels whose writes must be proxied to the server (reads use local DB cache).
 // login/validatePassword are intentionally LOCAL so auth works offline.
@@ -26,6 +27,15 @@ const WRITE_CHANNELS = new Set([
   'domain:branches:add', 'domain:branches:update', 'domain:branches:delete',
   'domain:holds:create', 'domain:holds:deleteOnLogout', 'domain:holds:release',
 ])
+
+// Writes that are proxied to Main when online but DROPPED (never queued) when offline.
+// Stock alerts are derived state: Notifications.jsx recomputes them from the products
+// table every 30 s, so there is nothing here worth replaying. They must not be queued,
+// because the dedup check reads the LOCAL db — offline, a queued create never lands
+// locally, so every poll re-queues the same alert forever. One shop till reached 5,296
+// queued writes in 36 h, of which only 36 were real business writes (34 sales + 2 shift
+// events); the rest were 73 distinct stock alerts requeued ~60 times each.
+const NEVER_QUEUE = NON_BUSINESS_CHANNELS
 
 const PING_INTERVAL_MS = 8000   // was 3000 — less aggressive on WiFi, avoids false disconnects from single dropped packets
 const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handles instant push anyway
@@ -438,10 +448,12 @@ function makeHandler(channel, fn) {
     }
 
     if (!_online) {
+      // Derived state (stock alerts): drop it. Recomputed locally on the next poll.
+      if (NEVER_QUEUE.has(channel)) return { __queued: true, __queuedNote: 'Offline — alert skipped' }
       if (_queue) _queue.enqueue(channel, args)
       if (_notify) _notify('lan:status-changed', getClientStatus())
       // Return a queued signal so the renderer can show feedback
-      return { __queued: true, __queuedNote: `Offline — write queued (${_queue?.size()} pending)` }
+      return { __queued: true, __queuedNote: `Offline — write queued (${_queue?.businessSize() ?? 0} pending)` }
     }
     try {
       const result = await lanRequest(channel, args)
@@ -456,6 +468,11 @@ function makeHandler(channel, fn) {
         return { __error: err.message }
       }
       // Network died mid-request — queue it for retry when connection comes back
+      // (except derived state, which the next local poll regenerates anyway)
+      if (NEVER_QUEUE.has(channel)) {
+        setOnline(false)
+        return { __queued: true, __queuedNote: 'Offline — alert skipped' }
+      }
       logger.warn(`[LAN Client] Write "${channel}" failed (${err.code || err.message}) — queued for retry`)
       if (_queue) _queue.enqueue(channel, args)
       setOnline(false)
