@@ -1,6 +1,6 @@
 {
   "name": "stocka",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Stocka - Retail Inventory & POS for Zimbabwe",
   "author": "Tendai Mufambisi",
   "main": "electron/main.js",
