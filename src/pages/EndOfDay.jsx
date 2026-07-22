@@ -95,12 +95,19 @@ export default function EndOfDay() {
 
       // Pre-fill inputs for already-closed shifts
       const cashIn = {}
+      const transferIn = {}
       for (const s of withSummaries) {
         if (s.status === 'closed' && s.closing_cash != null) {
           cashIn[s.id] = s.closing_cash.toFixed(2)
         }
+        // Only shifts that were actually reconciled for transfers get a value back —
+        // null means nobody counted them, which must not display as a counted 0.00.
+        if (s.status === 'closed' && s.closing_transfer != null) {
+          transferIn[s.id] = s.closing_transfer.toFixed(2)
+        }
       }
       setCashInputs(cashIn)
+      setTransferInputs(transferIn)
     } catch {
       setError('Failed to load end of day data')
     } finally {
@@ -168,10 +175,20 @@ export default function EndOfDay() {
       // including the admin's own shift. Excluding it deadlocked Close Day:
       // the shift stayed open, so the page bounced back here on every attempt.
       if (openShifts.length > 0) {
-        const closingData = openShifts.map(s => ({
-          shiftId:     s.id,
-          closingCash: parseFloat(cashInputs[s.id]) || 0,
-        }))
+        // The transfer count travels with the cash count now — previously it was
+        // collected, validated, and then dropped on the floor here.
+        const closingData = openShifts.map(s => {
+          const t = parseFloat(transferInputs[s.id])
+          return {
+            shiftId:     s.id,
+            closingCash: parseFloat(cashInputs[s.id]) || 0,
+            // null, not 0 — "no transfers to reconcile" must stay distinct from
+            // "counted the transfers and they came to zero".
+            closingTransfer: transferInputs[s.id] === '' || transferInputs[s.id] === undefined || isNaN(t)
+              ? null
+              : t,
+          }
+        })
         await closeAllOpenShifts(closingData, 'Closed by End of Day')
         // If our own shift was among them, the shift store is now stale.
         if (openShifts.some(s => s.cashier_username === user?.username)) clearShift()
@@ -190,6 +207,11 @@ export default function EndOfDay() {
         expected_cash:  totalExpected,
         actual_cash:    totalReceived,
         difference:     diff,
+        // Stored beside the cash figures, never merged into `difference` — otherwise
+        // a $50 cash overage and a $50 transfer shortfall cancel to a clean zero.
+        expected_transfer:   totalExpectedTransfer,
+        actual_transfer:     totalTransferReceived,
+        transfer_difference: totalTransferVariance,
         status,
         notes,
       })
@@ -450,13 +472,36 @@ export default function EndOfDay() {
               <span>Total Cash Collected</span>
               <span>{fmt.money(todaysRecord.actual_cash)}</span>
             </div>
-            <div className={`eod-ct-row final ${todaysRecord.status?.toLowerCase()}`}>
+            <div className={`eod-ct-row final ${varianceStatus(todaysRecord.difference)}`}>
               <span>
-                {todaysRecord.status === 'Balanced' ? 'Balanced' :
-                 todaysRecord.status === 'Overage'  ? 'Overage' : 'Shortage'}
+                {varianceStatus(todaysRecord.difference) === 'balanced' ? 'Cash Balanced' :
+                 varianceStatus(todaysRecord.difference) === 'overage'  ? 'Cash Overage' : 'Cash Shortage'}
               </span>
               <span>{fmt.money(todaysRecord.difference)}</span>
             </div>
+
+            {/* Transfers reconcile as their own figure — a day can balance on cash and
+                still be short on EcoCash/transfer, which is exactly the case that used
+                to save as "Shortage" with difference 0.00 and no way to see why. */}
+            {(todaysRecord.expected_transfer || 0) > 0 && (
+              <>
+                <div className="eod-ct-row sep">
+                  <span>Total Expected Transfer</span>
+                  <strong style={{ color: '#1d4ed8' }}>{fmt.money(todaysRecord.expected_transfer)}</strong>
+                </div>
+                <div className="eod-ct-row">
+                  <span>Total Transfer Received</span>
+                  <span>{fmt.money(todaysRecord.actual_transfer)}</span>
+                </div>
+                <div className={`eod-ct-row final ${varianceStatus(todaysRecord.transfer_difference)}`}>
+                  <span>
+                    {varianceStatus(todaysRecord.transfer_difference) === 'balanced' ? 'Transfer Balanced' :
+                     varianceStatus(todaysRecord.transfer_difference) === 'overage'  ? 'Transfer Overage' : 'Transfer Shortage'}
+                  </span>
+                  <span>{fmt.money(todaysRecord.transfer_difference)}</span>
+                </div>
+              </>
+            )}
           </div>
 
           {todaysRecord.notes && (

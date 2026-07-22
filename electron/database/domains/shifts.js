@@ -66,8 +66,23 @@ function computeDrawerTotals(db, shift) {
   // Only cash expenses reduce the drawer — Transfer/EcoCash expenses do not
   const cashExpensesTotal = queryCashExpenses(db, shift.id)
 
+  // Transfer/EcoCash receipts never pass through the drawer, so they are reconciled
+  // as their own figure rather than folded into expectedCash. Same derivation
+  // getShiftSummary uses, kept here so closeShift doesn't need the full summary.
+  const transferSalesOnly = db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as t
+     FROM sales WHERE shift_id = ? AND status = 'completed'
+     AND payment_method IN ('Transfer','Swipe','EcoCash','USD')`
+  ).get(shift.id)?.t || 0
+
+  const splitTransferPortion = db.prepare(
+    `SELECT COALESCE(SUM(usd_amount), 0) as t
+     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
+  ).get(shift.id)?.t || 0
+
   const expectedCash = (shift.opening_cash || 0) + cashSalesOnly + splitCashPortion - cashExpensesTotal
-  return { salesTotal, expectedCash }
+  const expectedTransfer = transferSalesOnly + splitTransferPortion
+  return { salesTotal, expectedCash, expectedTransfer }
 }
 
 function closeShift(shiftId, closingFloat, notes = '') {
@@ -100,7 +115,7 @@ function closeShift(shiftId, closingFloat, notes = '') {
   if (!shift) throw new Error('Shift not found')
   shiftId = shift.id
 
-  const { salesTotal, expectedCash } = computeDrawerTotals(db, shift)
+  const { salesTotal, expectedCash, expectedTransfer } = computeDrawerTotals(db, shift)
 
   const closingCash = typeof closingFloat === 'object'
     ? (closingFloat.closing_cash || 0)
@@ -108,16 +123,31 @@ function closeShift(shiftId, closingFloat, notes = '') {
 
   const variance = closingCash - expectedCash
 
+  // Transfer/EcoCash reconciliation is optional per shift — only End of Day collects
+  // it today, and only for shifts that took transfer payments. `null` (not 0) when
+  // it wasn't counted, so "not reconciled" stays distinguishable from "counted, and
+  // it was zero".
+  const hasTransferCount = typeof closingFloat === 'object' && closingFloat !== null
+    && closingFloat.closing_transfer !== undefined && closingFloat.closing_transfer !== null
+    && closingFloat.closing_transfer !== ''
+  const closingTransfer = hasTransferCount ? (parseFloat(closingFloat.closing_transfer) || 0) : null
+  const transferVariance = hasTransferCount ? closingTransfer - expectedTransfer : null
+
   let reconciliationStatus = 'balanced'
   if (Math.abs(variance) > 0.01) reconciliationStatus = variance > 0 ? 'over' : 'short'
+  // A shift whose cash balances but whose transfers don't is not balanced.
+  else if (hasTransferCount && Math.abs(transferVariance) > 0.01) {
+    reconciliationStatus = transferVariance > 0 ? 'over' : 'short'
+  }
 
   db.prepare(
     `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
+     closing_transfer = ?, transfer_variance = ?,
      reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',
      total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
      sync_updated_at = datetime('now')
      WHERE id = ?`
-  ).run(closingCash, variance, reconciliationStatus, notes, closedAt, salesTotal, shiftId, shiftId)
+  ).run(closingCash, variance, closingTransfer, transferVariance, reconciliationStatus, notes, closedAt, salesTotal, shiftId, shiftId)
   db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
   try {
     logAuditAction(shift.cashier_username, 'SHIFT_CLOSED', 'SHIFT', String(shiftId),
@@ -217,8 +247,17 @@ function getShiftSummary(shiftId) {
     ? closingCash - (shift.variance || 0)
     : openingCash + cashSales - cashExpenses
 
-  // Transfer receipts are informational — they don't come through the cash drawer
-  const expectedTransfer = transferSales
+  // Transfer receipts don't come through the cash drawer, so they reconcile on their
+  // own. For a CLOSED shift, lock to what was counted at close time — same reasoning
+  // as expected_cash above: a later void must not silently rewrite a signed-off day.
+  const closingTransfer = shift.closing_transfer
+  const hasTransferCount = closingTransfer !== null && closingTransfer !== undefined
+  const expectedTransfer = shift.status === 'closed' && hasTransferCount
+    ? closingTransfer - (shift.transfer_variance || 0)
+    : transferSales
+  const transferVariance = shift.status === 'closed'
+    ? (hasTransferCount ? (shift.transfer_variance || 0) : null)
+    : null
 
   const variance = shift.status === 'closed' ? (shift.variance || 0) : (closingCash - expectedCash)
   const balance  = variance
@@ -236,6 +275,8 @@ function getShiftSummary(shiftId) {
     expected_cash:     expectedCash,
     expected_transfer: expectedTransfer,
     actual_cash:       closingCash,
+    actual_transfer:   hasTransferCount ? closingTransfer : null,
+    transfer_variance: transferVariance,
     cash_variance:     variance,
     balance,
     total_sales:       salesTotal,
@@ -315,11 +356,15 @@ function closeAllOpenShifts(closingDataArray, eodNote) {
   const note = eodNote || 'Auto-closed by End of Day'
   const results = []
   for (const item of (closingDataArray || [])) {
-    const { shiftId, closingCash } = item
+    const { shiftId, closingCash, closingTransfer } = item
     const shift = getShiftById(shiftId)
     if (!shift || shift.status !== 'open') continue
     try {
-      const result = closeShift(shiftId, { closing_cash: closingCash || 0 }, note)
+      const result = closeShift(
+        shiftId,
+        { closing_cash: closingCash || 0, closing_transfer: closingTransfer ?? null },
+        note
+      )
       results.push({ shiftId, success: true, result })
     } catch (err) {
       results.push({ shiftId, success: false, error: err.message })

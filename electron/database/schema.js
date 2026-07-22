@@ -331,6 +331,20 @@ function runMigrations(db) {
       addColIfMissing('shifts', 'total_sales_value', 'REAL DEFAULT 0')
     }
 
+    // Transfer/EcoCash reconciliation. End of Day has always made the admin COUNT
+    // these (it refuses to close until a transfer figure is entered for any shift
+    // expecting one) but had nowhere to put the answer — so the number existed only
+    // in React state and was discarded on save. That left days recorded as
+    // 'Shortage' with difference = 0.00, with the transfer shortfall that caused it
+    // unrecoverable. These columns are that missing home. Kept separate from the
+    // cash figures on purpose: a cash shortage and a transfer shortage have
+    // different causes and different remedies, and summing them hides both.
+    addColIfMissing('shifts', 'closing_transfer', 'REAL')
+    addColIfMissing('shifts', 'transfer_variance', 'REAL')
+    addColIfMissing('end_of_day', 'expected_transfer', 'REAL DEFAULT 0')
+    addColIfMissing('end_of_day', 'actual_transfer', 'REAL DEFAULT 0')
+    addColIfMissing('end_of_day', 'transfer_difference', 'REAL DEFAULT 0')
+
     // Normalize legacy payment_method values to 'Cash' or 'USD'
     try {
       db.prepare(`UPDATE sales SET payment_method = 'USD' WHERE payment_method IN ('USD Cash', 'Swipe') AND payment_method NOT IN ('Cash', 'USD', 'Split')`).run()
