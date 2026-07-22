@@ -474,6 +474,20 @@
   gap: 14px;
 }
 
+.eod-offline-block {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+}
+
+.eod-offline-icon  { color: #c2410c; flex-shrink: 0; margin-top: 1px; }
+.eod-offline-title { font-size: 13px; font-weight: 600; color: #9a3412; margin-bottom: 3px; }
+.eod-offline-text  { font-size: 12.5px; line-height: 1.5; color: #7c2d12; }
+
 .eod-close-notes-row label {
   display: block;
   font-size: 12px;

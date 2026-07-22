@@ -29,6 +29,11 @@ function ShiftDashboard() {
   const [isReopening, setIsReopening] = useState(false)
   const [confirmReopen, setConfirmReopen] = useState(null) // shiftId
 
+  // Shifts closed while Main was unreachable. The write is queued, so the local DB
+  // still reports them 'open' — without this they look untouched and an admin would
+  // count the drawer a second time, queueing a duplicate close.
+  const [pendingCloseIds, setPendingCloseIds] = useState([])
+
   // Orphaned-sales repair: sales made while a shift-start was still queued (offline
   // hiccup) can end up with no shift_id, invisible to this page and End of Day even
   // though Transactions shows them fine. This preview-then-apply tool finds and
@@ -45,6 +50,14 @@ function ShiftDashboard() {
       if (!silent) setLoading(true)
       const status = filterStatus === 'all' ? null : filterStatus
       const raw = await getAllShifts(status)
+
+      // Once a queued close reaches Main and syncs back, the row really is closed —
+      // drop it from the pending set so the badge disappears on its own.
+      setPendingCloseIds(prev => prev.filter(id => {
+        const row = raw.find(s => s.id === id)
+        return row && row.status === 'open'
+      }))
+
       setAllShifts(raw.map(s => ({
         ...s,
         cashier_name: s.cashier_display_name || s.cashier_username || 'Unknown',
@@ -95,8 +108,19 @@ function ShiftDashboard() {
     setIsClosing(true)
     try {
       const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) || 0 }, closeNotes)
-      const variance = result?.variance ?? 0
-      setError(`✓ Shift closed. Variance: ${variance >= 0 ? '+$' : '-$'}${Math.abs(variance).toFixed(2)}`)
+
+      // Offline, the write is queued and never touches the local DB — there is no
+      // result to read. Reporting `variance ?? 0` here told a cashier who was $40
+      // short that they had balanced, because Main computes the real variance from
+      // its own sales rows at replay time. Say what actually happened instead.
+      if (result?.__queued) {
+        setPendingCloseIds(prev => prev.includes(shiftId) ? prev : [...prev, shiftId])
+        setError('✓ Cash count saved. The Main Computer is unreachable, so this close is queued — the final variance appears once it syncs.')
+      } else {
+        const variance = result?.variance ?? 0
+        setError(`✓ Shift closed. Variance: ${variance >= 0 ? '+$' : '-$'}${Math.abs(variance).toFixed(2)}`)
+      }
+
       setCloseNotes('')
       setEndCash('')
       setClosingShiftId(null)
@@ -291,7 +315,9 @@ function ShiftDashboard() {
                     <span className="sd-sales-pill">{fmt.money(shift.total_sales)}</span>
                   </div>
                   <div className="sd-td c-status">
-                    {shift.status === 'open'
+                    {pendingCloseIds.includes(shift.id)
+                      ? <span className="sd-badge pending-close" title="Counted and saved — waiting for the Main Computer"><FiRefreshCw size={11} /> Closing…</span>
+                      : shift.status === 'open'
                       ? <span className="sd-badge open"><FiClock size={11} /> Open</span>
                       : shift.reconciliation_status === 'short'
                         ? <span className="sd-badge recon-short"><FiAlertCircle size={11} /> Short</span>
@@ -526,8 +552,26 @@ function ShiftDashboard() {
             </div>
           )}
 
+          {/* A close already counted and queued for Main. The row still reads 'open'
+              locally, so without this the drawer would be counted and queued twice. */}
+          {shiftDetail.status === 'open' && pendingCloseIds.includes(shiftDetail.id) && (
+            <div className="sd-close-card">
+              <div className="sd-close-header">
+                <FiRefreshCw size={16} className="sd-close-icon" />
+                <div>
+                  <div className="sd-close-title">Waiting for the Main Computer</div>
+                  <div className="sd-close-hint">
+                    This drawer has been counted and saved. The close is queued and will
+                    apply as soon as the Main Computer is reachable — the final variance
+                    appears then. Don't count it again.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ── Close shift section (only if still open) ── */}
-          {shiftDetail.status === 'open' && (
+          {shiftDetail.status === 'open' && !pendingCloseIds.includes(shiftDetail.id) && (
             <div className="sd-close-card">
               <div className="sd-close-header">
                 <FiAlertTriangle size={16} className="sd-close-icon" />

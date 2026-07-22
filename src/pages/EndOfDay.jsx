@@ -5,12 +5,13 @@ import {
 } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
+import { useLanOnline } from '../hooks/useLanOnline'
 import { parseDbDate, localDateStr } from '../utils/salesDay'
 import './EndOfDay.css'
 import {
   FiCheckCircle, FiAlertCircle, FiAlertTriangle, FiClock,
   FiDollarSign, FiShoppingCart, FiUsers, FiTrendingDown,
-  FiSun, FiChevronDown, FiChevronUp,
+  FiSun, FiChevronDown, FiChevronUp, FiWifiOff,
 } from 'react-icons/fi'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -37,6 +38,14 @@ function varianceStatus(v) {
 export default function EndOfDay() {
   const { user } = useAuthStore()
   const { clearShift } = useShiftStore()
+
+  // End of Day is a shop-wide operation: every figure below is computed from THIS
+  // machine's database. On a satellite that can't reach Main, that database is
+  // missing the other tills' sales, so the totals are already wrong before they
+  // are saved — and replaying the write later can't fix numbers baked into the
+  // payload. Closing a cashier's own drawer stays allowed offline (they counted
+  // the cash themselves); closing the whole day does not.
+  const { reachable, online, queued } = useLanOnline()
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState('')
   const [todaysRecord, setTodaysRecord] = useState(null)
@@ -135,8 +144,19 @@ export default function EndOfDay() {
   })
   const canClose = openShifts.length === 0 || allOpenInputted
 
+  // Two distinct reasons a satellite can't be trusted with the day's totals: it
+  // can't reach Main at all, or it can reach Main but still has its own writes
+  // queued — those exist in neither database, so they're missing from both sides.
+  const offlineReason = !online
+    ? "End of Day needs the Main Computer. This till is offline, so the totals below are missing every sale made on the other tills. Close the day from the Main Computer, or wait for this one to reconnect."
+    : `End of Day needs the Main Computer. ${queued} write${queued === 1 ? '' : 's'} from this till ${queued === 1 ? 'has' : 'have'} not reached it yet — closing now would record totals that leave ${queued === 1 ? 'it' : 'them'} out. This clears itself in a moment.`
+
   // ── Close Day handler ───────────────────────────────────────────────────────
   const handleCloseDay = async () => {
+    if (!reachable) {
+      setError(offlineReason)
+      return
+    }
     if (!canClose) {
       setError('Enter cash received for every open shift before closing the day.')
       return
@@ -352,6 +372,15 @@ export default function EndOfDay() {
 
               {/* ── Close Day section ── */}
               <div className="eod-close-card">
+                {!reachable && (
+                  <div className="eod-offline-block">
+                    <FiWifiOff size={16} className="eod-offline-icon" />
+                    <div>
+                      <div className="eod-offline-title">Can't close the day from this till right now</div>
+                      <div className="eod-offline-text">{offlineReason}</div>
+                    </div>
+                  </div>
+                )}
                 <div className="eod-close-notes-row">
                   <label>Day Notes <span>(optional)</span></label>
                   <textarea
@@ -362,7 +391,7 @@ export default function EndOfDay() {
                   />
                 </div>
                 <div className="eod-close-actions">
-                  {!canClose && (
+                  {!canClose && reachable && (
                     <span className="eod-close-hint">
                       <FiAlertCircle size={13} /> Enter cash for all open shifts first
                     </span>
@@ -370,7 +399,7 @@ export default function EndOfDay() {
                   <button
                     className="eod-close-btn"
                     onClick={handleCloseDay}
-                    disabled={closing || !canClose}
+                    disabled={closing || !canClose || !reachable}
                   >
                     {closing
                       ? <><div className="eod-btn-spinner" /> Closing Day…</>
