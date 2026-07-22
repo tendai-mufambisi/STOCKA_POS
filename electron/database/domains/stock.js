@@ -9,16 +9,27 @@ function eventDate() { return eventNowIso().split('T')[0] }
 
 function addStockReceiving(receiving) {
   const db = getDb()
+
+  // Idempotency: if this exact receiving was already committed (e.g. a satellite retry
+  // after a dropped response), return the existing ID instead of inserting a duplicate.
+  // Without this the replay adds a second receiving AND a second stock increase.
+  if (receiving.external_id) {
+    const existing = db.prepare('SELECT id FROM stock_receivings WHERE external_id = ?').get(receiving.external_id)
+    if (existing) return existing.id
+  }
+
   const product = getProductById(receiving.product_id)
   if (!product) throw new Error(`Product with ID ${receiving.product_id} not found`)
 
+  let newId = null
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    newId = db.prepare(
+      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date, external_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(receiving.supplier_id, receiving.product_id, receiving.date_received, receiving.cartons,
       receiving.units_per_carton, receiving.total_units, receiving.cost_per_carton,
-      receiving.cost_per_unit, receiving.total_value, receiving.recorded_by, receiving.expiry_date || null)
+      receiving.cost_per_unit, receiving.total_value, receiving.recorded_by, receiving.expiry_date || null,
+      receiving.external_id || null).lastInsertRowid
     // sync_updated_at bump is what carries the new quantity to satellite tills —
     // the products delta only ships rows whose created/last_sold/sync stamp moved.
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
@@ -27,6 +38,7 @@ function addStockReceiving(receiving) {
       `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, recorded_by, created_at) VALUES (?, ?, 'RECEIVED', ?, ?, ?)`
     ).run(receiving.product_id, product.name, receiving.total_units, receiving.recorded_by, eventNowSql())
   })()
+  return newId
 }
 
 function getStockReceivings() {
@@ -156,6 +168,13 @@ function recordInitialCost(productId, costPerUnit, recordedBy) {
 
 function recordDirectPurchase(purchase) {
   const db = getDb()
+
+  // Same idempotency guard as addStockReceiving — a queued replay must not buy twice.
+  if (purchase.external_id) {
+    const existing = db.prepare('SELECT id FROM stock_receivings WHERE external_id = ?').get(purchase.external_id)
+    if (existing) return existing.id
+  }
+
   const product = getProductById(purchase.product_id)
   if (!product) throw new Error(`Product with ID ${purchase.product_id} not found`)
 
@@ -164,17 +183,20 @@ function recordDirectPurchase(purchase) {
   const totalCost = qty * cpu
   const dateReceived = purchase.date_received || eventDate()
 
+  let newId = null
   db.transaction(() => {
-    db.prepare(
-      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date)
-       VALUES (NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(purchase.product_id, dateReceived, qty, qty, totalCost, cpu, totalCost, purchase.recorded_by || 'System', purchase.expiry_date || null)
+    newId = db.prepare(
+      `INSERT INTO stock_receivings (supplier_id, product_id, date_received, cartons, units_per_carton, total_units, cost_per_carton, cost_per_unit, total_value, recorded_by, expiry_date, external_id)
+       VALUES (NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(purchase.product_id, dateReceived, qty, qty, totalCost, cpu, totalCost, purchase.recorded_by || 'System',
+      purchase.expiry_date || null, purchase.external_id || null).lastInsertRowid
     db.prepare(`UPDATE products SET current_quantity = ?, sync_updated_at = datetime('now') WHERE id = ?`)
       .run((product.current_quantity || 0) + qty, purchase.product_id)
     db.prepare(
       `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, note, recorded_by, created_at) VALUES (?, ?, 'DIRECT_PURCHASE', ?, ?, ?, ?)`
     ).run(purchase.product_id, product.name, qty, purchase.notes || '', purchase.recorded_by || 'System', eventNowSql())
   })()
+  return newId
 }
 
 function getDeadStockProducts(days = 30) {

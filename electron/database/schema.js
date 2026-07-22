@@ -381,8 +381,14 @@ function runMigrations(db) {
       addColIfMissing(table, 'sync_updated_at', "TEXT DEFAULT (datetime('now'))")
     }
 
+    // stock_receivings needs the idempotency key but not the other sync columns —
+    // its LAN delta keys off created_at, not sync_updated_at. A satellite write that
+    // commits on Main but loses the response gets re-queued, and without a key the
+    // replay lands as a second receiving AND a second increase of the product's stock.
+    addColIfMissing('stock_receivings', 'external_id', 'TEXT')
+
     // Populate external_id for rows that don't have one
-    for (const table of SYNC_TABLES) {
+    for (const table of [...SYNC_TABLES, 'stock_receivings']) {
       db.prepare(`
         UPDATE ${table}
         SET external_id = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
