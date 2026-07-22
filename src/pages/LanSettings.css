@@ -116,6 +116,22 @@
   font-family: monospace;
 }
 
+.lan-background-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #2e7d32;
+  background: #f1f8f2;
+  border-radius: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #33413a;
+}
+
+.lan-background-warn {
+  margin-top: 6px;
+  color: #8a5200;
+}
+
 /* ── Port field ────────────────────────────────────── */
 .lan-port-field { margin-top: 14px; }
 

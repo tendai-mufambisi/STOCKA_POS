@@ -321,6 +321,18 @@ export default function LanSettings() {
                   ))}
                 </div>
               )}
+              {status?.backgroundMode && (
+                <div className="lan-background-note">
+                  <strong>Always-on mode is active.</strong> This computer will not go to sleep on
+                  its own, and closing the window only hides Stocka — it keeps running in the
+                  background so the tills can still sync. Reopen it from the Stocka icon next to the
+                  clock. To stop it completely, right-click that icon and choose Quit.
+                  <div className="lan-background-warn">
+                    Don't shut this computer down or put it to sleep manually — that does stop
+                    syncing, and tills will queue their sales until it's back.
+                  </div>
+                </div>
+              )}
             </>
           ) : status?.starting ? (
             <div className="lan-server-offline">Starting server…</div>
