@@ -10,6 +10,7 @@ const { initDb, saveDb, closeDb } = require('./database/index')
 const { createTables, runMigrations } = require('./database/schema')
 const { registerAll: registerDomainIpc } = require('./database/ipc')
 const { initLan } = require('./lan/index')
+const backgroundServer = require('./backgroundServer')
 const btPrinter = require('./printer')
 
 // Set userData path before app is ready (must be first)
@@ -82,11 +83,15 @@ function createWindow() {
     app.quit()
   })
 
+  // On the Main Computer, closing the window hides it instead of quitting so the
+  // LAN server keeps serving satellites. No-op on satellite/standalone tills.
+  backgroundServer.attachWindow(mainWindow)
+
   // Show window when ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
     logger.info('✅ Window ready to show.....')
     mainWindow.show()
-    
+
   })
 
   // Clean up on close
@@ -111,6 +116,9 @@ app.whenReady().then(async () => {
     registerDomainIpc(ipcMain, userDataPath, makeHandler)
     lanHandlers.forEach(([ch, fn]) => ipcMain.handle(ch, (event, ...args) => fn(event, ...args)))
     app.on('before-quit', () => _stopLan())
+    // Must run after initLan so the LAN mode on disk is settled — it decides
+    // whether this machine gets the tray + sleep blocker.
+    backgroundServer.init(userDataPath, () => mainWindow, createWindow)
     logger.info('✅ Database ready')
     logger.info('✅ LAN subsystem ready')
 
@@ -154,6 +162,13 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   logger.info('🚪 All windows closed')
+  // As Main, the window normally hides rather than closes — but if one is ever
+  // destroyed outright, closing the DB here would kill the LAN server the
+  // satellites are still talking to. Stay up; the tray is the way back in.
+  if (backgroundServer.isActive()) {
+    logger.info('[Background] Main Computer still running — use the tray icon to reopen')
+    return
+  }
   closeDb()
   if (process.platform !== 'darwin') {
     app.quit()
@@ -1309,9 +1324,8 @@ if (!gotLock) {
   app.on('second-instance', (event, argv) => {
     const url = argv.find(arg => arg.startsWith('stocka://'))
     if (url) handleStockaUrl(url)
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
+    // In background mode the window may be hidden, not just minimised — relaunching
+    // from the desktop icon has to bring it back, or it looks like nothing happened.
+    backgroundServer.showWindow()
   })
 }

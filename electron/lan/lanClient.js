@@ -28,6 +28,20 @@ const WRITE_CHANNELS = new Set([
   'domain:holds:create', 'domain:holds:deleteOnLogout', 'domain:holds:release',
 ])
 
+// Writes that carry an idempotency key in args[0].external_id. The key is minted once,
+// before the write is either sent or queued, so the original attempt and every later
+// replay share it and Main can recognise the repeat.
+//
+// This defends against ONE failure: the network dies after Main commits but before the
+// response arrives, so the write is queued and replayed. It does NOT deduplicate two
+// separate user actions — each click mints its own key, by design (an operator really
+// may receive the same product twice). Preventing double-clicks is the renderer's job.
+const IDEMPOTENT_CHANNELS = new Set([
+  'domain:sales:add',
+  'domain:stock:addReceiving',
+  'domain:stock:recordDirect',
+])
+
 // Writes that are proxied to Main when online but DROPPED (never queued) when offline.
 // Stock alerts are derived state: Notifications.jsx recomputes them from the products
 // table every 30 s, so there is nothing here worth replaying. They must not be queued,
@@ -39,6 +53,10 @@ const NEVER_QUEUE = NON_BUSINESS_CHANNELS
 
 const PING_INTERVAL_MS = 8000   // was 3000 — less aggressive on WiFi, avoids false disconnects from single dropped packets
 const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handles instant push anyway
+// How long a write will wait for its own pull-back before returning to the renderer.
+// Deliberately short: the renderer must never sit on a slow delta. NOT a timeout —
+// the sync keeps running and the page refreshes via lan:synced when it lands.
+const POST_WRITE_SYNC_WAIT_MS = 1500
 
 let _cfg = null          // { serverIp, serverPort, secret }
 let _online = false
@@ -440,10 +458,10 @@ function makeHandler(channel, fn) {
 
   // WRITE: proxy to server; queue if offline
   return async (event, ...args) => {
-    // Stamp a unique key onto sales before they are sent or queued so that if the
+    // Stamp the idempotency key before the write is sent OR queued, so that if the
     // network drops after the server commits but before the response arrives, the
-    // queued retry is deduplicated on the server and won't create a duplicate sale.
-    if (channel === 'domain:sales:add' && args[0] && !args[0].external_id) {
+    // queued retry carries the same key and Main returns the existing row.
+    if (IDEMPOTENT_CHANNELS.has(channel) && args[0] && !args[0].external_id) {
       args = [{ ...args[0], external_id: crypto.randomUUID() }, ...args.slice(1)]
     }
 
@@ -457,8 +475,15 @@ function makeHandler(channel, fn) {
     }
     try {
       const result = await lanRequest(channel, args)
-      // Await sync so local DB is consistent before the renderer re-reads it.
-      await syncFromServer()
+      // Wait for the pull-back so the local DB is consistent before the renderer
+      // re-reads it — but only briefly. A delta can carry base64 product images and
+      // is allowed 30 s; blocking a Save button on that makes the UI look dead, and
+      // an operator who thinks nothing happened clicks Save again. Whatever arrives
+      // after the cap still lands, and useLanSync refreshes the open page then.
+      await Promise.race([
+        syncFromServer(),
+        new Promise(resolve => setTimeout(resolve, POST_WRITE_SYNC_WAIT_MS)),
+      ])
       return result
     } catch (err) {
       // Server rejected the write (validation, constraint, auth) — return the error

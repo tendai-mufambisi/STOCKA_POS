@@ -86,6 +86,9 @@ function getStatus() {
     lastSyncAt:       clientStatus?.lastSyncAt ?? null,
     lastSyncError:    clientStatus?.lastSyncError ?? null,
     clockSkewMs:      clientStatus?.clockSkewMs ?? 0,
+    // True when this machine is holding the tray + sleep blocker as Main, so the
+    // operator can see why it refuses to sleep and that closing it won't stop sync.
+    backgroundMode:   (() => { try { return require('../backgroundServer').isActive() } catch (_) { return false } })(),
   }
 }
 
@@ -226,6 +229,9 @@ function initLan(userDataPath, getMainWindow) {
       // Push the new handler into ipc.js so domain calls route correctly without restart
       updateMakeHandler(lanMakeHandler)
 
+      // Becoming Main gains the tray + sleep blocker; leaving Main gives them up.
+      try { require('../backgroundServer').refresh() } catch (_) {}
+
       // Server bind is async — the renderer's lan:status-changed subscription will get
       // the accurate status once the port is bound. Return a provisional status here.
       const provisionalStatus = getStatus()
@@ -274,6 +280,10 @@ function initLan(userDataPath, getMainWindow) {
         stopLan()
         startClientMode(merged, secret)
         updateMakeHandler(_clientMod.makeHandler)
+
+        // This machine just became a satellite — drop the tray/sleep blocker it
+        // would have been holding if it was previously Main.
+        try { require('../backgroundServer').refresh() } catch (_) {}
 
         await lanClient.applyFullSnapshot(serverIp, port, secret)
 

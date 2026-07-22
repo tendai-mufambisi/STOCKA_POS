@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct, correctStockReceiving } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
-import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3, FiClock } from 'react-icons/fi'
+import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3, FiClock, FiWifiOff } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
 import './StockControl.css'
 
@@ -104,6 +104,13 @@ function StockControl() {
   const [showForm, setShowForm] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  // In-flight guard for the receiving form. A LAN write can take up to ~8 s before it
+  // gives up and falls back to the offline queue; without this the button looks dead,
+  // the operator clicks again, and every click lands as a separate receiving on replay.
+  const [submitting, setSubmitting] = useState(false)
+  // Result of the last receiving, shown as a confirmation modal — mirrors the
+  // sale-complete flash on the POS so a save is never ambiguous.
+  const [saveResult, setSaveResult] = useState(null)
   const { user } = useAuthStore()
 
   const [purchaseType, setPurchaseType] = useState('supplier')
@@ -269,6 +276,24 @@ function StockControl() {
 
   useEffect(() => { applyHistoryFilters() }, [receivings, historySearch, historyTypeFilter, historySupplierFilter, sortConfig])
 
+  const dismissSaveResult = () => setSaveResult(null)
+
+  // A clean save clears itself so capturing a delivery of 20 lines doesn't need 20
+  // dismissals. A queued save stays until acknowledged — that is the one the operator
+  // must actually read. Enter/Escape/Space close either, since the tills are keyboard-driven.
+  useEffect(() => {
+    if (!saveResult) return
+    const onKey = (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape' || e.key === ' ') {
+        e.preventDefault()
+        dismissSaveResult()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    const t = saveResult.queued ? null : setTimeout(dismissSaveResult, 2600)
+    return () => { window.removeEventListener('keydown', onKey); if (t) clearTimeout(t) }
+  }, [saveResult])
+
   const loadData = async (silent = false) => {
     try {
       if (!silent) setLoading(true)
@@ -422,6 +447,7 @@ function StockControl() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (submitting) return
     setError('')
     setSuccessMessage('')
 
@@ -429,14 +455,15 @@ function StockControl() {
     if (formData.expiry_date && formData.expiry_date < formData.date_received) {
       setError('Expiry date cannot be before the date received'); return
     }
+    if (purchaseType === 'supplier' && !formData.supplier_id) { setError('Please select a supplier'); return }
+    if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
 
+    const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || 'Stock'
+    setSubmitting(true)
     try {
-      let msg = ''
+      let res
       if (purchaseType === 'supplier') {
-        if (!formData.supplier_id) { setError('Please select a supplier'); return }
-        if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
-
-        await addStockReceiving({
+        res = await addStockReceiving({
           supplier_id: parseInt(formData.supplier_id),
           product_id: parseInt(formData.product_id),
           date_received: formData.date_received,
@@ -449,11 +476,8 @@ function StockControl() {
           recorded_by: user?.username || 'System',
           expiry_date: formData.expiry_date || null
         })
-        msg = 'Stock received and inventory updated!'
       } else {
-        if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
-
-        await recordDirectPurchase({
+        res = await recordDirectPurchase({
           product_id: parseInt(formData.product_id),
           quantity: directQty,
           cost_per_unit: directCpu,
@@ -462,21 +486,40 @@ function StockControl() {
           recorded_by: user?.username || 'System',
           expiry_date: formData.expiry_date || null
         })
-        const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || ''
-        msg = `${directQty} units of "${productName}" added to stock!`
       }
 
+      // On a satellite that can't reach Main the write is QUEUED, not applied — the
+      // local database is untouched, so the history table below will not show it yet.
+      // Never claim "inventory updated" in that case; an operator who reads that and
+      // then sees an unchanged table simply captures the receiving a second time.
+      const queued = res?.__queued === true
+
+      let priceNote = ''
       const newSP = parseFloat(formData.new_selling_price)
       if (newSP > 0) {
         const prod = products.find(p => p.id === parseInt(formData.product_id))
         if (prod) {
           await updateProduct(prod.id, { ...prod, selling_price: newSP })
-          msg += ` Selling price updated to $${newSP.toFixed(2)}.`
+          priceNote = `Selling price set to $${newSP.toFixed(2)}`
         }
       }
 
-      setSuccessMessage(msg)
-      setTimeout(() => setSuccessMessage(''), 5000)
+      let pendingCount = 0
+      if (queued) {
+        try { pendingCount = (await window.stocka?.lan?.getStatus())?.queueBusinessSize ?? 0 } catch (_) {}
+      }
+
+      setSaveResult({
+        queued,
+        pendingCount,
+        productName,
+        units: directQty,
+        costPerUnit: directCpu,
+        totalValue: directTotalValue,
+        kind: purchaseType,
+        priceNote,
+      })
+
       setFormData(emptyForm)
       setPurchaseType('supplier')
       setProductPriceInfo(null)
@@ -486,6 +529,8 @@ function StockControl() {
     } catch (err) {
       setError(`Failed to record: ${err.message || err}`)
       console.error(err)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -980,10 +1025,14 @@ function StockControl() {
             )}
 
             <div className="form-actions">
-              <button type="submit" className="btn btn-primary">
-                {purchaseType === 'supplier' ? <><FiCheck size={14} /> Record Stock Receiving</> : <><FiCheck size={14} /> Confirm Direct Purchase</>}
+              <button type="submit" className="btn btn-primary" disabled={submitting}>
+                {submitting
+                  ? <><span className="stk-spinner" /> Saving…</>
+                  : purchaseType === 'supplier'
+                    ? <><FiCheck size={14} /> Record Stock Receiving</>
+                    : <><FiCheck size={14} /> Confirm Direct Purchase</>}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setEditingCost(false); setError('') }}>
+              <button type="button" className="btn btn-secondary" disabled={submitting} onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setEditingCost(false); setError('') }}>
                 Cancel
               </button>
             </div>
@@ -1346,6 +1395,81 @@ function StockControl() {
           </div>
         )}
       </div>
+
+      {/* ── Receiving confirmation ──────────────────────────────────────────────
+          Mirrors the sale-complete flash on the POS. Two states, deliberately very
+          different-looking: saved to the books, or held on this till until Main is
+          back. The queued one does not auto-close — the operator must acknowledge
+          it, because "I saw nothing happen" is what makes people re-capture stock. */}
+      {saveResult && (
+        <div className="stk-confirm-overlay" onClick={dismissSaveResult}>
+          <div
+            className={`stk-confirm-card ${saveResult.queued ? 'is-queued' : 'is-saved'}`}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="stk-confirm-icon">
+              {saveResult.queued ? <FiWifiOff size={30} strokeWidth={2.5} /> : <FiCheck size={34} strokeWidth={3} />}
+            </div>
+
+            <div className="stk-confirm-title">
+              {saveResult.queued ? 'Saved on this computer' : 'Stock Received'}
+            </div>
+
+            <div className="stk-confirm-product">{saveResult.productName}</div>
+
+            <div className="stk-confirm-figures">
+              <div className="stk-confirm-figure">
+                <div className="stk-confirm-figure-label">Units</div>
+                <div className="stk-confirm-figure-value">+{saveResult.units}</div>
+              </div>
+              <div className="stk-confirm-figure">
+                <div className="stk-confirm-figure-label">Cost / unit</div>
+                <div className="stk-confirm-figure-value">${saveResult.costPerUnit.toFixed(2)}</div>
+              </div>
+              <div className="stk-confirm-figure">
+                <div className="stk-confirm-figure-label">Total</div>
+                <div className="stk-confirm-figure-value">${saveResult.totalValue.toFixed(2)}</div>
+              </div>
+            </div>
+
+            {saveResult.priceNote && (
+              <div className="stk-confirm-note">{saveResult.priceNote}</div>
+            )}
+
+            <div className="stk-confirm-banner">
+              {saveResult.queued ? (
+                <>
+                  <FiClock size={14} />
+                  <span>
+                    Waiting to sync to the Main computer
+                    {saveResult.pendingCount > 1 && ` · ${saveResult.pendingCount} records pending`}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <FiCheck size={14} />
+                  <span>Inventory updated</span>
+                </>
+              )}
+            </div>
+
+            {saveResult.queued && (
+              <div className="stk-confirm-explain">
+                It is safe — nothing is lost. It will appear in the history below once
+                this computer reconnects. <strong>Do not capture it again.</strong>
+              </div>
+            )}
+
+            <button className="stk-confirm-btn" onClick={dismissSaveResult} autoFocus>
+              {saveResult.queued ? 'Got it' : 'Done'}
+            </button>
+
+            {!saveResult.queued && (
+              <div className="stk-confirm-hint">Closing automatically…</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
