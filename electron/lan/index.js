@@ -5,7 +5,8 @@ const { createServer, getConnectedClients, generatePairingCode, getPairingInfo, 
 const { startBeacon, scanForServers, getLocalIp } = require('./lanDiscovery')
 const { OfflineQueue } = require('./offlineQueue')
 const { updateMakeHandler } = require('../database/ipc')
-const { setTillIdentityFromPairing, ensureMainIdentity } = require('./tillIdentity')
+const { setTillIdentityFromPairing, ensureMainIdentity, getTillIdentity } = require('./tillIdentity')
+const tillPresence = require('../database/tillPresence')
 
 let _server = null
 let _stopBeacon = null
@@ -107,7 +108,7 @@ function makeServerHandler(channel, fn) {
       if (WRITE_CHANNELS_SERVER.has(channel)) broadcastChange(channel)
       return result
     } catch (err) {
-      return { __error: err.message }
+      return { __error: err.message, __code: err.code || null }
     }
   }
 }
@@ -123,6 +124,10 @@ function startServerMode(cfg, secret) {
   const shopName = shop?.name || 'Stocka'
 
   logger.info(`[LAN] Starting Main Computer (server) mode on port ${port}`)
+  // Let the shifts domain ask which satellites are currently reachable and
+  // whether they have unsent writes — closeShift refuses to cash up a drawer
+  // whose till Main cannot see.
+  tillPresence.setPresenceProvider(getConnectedClients)
   _server = createServer(secret, port, (ch, data) => notifyRenderer(ch, data), _userDataPath)
   _server.listen(port, '0.0.0.0', () => {
     logger.info(`[LAN Server] Listening on 0.0.0.0:${port}`)
@@ -173,6 +178,9 @@ function initLan(userDataPath, getMainWindow) {
   // the fixed till code 'M', assigned once and kept forever.
   if (cfg.mode !== LAN_MODES.CLIENT) ensureMainIdentity(userDataPath)
 
+  // Stamp every shift this machine opens with the till that owns the drawer.
+  tillPresence.setLocalTillCode(getTillIdentity(userDataPath)?.code || null)
+
   let lanMakeHandler = null
 
   if (cfg.mode === LAN_MODES.SERVER) {
@@ -219,6 +227,10 @@ function initLan(userDataPath, getMainWindow) {
 
       // Stop everything, then restart in the new mode
       stopLan()
+      // No server after this point unless we start one again — drop the stale
+      // presence provider so a demoted Main can't answer with a frozen client list.
+      tillPresence.setPresenceProvider(null)
+      tillPresence.setLocalTillCode(getTillIdentity(_userDataPath)?.code || null)
       if (merged.mode === LAN_MODES.SERVER) {
         startServerMode(merged, sec)
         lanMakeHandler = makeServerHandler
@@ -271,7 +283,10 @@ function initLan(userDataPath, getMainWindow) {
       const port = parseInt(serverPort) || DEFAULT_PORT
       try {
         const { secret, shopName, tillCode } = await lanClient.pair(serverIp, port, code)
-        if (tillCode) setTillIdentityFromPairing(_userDataPath, tillCode)
+        if (tillCode) {
+          setTillIdentityFromPairing(_userDataPath, tillCode)
+          tillPresence.setLocalTillCode(tillCode)
+        }
 
         const current = getLanConfig(_userDataPath)
         const merged = { ...current, mode: LAN_MODES.CLIENT, serverIp, serverPort: port, secret }

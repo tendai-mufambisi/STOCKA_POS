@@ -76,6 +76,21 @@ let _clockSkewMs = 0          // |this machine − Main| from the last ping
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
+// Identity headers on every authenticated call. Main uses them to answer one
+// question it otherwise cannot: "is the till that owns this cashier's drawer
+// still connected, and has it sent me everything it rang up?" Without the
+// pending count, a till that is online but still holding 3 queued sales would
+// look perfectly safe to cash up.
+function identityHeaders() {
+  const h = {}
+  try {
+    const code = require('../database/tillPresence').getLocalTillCode()
+    if (code) h['X-Stocka-Till'] = code
+  } catch (_) {}
+  try { h['X-Stocka-Pending'] = String(_queue ? _queue.businessSize() : 0) } catch (_) {}
+  return h
+}
+
 function httpRequestTo(hostname, port, secret, method, path, body = null, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const opts = {
@@ -83,7 +98,7 @@ function httpRequestTo(hostname, port, secret, method, path, body = null, timeou
       port,
       path,
       method,
-      headers: { 'X-Stocka-Token': secret, 'Content-Type': 'application/json' },
+      headers: { 'X-Stocka-Token': secret, 'Content-Type': 'application/json', ...identityHeaders() },
       timeout: timeoutMs,
     }
     const req = http.request(opts, (res) => {
@@ -218,6 +233,9 @@ async function lanRequest(channel, args, occurredAt = null) {
   if (body.error) {
     const err = new Error(body.error)
     err.httpStatus = status
+    // Machine-readable refusals (e.g. TILL_UNREACHABLE) must survive the hop so
+    // the renderer can offer the right recovery instead of parsing English.
+    if (body.code) err.code = body.code
     throw err
   }
   return body.result
@@ -313,6 +331,7 @@ async function syncFromServer() {
     if (body.users)      upsert('users', body.users)
     if (body.suppliers)  upsert('suppliers', body.suppliers)
     if (body.branches)   upsert('branches', body.branches)
+    if (body.end_of_day) upsert('end_of_day', body.end_of_day)
 
     // Shop: sync shared settings but keep local printer configuration.
     if (body.shop) {
@@ -340,6 +359,7 @@ async function syncFromServer() {
       body.expenses?.length    > 0 ||
       body.shifts?.length      > 0 ||
       body.stock?.length       > 0 ||
+      body.end_of_day?.length  > 0 ||
       db.prepare('SELECT COUNT(*) FROM users').pluck().get()     !== prevUsers     ||
       db.prepare('SELECT COUNT(*) FROM suppliers').pluck().get() !== prevSuppliers ||
       db.prepare('SELECT COUNT(*) FROM branches').pluck().get()  !== prevBranches  ||
@@ -490,7 +510,7 @@ function makeHandler(channel, fn) {
       // directly to the renderer. These failures are permanent; retrying won't help.
       if (err.httpStatus && err.httpStatus >= 400 && err.httpStatus < 500) {
         logger.warn(`[LAN Client] Write "${channel}" rejected by server (HTTP ${err.httpStatus}): ${err.message}`)
-        return { __error: err.message }
+        return { __error: err.message, __code: err.code || null }
       }
       // Network died mid-request — queue it for retry when connection comes back
       // (except derived state, which the next local poll regenerates anyway)

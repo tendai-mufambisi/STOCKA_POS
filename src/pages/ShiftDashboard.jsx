@@ -10,6 +10,7 @@ import {
   FiTrendingUp, FiAlertTriangle, FiRefreshCw
 } from 'react-icons/fi'
 import ReceiptModal from '../components/ReceiptModal'
+import { isUnverified, shiftStatusShort, shiftStatusHint } from '../utils/shiftStatus'
 
 function ShiftDashboard() {
   const { user } = useAuthStore()
@@ -20,6 +21,11 @@ function ShiftDashboard() {
   const [shiftDetail, setShiftDetail] = useState(null)
   const [closeNotes, setCloseNotes]   = useState('')
   const [endCash, setEndCash]         = useState('')
+  const [endTransfer, setEndTransfer] = useState('')
+  // Main refused the close because the cashier's till is offline or still holding
+  // unsent sales: { shiftId, message }. Cleared once the admin overrides or cancels.
+  const [tillBlock, setTillBlock]     = useState(null)
+  const [forceClose, setForceClose]   = useState(false)
   const [closingShiftId, setClosingShiftId] = useState(null)
   const [isClosing, setIsClosing]     = useState(false)
   const [filterStatus, setFilterStatus] = useState('all')
@@ -100,14 +106,24 @@ function ShiftDashboard() {
     setSelectedReceipt(null)
     setClosingShiftId(null)
     setEndCash('')
+    setEndTransfer('')
     setCloseNotes('')
+    setTillBlock(null)
+    setForceClose(false)
   }
 
   const handleCloseShift = async (shiftId) => {
     if (!endCash) { setError('Please enter the cash counted'); return }
     setIsClosing(true)
     try {
-      const result = await closeShift(shiftId, { closing_cash: parseFloat(endCash) || 0 }, closeNotes)
+      const result = await closeShift(shiftId, {
+        closing_cash: parseFloat(endCash) || 0,
+        // null, not 0 — "no transfers to reconcile" must stay distinct from
+        // "counted the transfers and they came to zero".
+        closing_transfer: endTransfer === '' ? null : (parseFloat(endTransfer) || 0),
+        closed_by: user?.username || null,
+        force: forceClose,
+      }, closeNotes)
 
       // Offline, the write is queued and never touches the local DB — there is no
       // result to read. Reporting `variance ?? 0` here told a cashier who was $40
@@ -116,6 +132,12 @@ function ShiftDashboard() {
       if (result?.__queued) {
         setPendingCloseIds(prev => prev.includes(shiftId) ? prev : [...prev, shiftId])
         setError('✓ Cash count saved. The Main Computer is unreachable, so this close is queued — the final variance appears once it syncs.')
+      } else if (result?.__alreadyClosed) {
+        setError(result.__duplicate
+          ? 'This shift was already closed with the same figures — nothing changed.'
+          : '⚠️ This shift had already been closed. The count you entered was recorded on it as a note for review, not applied to its figures.')
+      } else if (result?.__unverified) {
+        setError('⚠️ Shift closed as UNVERIFIED — the cashier\'s till was not connected, so these figures may miss sales still on that machine. Recheck once it syncs.')
       } else {
         const variance = result?.variance ?? 0
         setError(`✓ Shift closed. Variance: ${variance >= 0 ? '+$' : '-$'}${Math.abs(variance).toFixed(2)}`)
@@ -123,11 +145,22 @@ function ShiftDashboard() {
 
       setCloseNotes('')
       setEndCash('')
+      setEndTransfer('')
       setClosingShiftId(null)
+      setTillBlock(null)
+      setForceClose(false)
       await loadShifts()
       handleBackToList()
     } catch (err) {
-      setError(`Failed to close shift: ${err.message}`)
+      // A disconnected till is a recoverable refusal, not a failure: keep the
+      // entered count on screen and offer the override rather than dumping the
+      // admin back to the list with their count lost.
+      if (err?.code === 'TILL_UNREACHABLE') {
+        setTillBlock({ shiftId, message: err.message })
+        setError('')
+      } else {
+        setError(`Failed to close shift: ${err.message}`)
+      }
     } finally {
       setIsClosing(false)
     }
@@ -323,7 +356,11 @@ function ShiftDashboard() {
                         ? <span className="sd-badge recon-short"><FiAlertCircle size={11} /> Short</span>
                         : shift.reconciliation_status === 'over'
                           ? <span className="sd-badge recon-over"><FiAlertCircle size={11} /> Over</span>
-                          : <span className="sd-badge closed"><FiCheckCircle size={11} /> Balanced</span>
+                          : isUnverified(shift.reconciliation_status)
+                            ? <span className="sd-badge recon-unverified" title={shiftStatusHint(shift.reconciliation_status)}>
+                                <FiAlertTriangle size={11} /> {shiftStatusShort(shift.reconciliation_status)}
+                              </span>
+                            : <span className="sd-badge closed"><FiCheckCircle size={11} /> Balanced</span>
                     }
                   </div>
                   <div className="sd-td c-action">
@@ -435,11 +472,51 @@ function ShiftDashboard() {
                     </tr>
                   )}
                   {shiftDetail.status === 'closed' && (
-                    <tr className={`balance-row ${(shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
+                    <tr className={`balance-row ${shiftDetail.is_verified === false ? 'neg' : (shiftDetail.balance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
                       <td>Cash Variance</td>
                       <td className="balance-amt">
                         {fmt.signed(shiftDetail.balance)}
-                        {(shiftDetail.balance ?? 0) >= -0.01 && <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
+                        {/* No green tick on a drawer nobody verified — its variance is
+                            zero only because there was nothing to compare against. */}
+                        {shiftDetail.is_verified !== false && (shiftDetail.balance ?? 0) >= -0.01 &&
+                          <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
+                      </td>
+                    </tr>
+                  )}
+                  {/* Without these, a shift flagged Short purely on transfers shows a
+                      $0.00 cash variance and no explanation anywhere on the page. */}
+                  {shiftDetail.status === 'closed' && shiftDetail.actual_transfer !== null &&
+                   shiftDetail.actual_transfer !== undefined && (
+                    <tr>
+                      <td style={{ color: '#1d4ed8' }}>Transfers Counted</td>
+                      <td style={{ color: '#1d4ed8' }}>{fmt.money(shiftDetail.actual_transfer)}</td>
+                    </tr>
+                  )}
+                  {shiftDetail.status === 'closed' && shiftDetail.transfer_variance !== null &&
+                   shiftDetail.transfer_variance !== undefined && (
+                    <tr className={`balance-row ${(shiftDetail.transfer_variance ?? 0) >= -0.01 ? 'pos' : 'neg'}`}>
+                      <td>Transfer Variance</td>
+                      <td className="balance-amt">
+                        {fmt.signed(shiftDetail.transfer_variance)}
+                        {(shiftDetail.transfer_variance ?? 0) >= -0.01 &&
+                          <FiCheckCircle size={12} style={{ marginLeft: 6 }} />}
+                      </td>
+                    </tr>
+                  )}
+                  {shiftDetail.status === 'closed' && (shiftDetail.expected_transfer ?? 0) > 0 &&
+                   (shiftDetail.actual_transfer === null || shiftDetail.actual_transfer === undefined) && (
+                    <tr>
+                      <td colSpan={2} style={{ fontSize: 12, color: '#b45309', lineHeight: 1.5 }}>
+                        <FiAlertTriangle size={12} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+                        This shift took {fmt.money(shiftDetail.expected_transfer)} in transfers that were never counted at close.
+                      </td>
+                    </tr>
+                  )}
+                  {shiftDetail.status === 'closed' && shiftDetail.is_verified === false && (
+                    <tr>
+                      <td colSpan={2} style={{ fontSize: 12, color: '#b45309', background: '#fffbeb', lineHeight: 1.5 }}>
+                        <FiAlertTriangle size={12} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+                        {shiftStatusHint(shiftDetail.reconciliation_status)}
                       </td>
                     </tr>
                   )}
@@ -600,6 +677,18 @@ function ShiftDashboard() {
                         autoFocus
                       />
                     </div>
+                    {(shiftDetail.expected_transfer ?? 0) > 0 && (
+                      <div className="sd-form-group">
+                        <label>Transfers / EcoCash received ($)</label>
+                        <input
+                          type="number" step="any"
+                          value={endTransfer}
+                          onChange={e => setEndTransfer(e.target.value)}
+                          placeholder="0.00"
+                          className="sd-input"
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="sd-form-group">
                     <label>Notes (optional)</label>
@@ -611,15 +700,37 @@ function ShiftDashboard() {
                       rows={3}
                     />
                   </div>
+
+                  {/* Main refused because the cashier's till is unreachable. Closing
+                      anyway is allowed — it just has to be a deliberate choice, and
+                      the shift is recorded as unverified when it is. */}
+                  {tillBlock?.shiftId === shiftDetail.id && (
+                    <div className="sd-till-block">
+                      <FiAlertTriangle size={16} />
+                      <div>
+                        <strong>Till not connected</strong>
+                        <p>{tillBlock.message}</p>
+                        <label className="sd-till-ack">
+                          <input
+                            type="checkbox"
+                            checked={forceClose}
+                            onChange={e => setForceClose(e.target.checked)}
+                          />
+                          Close anyway and record this drawer as <strong>unverified</strong>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="sd-close-actions">
                     <button
                       className="sd-btn danger"
                       onClick={() => handleCloseShift(shiftDetail.id)}
-                      disabled={isClosing || !endCash}
+                      disabled={isClosing || !endCash || (!!tillBlock && tillBlock.shiftId === shiftDetail.id && !forceClose)}
                     >
-                      {isClosing ? 'Closing…' : 'Confirm & Close Shift'}
+                      {isClosing ? 'Closing…' : forceClose ? 'Close Unverified' : 'Confirm & Close Shift'}
                     </button>
-                    <button className="sd-btn ghost" onClick={() => setClosingShiftId(null)} disabled={isClosing}>
+                    <button className="sd-btn ghost" onClick={() => { setClosingShiftId(null); setTillBlock(null); setForceClose(false) }} disabled={isClosing}>
                       Cancel
                     </button>
                   </div>

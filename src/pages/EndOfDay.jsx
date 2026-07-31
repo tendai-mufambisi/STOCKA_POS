@@ -1,17 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   addEndOfDay, getEndOfDayRecords,
-  getAllShifts, getShiftSummary, closeAllOpenShifts,
+  getAllShifts, getShiftSummary, closeAllOpenShifts, getShop,
 } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import { useLanOnline } from '../hooks/useLanOnline'
+import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
 import { parseDbDate, localDateStr } from '../utils/salesDay'
+import { isUnverified, shiftStatusShort, shiftStatusHint } from '../utils/shiftStatus'
 import './EndOfDay.css'
 import {
   FiCheckCircle, FiAlertCircle, FiAlertTriangle, FiClock,
   FiDollarSign, FiShoppingCart, FiUsers, FiTrendingDown,
-  FiSun, FiChevronDown, FiChevronUp, FiWifiOff,
+  FiSun, FiChevronDown, FiChevronUp, FiWifiOff, FiPrinter,
 } from 'react-icons/fi'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -55,18 +57,34 @@ export default function EndOfDay() {
   const [transferInputs, setTransferInputs] = useState({})  // {shiftId: string}
   const [notes, setNotes]                   = useState('')
   const [closing, setClosing]       = useState(false)
+  // Shifts Main refused to close because the till holding that drawer is offline
+  // or still has unsent sales: [{ shiftId, cashier, tillCode, error }].
+  const [blockedTills, setBlockedTills]           = useState([])
+  const [forceUnreachableTills, setForceUnreachableTills] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [shopInfo, setShopInfo]     = useState(null)
+  const [printingDate, setPrintingDate] = useState(null)  // date string currently spooling
+
+  // Same printer, same routing as receipts — a shop that can print a receipt can
+  // print its day summary with no extra configuration.
+  const { printEodReport, printError } = useReceiptPrinter()
 
   const today = localDateStr()
 
   // ── Load ────────────────────────────────────────────────────────────────────
-  const loadData = useCallback(async () => {
+  // `keepInputs` re-reads the shifts without discarding what the admin has already
+  // typed. Needed after a partly-blocked Close Day: some drawers really did close,
+  // so the rows are stale, but the counts still on screen for the blocked tills are
+  // the admin's own work and must survive the refresh.
+  const loadData = useCallback(async (keepInputs = false) => {
     try {
       setLoading(true)
-      const [records, allRawShifts] = await Promise.all([
+      const [records, allRawShifts, shop] = await Promise.all([
         getEndOfDayRecords(),
         getAllShifts(),
+        getShop().catch(() => null),
       ])
+      setShopInfo(shop)
 
       setAllRecords(records)
       const record = records.find(r => r.date === today) || null
@@ -106,8 +124,8 @@ export default function EndOfDay() {
           transferIn[s.id] = s.closing_transfer.toFixed(2)
         }
       }
-      setCashInputs(cashIn)
-      setTransferInputs(transferIn)
+      setCashInputs(prev => keepInputs ? { ...cashIn, ...prev } : cashIn)
+      setTransferInputs(prev => keepInputs ? { ...transferIn, ...prev } : transferIn)
     } catch {
       setError('Failed to load end of day data')
     } finally {
@@ -139,6 +157,10 @@ export default function EndOfDay() {
   }, 0)
   const totalTransferVariance = totalTransferReceived - totalExpectedTransfer
 
+  // Transfer columns are dead weight for a cash-only shop, so History only grows
+  // them once some day has actually taken transfer money.
+  const anyTransferRecords = allRecords.some(r => (r.expected_transfer || 0) > 0 || (r.actual_transfer || 0) > 0)
+
   const allOpenInputted = openShifts.every(s => {
     const c = parseFloat(cashInputs[s.id])
     const hasCash = cashInputs[s.id] !== '' && !isNaN(c)
@@ -158,6 +180,116 @@ export default function EndOfDay() {
     ? "End of Day needs the Main Computer. This till is offline, so the totals below are missing every sale made on the other tills. Close the day from the Main Computer, or wait for this one to reconnect."
     : `End of Day needs the Main Computer. ${queued} write${queued === 1 ? '' : 's'} from this till ${queued === 1 ? 'has' : 'have'} not reached it yet — closing now would record totals that leave ${queued === 1 ? 'it' : 'them'} out. This clears itself in a moment.`
 
+  // ── Printable report ────────────────────────────────────────────────────────
+  // One shape serves three jobs: what the printer renders, what gets frozen into
+  // the record at close, and what a reprint replays months later. It is built from
+  // the figures on screen, so the paper says exactly what was signed off.
+  // `unverifiedNow` holds the cashiers whose drawers are being force-closed over an
+  // unreachable till in this very run — their shift rows still say 'open', so the
+  // stored status can't be read for them yet.
+  const cashierLine = (s, unverifiedNow = new Set()) => {
+    const sm      = s.summary || {}
+    const isOpen  = s.status === 'open'
+    const expCash = sm.expected_cash     || 0
+    const expTran = sm.expected_transfer || 0
+
+    const cash = isOpen ? (parseFloat(cashInputs[s.id]) || 0) : (s.closing_cash || 0)
+
+    // null all the way through when nobody counted the transfers — printing 0.00
+    // would claim a count that never happened.
+    const rawT    = transferInputs[s.id]
+    const parsedT = parseFloat(rawT)
+    const transfer = isOpen
+      ? (rawT === '' || rawT === undefined || isNaN(parsedT) ? null : parsedT)
+      : (s.closing_transfer ?? null)
+
+    return {
+      name:               s.cashier_name,
+      started_at:         s.started_at,
+      closed_at:          isOpen ? null : s.closed_at,
+      sales:              sm.total_sales || 0,
+      expected_cash:      expCash,
+      collected_cash:     cash,
+      cash_variance:      cash - expCash,
+      expected_transfer:  expTran,
+      collected_transfer: transfer,
+      transfer_variance:  transfer == null ? null : transfer - expTran,
+      // The paper has to be as honest as the screen: a drawer nobody counted, or
+      // one closed over a till Main couldn't see, must not print as a clean line.
+      verified: !(isUnverified(s.reconciliation_status) || unverifiedNow.has(s.cashier_username)),
+      status_note: unverifiedNow.has(s.cashier_username)
+        ? shiftStatusHint('unverified')
+        : shiftStatusHint(s.reconciliation_status),
+    }
+  }
+
+  const buildReportPayload = (status, diff, unverifiedNow = new Set()) => ({
+    date:           today,
+    status,
+    closed_by:      user?.username || 'System',
+    total_sales:    totalSales,
+    total_expenses: totalExpenses,
+    sales_count:    shifts.reduce((n, s) => n + (s.summary?.sales_count  || 0), 0),
+    cash_sales:     shifts.reduce((n, s) => n + (s.summary?.cash_sales     || 0), 0),
+    transfer_sales: shifts.reduce((n, s) => n + (s.summary?.transfer_sales || 0), 0),
+    opening_floats: shifts.reduce((n, s) => n + (s.opening_cash            || 0), 0),
+    cash_expenses:  shifts.reduce((n, s) => n + (s.summary?.cash_expenses  || 0), 0),
+    expected_cash:      totalExpected,
+    actual_cash:        totalReceived,
+    difference:         diff,
+    expected_transfer:  totalExpectedTransfer,
+    actual_transfer:    totalTransferReceived,
+    transfer_difference: totalTransferVariance,
+    notes,
+    cashiers: shifts.map(s => cashierLine(s, unverifiedNow)),
+  })
+
+  // A saved record prints from its frozen snapshot; the stored columns still win on
+  // the totals, since those are the row of record. Records saved before snapshots
+  // existed simply print without the per-cashier section.
+  const reportFromRecord = (record) => {
+    let snap = null
+    try { snap = record.report_snapshot ? JSON.parse(record.report_snapshot) : null } catch (_) { snap = null }
+    return {
+      ...(snap || {}),
+      date:                record.date,
+      status:              record.status,
+      closed_by:           record.cashier,
+      closed_at:           record.created_at,
+      total_sales:         record.total_sales,
+      total_expenses:      record.total_expenses,
+      expected_cash:       record.expected_cash,
+      actual_cash:         record.actual_cash,
+      difference:          record.difference,
+      expected_transfer:   record.expected_transfer,
+      actual_transfer:     record.actual_transfer,
+      transfer_difference: record.transfer_difference,
+      notes:               record.notes,
+      printed_by:          user?.username || 'System',
+    }
+  }
+
+  const hasPrinter = !!(shopInfo?.printer_name || shopInfo?.printer_port)
+
+  const handlePrintRecord = async (record) => {
+    if (!hasPrinter) {
+      setError('No printer configured. Go to Settings → Printer Settings to set one up.')
+      return
+    }
+    setError('')
+    setPrintingDate(record.date)
+    try {
+      await printEodReport(reportFromRecord(record), shopInfo || {}, {
+        printerName: shopInfo?.printer_name || '',
+        portPath:    shopInfo?.printer_port || '',
+        // Any day but today is being pulled back out of the file — say so on the paper.
+        isReprint:   record.date !== today,
+      })
+    } finally {
+      setPrintingDate(null)
+    }
+  }
+
   // ── Close Day handler ───────────────────────────────────────────────────────
   const handleCloseDay = async () => {
     if (!reachable) {
@@ -170,6 +302,9 @@ export default function EndOfDay() {
     }
     setClosing(true)
     setError('')
+    // Shifts that were closed anyway despite their till being unreachable — noted
+    // on the saved day record below.
+    let blockedForced = []
     try {
       // 1. Force-close all still-open shifts with the admin-entered cash —
       // including the admin's own shift. Excluding it deadlocked Close Day:
@@ -189,7 +324,40 @@ export default function EndOfDay() {
               : t,
           }
         })
-        await closeAllOpenShifts(closingData, 'Closed by End of Day')
+        const results = await closeAllOpenShifts(closingData, 'Closed by End of Day', {
+          force: forceUnreachableTills,
+          closedBy: user?.username || null,
+        })
+
+        // A drawer whose till is unreachable is refused, not failed: its sales may
+        // still be sitting on that machine, so the variance would be fiction. Stop
+        // here and let the admin reconnect the till or override deliberately —
+        // saving the day's record on top of figures we know are incomplete is the
+        // one thing that can't be undone.
+        const blocked = (results || []).filter(r => r.code === 'TILL_UNREACHABLE')
+        if (blocked.length > 0) {
+          setBlockedTills(blocked)
+          setError('')
+          setClosing(false)
+          // Drawers ahead of the blocked one in the list did close. Leaving them
+          // on screen as "still open" invites the admin to count them twice.
+          await loadData(true)
+          return
+        }
+        setBlockedTills([])
+        // With force on, the guard doesn't throw — it marks the shift unverified.
+        blockedForced = (results || [])
+          .filter(r => r.unverified)
+          .map(r => ({ cashier: r.cashier, tillCode: r.result?.till_code || null }))
+
+        const failed = (results || []).filter(r => r.success === false)
+        if (failed.length > 0) {
+          setError(`Could not close ${failed.length} shift${failed.length === 1 ? '' : 's'}: ` +
+            failed.map(f => `${f.cashier || f.shiftId} (${f.error})`).join('; '))
+          setClosing(false)
+          return
+        }
+
         // If our own shift was among them, the shift store is now stale.
         if (openShifts.some(s => s.cashier_username === user?.username)) clearShift()
       }
@@ -199,6 +367,14 @@ export default function EndOfDay() {
       const cashOk      = Math.abs(diff) < 0.01
       const transferOk  = totalExpectedTransfer === 0 || Math.abs(totalTransferVariance) < 0.01
       const status      = (cashOk && transferOk) ? 'Balanced' : diff > 0 ? 'Overage' : 'Shortage'
+      // A day closed over unreachable tills must say so on its own record — the
+      // saved figures can still move when those tills sync, and six months later
+      // the note is the only thing left explaining why.
+      const savedNotes = blockedForced.length > 0
+        ? [notes, `⚠️ Closed while ${blockedForced.length} till${blockedForced.length === 1 ? ' was' : 's were'} unreachable ` +
+            `(${blockedForced.map(b => `${b.cashier}${b.tillCode ? ` / ${b.tillCode}` : ''}`).join(', ')}). ` +
+            `Those shifts are recorded as unverified and these totals may be incomplete.`].filter(Boolean).join('\n')
+        : notes
       await addEndOfDay({
         date:           today,
         cashier:        user?.username || 'System',
@@ -213,10 +389,14 @@ export default function EndOfDay() {
         actual_transfer:     totalTransferReceived,
         transfer_difference: totalTransferVariance,
         status,
-        notes,
+        notes: savedNotes,
+        // Frozen here, while the shifts still say what they said tonight.
+        report_snapshot: buildReportPayload(status, diff, new Set(blockedForced.map(b => b.cashier))),
       })
 
       setNotes('')
+      setBlockedTills([])
+      setForceUnreachableTills(false)
       try { await window.stocka.lan?.broadcastDayClosed(today, user?.username || 'Admin') } catch (_) {}
       await loadData()
     } catch (err) {
@@ -239,10 +419,10 @@ export default function EndOfDay() {
     <div className="eod-page">
 
       {/* ── Error banner ── */}
-      {error && (
+      {(error || printError) && (
         <div className="eod-error-banner">
           <FiAlertCircle size={14} />
-          <span>{error}</span>
+          <span>{error || printError}</span>
           <button onClick={() => setError('')}>×</button>
         </div>
       )}
@@ -403,6 +583,41 @@ export default function EndOfDay() {
                     </div>
                   </div>
                 )}
+                {blockedTills.length > 0 && (
+                  <div className="eod-blocked-block">
+                    <FiAlertTriangle size={16} className="eod-blocked-icon" />
+                    <div>
+                      <div className="eod-blocked-title">
+                        {blockedTills.length === 1 ? 'A till is not connected' : `${blockedTills.length} tills are not connected`}
+                      </div>
+                      <div className="eod-blocked-text">
+                        The day was not closed. These drawers sit on machines the Main Computer
+                        can't currently account for, so their sales may be missing from the totals
+                        above and the variance would be wrong:
+                      </div>
+                      <ul className="eod-blocked-list">
+                        {blockedTills.map(b => (
+                          <li key={b.shiftId}>
+                            <strong>{b.cashier}</strong>{b.tillCode ? ` — till ${b.tillCode}` : ''}
+                            <div>{b.error}</div>
+                          </li>
+                        ))}
+                      </ul>
+                      <label className="eod-blocked-ack">
+                        <input
+                          type="checkbox"
+                          checked={forceUnreachableTills}
+                          onChange={e => setForceUnreachableTills(e.target.checked)}
+                        />
+                        <span>
+                          Close the day anyway. These shifts will be recorded as
+                          <strong> unverified</strong>, and must be rechecked once those tills sync.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
                 <div className="eod-close-notes-row">
                   <label>Day Notes <span>(optional)</span></label>
                   <textarea
@@ -421,11 +636,13 @@ export default function EndOfDay() {
                   <button
                     className="eod-close-btn"
                     onClick={handleCloseDay}
-                    disabled={closing || !canClose || !reachable}
+                    disabled={closing || !canClose || !reachable || (blockedTills.length > 0 && !forceUnreachableTills)}
                   >
                     {closing
                       ? <><div className="eod-btn-spinner" /> Closing Day…</>
-                      : <><FiCheckCircle size={15} /> Close Day & Save</>
+                      : blockedTills.length > 0 && forceUnreachableTills
+                        ? <><FiAlertTriangle size={15} /> Close Day Unverified</>
+                        : <><FiCheckCircle size={15} /> Close Day & Save</>
                     }
                   </button>
                 </div>
@@ -449,8 +666,21 @@ export default function EndOfDay() {
                 <div className="eod-closed-hero-date">{fmt.date(todaysRecord.date)}</div>
               </div>
             </div>
-            <div className={`eod-day-badge ${todaysRecord.status?.toLowerCase()}`}>
-              {todaysRecord.status}
+            <div className="eod-closed-hero-right">
+              <button
+                className="eod-print-btn"
+                onClick={() => handlePrintRecord(todaysRecord)}
+                disabled={printingDate === todaysRecord.date}
+                title={hasPrinter ? 'Print the day summary' : 'No printer configured'}
+              >
+                {printingDate === todaysRecord.date
+                  ? <><div className="eod-btn-spinner dark" /> Printing…</>
+                  : <><FiPrinter size={14} /> Print Summary</>
+                }
+              </button>
+              <div className={`eod-day-badge ${todaysRecord.status?.toLowerCase()}`}>
+                {todaysRecord.status}
+              </div>
             </div>
           </div>
 
@@ -538,26 +768,62 @@ export default function EndOfDay() {
                     <th>Expenses</th>
                     <th>Expected</th>
                     <th>Collected</th>
-                    <th>Variance</th>
+                    <th>Cash Var</th>
+                    {anyTransferRecords && <>
+                      <th>Transfer Exp</th>
+                      <th>Transfer Recv</th>
+                      <th>Transfer Var</th>
+                    </>}
                     <th>Status</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {allRecords.map(r => (
-                    <tr key={r.id}>
-                      <td>{fmt.date(r.date)}</td>
-                      <td>{fmt.money(r.total_sales)}</td>
-                      <td>{fmt.money(r.total_expenses)}</td>
-                      <td>{fmt.money(r.expected_cash)}</td>
-                      <td>{fmt.money(r.actual_cash)}</td>
-                      <td className={r.difference >= 0 ? 'pos' : 'neg'}>{fmt.money(r.difference)}</td>
-                      <td>
-                        <span className={`eod-hist-badge ${r.status?.toLowerCase()}`}>
-                          {r.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {allRecords.map(r => {
+                    const hasTransfers = (r.expected_transfer || 0) > 0 || (r.actual_transfer || 0) > 0
+                    return (
+                      <tr key={r.id}>
+                        <td>{fmt.date(r.date)}</td>
+                        <td>{fmt.money(r.total_sales)}</td>
+                        <td>{fmt.money(r.total_expenses)}</td>
+                        <td>{fmt.money(r.expected_cash)}</td>
+                        <td>{fmt.money(r.actual_cash)}</td>
+                        <td className={r.difference >= 0 ? 'pos' : 'neg'}>{fmt.money(r.difference)}</td>
+                        {/* Without these a transfer shortfall showed as a 'Shortage' badge sitting
+                            next to a cash variance of 0.00, with nothing on the row to explain it. */}
+                        {anyTransferRecords && <>
+                          <td>{hasTransfers ? fmt.money(r.expected_transfer) : '—'}</td>
+                          <td>{hasTransfers ? fmt.money(r.actual_transfer)   : '—'}</td>
+                          <td className={hasTransfers ? ((r.transfer_difference || 0) >= 0 ? 'pos' : 'neg') : ''}>
+                            {hasTransfers ? fmt.money(r.transfer_difference) : '—'}
+                          </td>
+                        </>}
+                        <td>
+                          <span
+                            className={`eod-hist-badge ${r.status?.toLowerCase()}`}
+                            title={hasTransfers
+                              ? `Cash ${fmt.money(r.difference)} · Transfer ${fmt.money(r.transfer_difference)}`
+                              : `Cash ${fmt.money(r.difference)}`}
+                          >
+                            {r.status}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            className="eod-print-icon-btn"
+                            onClick={() => handlePrintRecord(r)}
+                            disabled={printingDate === r.date}
+                            title={hasPrinter ? `Print ${fmt.date(r.date)} summary` : 'No printer configured'}
+                          >
+                            {printingDate === r.date
+                              ? <div className="eod-btn-spinner dark" />
+                              : <FiPrinter size={14} />
+                            }
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -611,9 +877,13 @@ function CashierRow({ shift, cashVal, onCashChange, transferVal, onTransferChang
         </div>
         {isOpen
           ? <span className="eod-cr-badge open"><FiClock size={10} /> Open</span>
-          : <span className={`eod-cr-badge ${shift.reconciliation_status || 'closed'}`}>
-              <FiCheckCircle size={10} /> Closed
-            </span>
+          : isUnverified(shift.reconciliation_status)
+            ? <span className={`eod-cr-badge ${shift.reconciliation_status}`} title={shiftStatusHint(shift.reconciliation_status)}>
+                <FiAlertTriangle size={10} /> {shiftStatusShort(shift.reconciliation_status)}
+              </span>
+            : <span className={`eod-cr-badge ${shift.reconciliation_status || 'closed'}`}>
+                <FiCheckCircle size={10} /> Closed
+              </span>
         }
       </div>
 
@@ -719,9 +989,8 @@ function CashierRow({ shift, cashVal, onCashChange, transferVal, onTransferChang
               {(shift.variance || 0) > 0 ? '+' : ''}
               {fmt.money(shift.variance || 0)}
               {' '}
-              <span className="eod-cr-settled-label">
-                {shift.reconciliation_status === 'balanced' ? '(Balanced)' :
-                 shift.reconciliation_status === 'over'     ? '(Over)'     : '(Short)'}
+              <span className="eod-cr-settled-label" title={shiftStatusHint(shift.reconciliation_status)}>
+                ({shiftStatusShort(shift.reconciliation_status)})
               </span>
             </span>
           </div>
@@ -733,9 +1002,14 @@ function CashierRow({ shift, cashVal, onCashChange, transferVal, onTransferChang
 
 // ─── BreakdownRow (read-only, post-close) ─────────────────────────────────────
 function BreakdownRow({ shift }) {
-  const s       = shift.summary || {}
-  const varSt   = shift.reconciliation_status || 'balanced'
+  const s        = shift.summary || {}
+  const varSt    = shift.reconciliation_status || 'balanced'
   const variance = shift.variance || 0
+  // A drawer nobody counted, or one closed over an unreachable till, has a
+  // variance of zero only because there was nothing to compare it against.
+  // Every other badge in the app stopped calling that "Balanced" — this one,
+  // on the signed-off day summary, is the last place it still did.
+  const unverified = isUnverified(shift.reconciliation_status)
 
   return (
     <div className={`eod-br-row ${varSt}`}>
@@ -759,12 +1033,14 @@ function BreakdownRow({ shift }) {
         <span><em>Collected</em> {fmt.money(shift.closing_cash)}</span>
       </div>
 
-      <div className={`eod-br-status ${varSt}`}>
-        {Math.abs(variance) < 0.01
-          ? <><FiCheckCircle size={13} /> Balanced</>
-          : variance > 0
-            ? <><FiAlertCircle size={13} /> +{fmt.money(variance)}</>
-            : <><FiAlertCircle size={13} /> {fmt.money(variance)}</>
+      <div className={`eod-br-status ${varSt}`} title={shiftStatusHint(shift.reconciliation_status)}>
+        {unverified
+          ? <><FiAlertTriangle size={13} /> {shiftStatusShort(shift.reconciliation_status)}</>
+          : Math.abs(variance) < 0.01
+            ? <><FiCheckCircle size={13} /> Balanced</>
+            : variance > 0
+              ? <><FiAlertCircle size={13} /> +{fmt.money(variance)}</>
+              : <><FiAlertCircle size={13} /> {fmt.money(variance)}</>
         }
       </div>
     </div>

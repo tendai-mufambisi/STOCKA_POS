@@ -121,6 +121,55 @@ export const useReceiptPrinter = () => {
   }, [])
 
   /**
+   * Print an End of Day summary to the same printer receipts already use.
+   * Routing is identical to printReceipt: a machine configured with only a serial
+   * port goes down the Bluetooth path, everything else through the Windows spooler.
+   *
+   * @param {Object} report - EOD report payload (see buildEodReport in EndOfDay.jsx)
+   * @param {Object} shopInfo
+   * @param {Object} options
+   * @param {string} options.printerName - Windows printer name
+   * @param {string} options.portPath - COM port, for serial Bluetooth printers
+   * @param {boolean} options.isReprint - Marks the copy as a reprint
+   */
+  const printEodReport = useCallback(async (report, shopInfo = {}, options = {}) => {
+    const { isReprint = false, printerName, portPath } = options
+
+    if (!report || !report.date) {
+      _setError('Invalid end of day report data')
+      return false
+    }
+
+    const name = (printerName || '').trim()
+    const port = (portPath || '').trim()
+
+    if (!name && !port) {
+      _setError('No printer configured. Go to Settings → Printer Settings, scan for printers, select yours, and save.')
+      return false
+    }
+
+    const send = (!name && port)
+      ? () => window?.stocka?.btPrinter?.printEod?.(port, report, shopInfo || {}, isReprint)
+      : () => window?.stocka?.printer?.printEodByName?.(name, report, shopInfo || {}, isReprint)
+
+    try {
+      setIsPrinting(true)
+      setPrintError(null)
+      setPrintSuccess(false)
+      const result = await send()
+      if (!result) throw new Error('Printer API not available')
+      if (!result.success) throw new Error(result.error || 'Print failed with no error message')
+      _setSuccess()
+      return true
+    } catch (error) {
+      _setError(error.message || 'Failed to print end of day report')
+      return false
+    } finally {
+      setIsPrinting(false)
+    }
+  }, [])
+
+  /**
    * Print test receipt
    * @param {string} printerName - Windows printer name e.g. "BT-58L"
    */
@@ -147,5 +196,5 @@ export const useReceiptPrinter = () => {
     }
   }, [])
 
-  return { printReceipt, printTestReceipt, isPrinting, printError, printSuccess }
+  return { printReceipt, printEodReport, printTestReceipt, isPrinting, printError, printSuccess }
 }

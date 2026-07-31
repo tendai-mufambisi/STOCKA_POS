@@ -15,6 +15,7 @@ const audit        = require('../database/domains/audit')
 const eod          = require('../database/domains/eod')
 const holds        = require('../database/domains/holds')
 const eventClock   = require('../database/eventClock')
+const tillPresence = require('../database/tillPresence')
 const { allocateSatelliteCode } = require('./tillIdentity')
 
 // Channels that mutate data — used to decide what to broadcast over SSE and
@@ -315,6 +316,10 @@ const ROUTES = [
     // Tag audit entries with the satellite's IP so the admin log shows which machine acted
     const clientIp = req.socket.remoteAddress || 'unknown'
     audit.setRequestMachine(clientIp)
+    // Which till is making this call. closeShift uses it to tell "this satellite is
+    // cashing up its own drawer" (always allowed) from "Main is cashing up someone
+    // else's drawer" (only allowed when that till is connected and drained).
+    tillPresence.setRequestTill(req.headers['x-stocka-till'] || null)
     // Stamp business timestamps with the real action time for replayed offline writes
     // (occurred_at is set only by the client's queue flush; live writes leave it null,
     // so the domain functions fall back to Main's own clock).
@@ -322,6 +327,7 @@ const ROUTES = [
     try {
       const result = fn(...args)
       audit.clearRequestMachine()
+      tillPresence.clearRequestTill()
       eventClock.clearEventTime()
       send(res, 200, { result })
       if (WRITE_CHANNELS_SERVER.has(channel)) {
@@ -331,10 +337,15 @@ const ROUTES = [
       }
     } catch (err) {
       audit.clearRequestMachine()
+      tillPresence.clearRequestTill()
       eventClock.clearEventTime()
+      // TILL_UNREACHABLE is a refusal, not a failure: the caller must not retry it
+      // blindly and the satellite queue must not dead-letter it. 409 says "the
+      // state is wrong, fix it and try again", which is exactly right.
       const status = err.message.includes('Insufficient stock') ? 409
+        : err.code === 'TILL_UNREACHABLE' ? 409
         : err.message.includes('not found') ? 404 : 500
-      send(res, status, { error: err.message })
+      send(res, status, { error: err.message, code: err.code || null })
     }
   }],
 
@@ -472,6 +483,7 @@ const ROUTES = [
       expenses:   db.prepare(`SELECT * FROM expenses WHERE created_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql),
       shifts:     db.prepare(`SELECT * FROM shifts WHERE started_at > ? OR closed_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql, sinceForSql),
       stock:      db.prepare(`SELECT * FROM stock_receivings WHERE created_at > ?`).all(sinceForSql),
+      end_of_day: db.prepare(`SELECT * FROM end_of_day WHERE created_at > ? OR sync_updated_at > ?`).all(sinceForSql, sinceForSql),
       users:      db.prepare(`SELECT * FROM users`).all(),
       suppliers:  db.prepare(`SELECT * FROM suppliers`).all(),
       branches:   db.prepare(`SELECT * FROM branches`).all(),
@@ -567,10 +579,14 @@ function createServer(secret, port, notifyMain, userDataPath) {
       return send(res, 401, { error: 'Unauthorized' })
     }
 
-    // Track satellite client
+    // Track satellite client. The till code and pending-write count ride on every
+    // authenticated request (see lanClient.identityHeaders) so Main always knows
+    // which machines are live and which are still holding sales it hasn't seen.
     const ip = req.socket.remoteAddress || 'unknown'
     if (!clients.has(ip)) logger.info(`[LAN Server] New satellite connected from ${ip}`)
-    clients.set(ip, { ip, lastSeen: Date.now() })
+    const till = req.headers['x-stocka-till'] || clients.get(ip)?.till || null
+    const pending = parseInt(req.headers['x-stocka-pending'], 10)
+    clients.set(ip, { ip, till, pending: Number.isFinite(pending) ? pending : 0, lastSeen: Date.now() })
 
     // Parse body once for POST/PUT/PATCH
     let body = {}
@@ -612,8 +628,10 @@ function createServer(secret, port, notifyMain, userDataPath) {
   return server
 }
 
+// Recently-seen satellites. The window is deliberately wider than the 8 s ping
+// so one dropped packet on shop WiFi doesn't make a live till look disconnected.
 function getConnectedClients() {
-  const cutoff = Date.now() - 15_000
+  const cutoff = Date.now() - 20_000
   return [...clients.values()].filter(c => c.lastSeen > cutoff)
 }
 

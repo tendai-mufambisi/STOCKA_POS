@@ -7,6 +7,7 @@ import {
   FiCheckCircle, FiAlertCircle, FiInfo,
 } from 'react-icons/fi'
 import ReceiptModal from '../components/ReceiptModal'
+import { shiftStatusLabel, isUnverified } from '../utils/shiftStatus'
 
 function CashierSessions() {
   const [activeShifts, setActiveShifts] = useState([])
@@ -183,13 +184,11 @@ function ShiftDetailModal({ shift, onClose }) {
   const varClass = (v) => Math.abs(v) < 0.01 ? 'zero' : v > 0 ? 'positive' : 'negative'
   const varSign  = (v) => v > 0 ? '+' : v < 0 ? '-' : ''
 
-  const statusLabel = !status ? '' : status === 'balanced'
-    ? 'Balanced'
-    : status === 'short'
-      ? `Short — $${Math.abs(variance).toFixed(2)}`
-      : `Over — $${Math.abs(variance).toFixed(2)}`
+  const statusLabel = shiftStatusLabel(status, variance)
 
-  const StatusIcon = status === 'balanced' ? FiCheckCircle : status === 'short' ? FiAlertCircle : FiInfo
+  const StatusIcon = status === 'balanced' ? FiCheckCircle
+    : status === 'short' || isUnverified(status) ? FiAlertCircle
+    : FiInfo
 
   return (
     <div className="shift-modal-overlay" onClick={onClose}>

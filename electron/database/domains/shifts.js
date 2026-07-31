@@ -1,11 +1,28 @@
 const { getDb } = require('../index')
 const { createNotification } = require('./notifications')
 const { logAuditAction } = require('./audit')
-const { eventNowIso } = require('../eventClock')
+const { eventNowIso, isReplay } = require('../eventClock')
+const { getRequestTill, isRemoteRequest, getLocalTillCode, getTillPresence } = require('../tillPresence')
 
+
+// Closed shifts whose figures were never confirmed against a physical count:
+// 'unreconciled' = auto-closed overnight, drawer never counted at all;
+// 'unverified'   = counted, but closed while the owning till was unreachable, so
+//                  the expected figure it was compared against may be incomplete.
+// Neither may ever be reported as balanced.
+const UNVERIFIED_STATUSES = new Set(['unreconciled', 'unverified'])
 
 function getShiftById(shiftId) {
   return getDb().prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId) || null
+}
+
+// The till that owns the drawer being written right now: the satellite whose LAN
+// call we're serving, or this machine when the write is local. Returns null for a
+// satellite that didn't identify itself (an older build) — falling back to Main's
+// own code there would misattribute the drawer to the wrong machine.
+function actingTillCode() {
+  if (isRemoteRequest()) return getRequestTill()
+  return getLocalTillCode() || null
 }
 
 function startShift(userData, openingFloat, branchId = null) {
@@ -17,10 +34,14 @@ function startShift(userData, openingFloat, branchId = null) {
   // eventNowIso() = the true shift-open time when this was queued offline and
   // replayed later; Main's own clock for a live open.
   const startedAt = eventNowIso()
+  // Which physical till holds this drawer's cash. Recorded at open because that's
+  // the only moment we reliably know it — closeShift then uses it to refuse to
+  // cash up a drawer whose till Main can't currently see.
+  const tillCode = actingTillCode()
   const { lastInsertRowid: shiftId } = db.prepare(
-    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at)
-     VALUES (?, ?, ?, 'open', ?, 0, ?)`
-  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt)
+    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at, till_code)
+     VALUES (?, ?, ?, 'open', ?, 0, ?, ?)`
+  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt, tillCode)
 
   if (!shiftId) throw new Error('Failed to get shift ID after insert')
   db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
@@ -85,6 +106,137 @@ function computeDrawerTotals(db, shift) {
   return { salesTotal, expectedCash, expectedTransfer }
 }
 
+// Refuses to cash up a drawer whose till Main cannot currently account for.
+//
+// Closing a shift computes the variance from the sales Main holds. If the till
+// that owns the drawer is disconnected — or is connected but still has writes in
+// its offline queue — those sales exist on that machine and nowhere else, so the
+// "expected cash" is simply wrong, and the cashier gets blamed for a shortage
+// that is really a sync gap. Worse, when the queue finally drains, the sales land
+// on a shift that is already closed and signed off.
+//
+// Never blocks a till closing its OWN drawer (it is by definition present, and
+// its own queue drains through the same connection), and never blocks when this
+// machine isn't running a LAN server (standalone shops have no tills to check).
+function assertTillReachable(shift, force) {
+  const till = shift.till_code
+  if (!till) return null                       // opened before till_code existed — nothing to check
+  const acting = actingTillCode()
+
+  // The till is cashing up its own drawer. Never refused — the cashier is standing
+  // at that machine and has counted the money. But "present" is not the same as
+  // "up to date": a till that reconnected seconds ago is online while its queue is
+  // still draining, and a live write goes straight out ahead of that queue. The
+  // expected cash is then computed without the sales still in the queue, and the
+  // cashier is blamed for a shortage that is really a sync gap.
+  //
+  // Replays are exempt: the queue is FIFO, so anything still behind this close
+  // happened after it and was never part of its figures.
+  if (acting && acting === till) {
+    if (isReplay()) return null
+    const own = getTillPresence(till)
+    if (own.observable && own.pending > 0) {
+      return `This till still has ${own.pending} write${own.pending === 1 ? '' : 's'} waiting to reach the Main Computer, ` +
+        `so the expected cash was worked out without ${own.pending === 1 ? 'it' : 'them'}.`
+    }
+    return null
+  }
+
+  const presence = getTillPresence(till)
+  if (!presence.observable) return null        // no LAN server here — no opinion to give
+
+  let reason = null
+  if (!presence.online) {
+    const mins = presence.lastSeen ? Math.round((Date.now() - presence.lastSeen) / 60000) : null
+    reason = `Till ${till} is not connected to the Main Computer${presence.seen && mins !== null ? ` (last seen ${mins} min ago)` : ''}. ` +
+      `Any sales still on that machine are missing from these totals, so the variance would be wrong.`
+  } else if (presence.pending > 0) {
+    reason = `Till ${till} is connected but still has ${presence.pending} write${presence.pending === 1 ? '' : 's'} waiting to reach the Main Computer. ` +
+      `Those sales are not in these totals yet — this usually clears in a moment.`
+  }
+  if (!reason) return null
+
+  if (force) return reason                     // overridden on purpose; recorded on the shift
+
+  const err = new Error(`${reason} Reconnect the till, or close anyway to record this drawer as unverified.`)
+  err.code = 'TILL_UNREACHABLE'
+  err.tillCode = till
+  throw err
+}
+
+// Resolves which shift a close belongs to.
+//
+// A close that arrives with no shift id is a satellite's provisional/offline close:
+// its shift-start was still sitting in the queue when the cashier closed the drawer,
+// so the renderer never had a real id to send. The cashier travels in closingFloat
+// instead. Without this the replay throws 'Shift not found', the shift is left open,
+// and the overnight stale-shift sweep discards the cashier's real closing count.
+function resolveShiftForClose(db, shiftId, cashier, closedAt) {
+  if (shiftId) return getShiftById(shiftId)
+  if (!cashier) return null
+
+  // started_at <= closedAt matters: if the till stayed offline overnight and the
+  // cashier opened a fresh shift before the queue drained, the newest open shift
+  // is NOT the one this close belongs to. Pick the latest that had already begun
+  // when the drawer was actually counted.
+  const open = db.prepare(
+    `SELECT * FROM shifts
+       WHERE cashier_username = ? AND status = 'open'
+         AND datetime(started_at) <= datetime(?)
+     ORDER BY started_at DESC LIMIT 1`
+  ).get(cashier, closedAt)
+  if (open) return open
+
+  // Nothing open — the shift was force-closed by End of Day or auto-closed
+  // overnight while this count sat in the queue. Match it anyway so the count is
+  // recorded as an amendment instead of being rejected as 'Shift not found',
+  // which the satellite would dead-letter into failed_writes.json and lose.
+  //
+  // closed_at >= closedAt is what makes this safe: the shift must still have been
+  // open at the moment the cashier counted the drawer. Without it, a count that
+  // arrives with no id could attach itself to some unrelated shift from last week.
+  return db.prepare(
+    `SELECT * FROM shifts
+       WHERE cashier_username = ?
+         AND datetime(started_at) <= datetime(?)
+         AND closed_at IS NOT NULL
+         AND datetime(closed_at) >= datetime(?)
+     ORDER BY started_at DESC LIMIT 1`
+  ).get(cashier, closedAt, closedAt) || null
+}
+
+// A count that arrives for a shift somebody already closed. Never rewrites the
+// stored figures: End of Day may already have been signed off against them, and
+// silently changing them leaves the day's saved record disagreeing with its own
+// shifts. The count is recorded as a note + audit entry + notification so an
+// admin can reconcile it deliberately.
+function recordLateCount(db, shift, closingCash, closingTransfer, notes, closedAt) {
+  const same = Math.abs((shift.closing_cash || 0) - closingCash) < 0.01
+    && (closingTransfer === null || Math.abs((shift.closing_transfer || 0) - closingTransfer) < 0.01)
+  if (same) return { ...shift, __alreadyClosed: true, __duplicate: true }
+
+  const stamp = new Date(closedAt).toISOString().slice(0, 16).replace('T', ' ')
+  const parts = [`Cash counted $${closingCash.toFixed(2)}`]
+  if (closingTransfer !== null) parts.push(`transfers counted $${closingTransfer.toFixed(2)}`)
+  const line = `[${stamp}] Late count from ${shift.cashier_username} after this shift was already closed — ` +
+    `${parts.join(', ')} (recorded on ${shift.closing_cash != null ? `$${(shift.closing_cash).toFixed(2)}` : 'no count'}). ` +
+    `Not applied automatically.${notes ? ` Cashier note: ${notes}` : ''}`
+
+  db.prepare(
+    `UPDATE shifts SET notes = TRIM(COALESCE(notes || char(10), '') || ?), sync_updated_at = datetime('now') WHERE id = ?`
+  ).run(line, shift.id)
+
+  try {
+    logAuditAction(shift.cashier_username, 'SHIFT_LATE_COUNT', 'SHIFT', String(shift.id), line)
+    createNotification({
+      type: 'SHIFT_LATE_COUNT',
+      message: `⚠️ ${shift.cashier_username} submitted a drawer count for a shift that was already closed. Review it in Shift Management.`,
+    })
+  } catch (_) {}
+
+  return { ...getShiftById(shift.id), __alreadyClosed: true, __declaredCash: closingCash, __declaredTransfer: closingTransfer }
+}
+
 function closeShift(shiftId, closingFloat, notes = '') {
   const db = getDb()
 
@@ -92,45 +244,36 @@ function closeShift(shiftId, closingFloat, notes = '') {
   // later; Main's own clock for a live close.
   const closedAt = eventNowIso()
 
-  // A close that arrives with no shift id is a satellite's provisional/offline close:
-  // its shift-start was still sitting in the queue when the cashier closed the drawer,
-  // so the renderer never had a real id to send. The cashier travels in closingFloat
-  // instead — resolve their open shift here. Without this the replay throws
-  // 'Shift not found', the shift is left open, and the overnight stale-shift sweep
-  // discards the cashier's real closing count and variance.
-  let shift = shiftId ? getShiftById(shiftId) : null
-  const cashier = typeof closingFloat === 'object' ? closingFloat.cashier : null
-  if (!shift && cashier) {
-    // started_at <= closedAt matters: if the till stayed offline overnight and the
-    // cashier opened a fresh shift before the queue drained, the newest open shift
-    // is NOT the one this close belongs to. Pick the latest that had already begun
-    // when the drawer was actually counted.
-    shift = db.prepare(
-      `SELECT * FROM shifts
-         WHERE cashier_username = ? AND status = 'open'
-           AND datetime(started_at) <= datetime(?)
-       ORDER BY started_at DESC LIMIT 1`
-    ).get(cashier, closedAt) || null
-  }
+  const opts = (closingFloat && typeof closingFloat === 'object') ? closingFloat : {}
+  const shift = resolveShiftForClose(db, shiftId, opts.cashier || null, closedAt)
   if (!shift) throw new Error('Shift not found')
   shiftId = shift.id
-
-  const { salesTotal, expectedCash, expectedTransfer } = computeDrawerTotals(db, shift)
 
   const closingCash = typeof closingFloat === 'object'
     ? (closingFloat.closing_cash || 0)
     : (parseFloat(closingFloat) || 0)
 
+  // Transfer/EcoCash reconciliation is optional per shift. `null` (not 0) when it
+  // wasn't counted, so "not reconciled" stays distinguishable from "counted, and
+  // it was zero".
+  const hasTransferCount = opts.closing_transfer !== undefined && opts.closing_transfer !== null
+    && opts.closing_transfer !== ''
+  const closingTransfer = hasTransferCount ? (parseFloat(opts.closing_transfer) || 0) : null
+
+  // Already closed: record, don't rewrite. Covers a double-submit, a queued close
+  // replaying after End of Day force-closed the same shift, and the overnight
+  // auto-close beating a satellite's queue.
+  if (shift.status !== 'open') {
+    return recordLateCount(db, shift, closingCash, closingTransfer, notes, closedAt)
+  }
+
+  // Refuse (or record an override) when the owning till is unreachable.
+  const unverifiedReason = assertTillReachable(shift, opts.force === true)
+
+  const { salesTotal, expectedCash, expectedTransfer } = computeDrawerTotals(db, shift)
+
   const variance = closingCash - expectedCash
 
-  // Transfer/EcoCash reconciliation is optional per shift — only End of Day collects
-  // it today, and only for shifts that took transfer payments. `null` (not 0) when
-  // it wasn't counted, so "not reconciled" stays distinguishable from "counted, and
-  // it was zero".
-  const hasTransferCount = typeof closingFloat === 'object' && closingFloat !== null
-    && closingFloat.closing_transfer !== undefined && closingFloat.closing_transfer !== null
-    && closingFloat.closing_transfer !== ''
-  const closingTransfer = hasTransferCount ? (parseFloat(closingFloat.closing_transfer) || 0) : null
   const transferVariance = hasTransferCount ? closingTransfer - expectedTransfer : null
 
   let reconciliationStatus = 'balanced'
@@ -139,19 +282,37 @@ function closeShift(shiftId, closingFloat, notes = '') {
   else if (hasTransferCount && Math.abs(transferVariance) > 0.01) {
     reconciliationStatus = transferVariance > 0 ? 'over' : 'short'
   }
+  // Closed over an unreachable till: the figures were computed from sales Main may
+  // not have. Whatever they came out as, they are not evidence the drawer balanced.
+  if (unverifiedReason) reconciliationStatus = 'unverified'
 
-  db.prepare(
-    `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
-     closing_transfer = ?, transfer_variance = ?,
-     reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',
-     total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
-     sync_updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(closingCash, variance, closingTransfer, transferVariance, reconciliationStatus, notes, closedAt, salesTotal, shiftId, shiftId)
-  db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+  // Wording stays cause-neutral: a drawer is unverified either because its till was
+  // disconnected or because that till was still holding sales it hadn't sent.
+  const finalNotes = unverifiedReason
+    ? [notes, `⚠️ Figures not verified — the Main Computer may not have every sale from this shift. ${unverifiedReason}`].filter(Boolean).join('\n')
+    : notes
+
+  // One transaction: a crash between the two statements used to leave the user
+  // pointing at a shift that is already closed, with no way back into a drawer.
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = ?, usd_variance = 0,
+       closing_transfer = ?, transfer_variance = ?,
+       reconciliation_status = ?, notes = ?, closed_at = ?, status = 'closed',
+       total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
+       sync_updated_at = datetime('now')
+       WHERE id = ? AND status = 'open'`
+    ).run(closingCash, variance, closingTransfer, transferVariance, reconciliationStatus, finalNotes, closedAt, salesTotal, shiftId, shiftId)
+    db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+  })()
+
+  // Who actually did this. Falling back to the cashier used to make the audit log
+  // claim a cashier closed their own drawer when an admin closed it for them.
+  const actor = opts.closed_by || shift.cashier_username
   try {
-    logAuditAction(shift.cashier_username, 'SHIFT_CLOSED', 'SHIFT', String(shiftId),
-      `Shift closed — ${reconciliationStatus} (Variance: $${variance.toFixed(2)})`)
+    logAuditAction(actor, 'SHIFT_CLOSED', 'SHIFT', String(shiftId),
+      `Shift closed for ${shift.cashier_username} — ${reconciliationStatus} (Variance: $${variance.toFixed(2)})` +
+      (unverifiedReason ? ` — figures unverified: ${unverifiedReason}` : ''))
   } catch (_) {}
 
   const durationHours = (new Date(closedAt) - new Date(shift.started_at)) / (1000 * 60 * 60)
@@ -159,9 +320,14 @@ function closeShift(shiftId, closingFloat, notes = '') {
     createNotification({ type: 'SHIFT_CLOSED', message: `Cashier ${shift.cashier_username} closed shift — Status: ${reconciliationStatus.toUpperCase()}` })
     if (variance < -5) createNotification({ type: 'SHIFT_SHORTAGE', message: `⚠️ Cashier ${shift.cashier_username} short by $${Math.abs(variance).toFixed(2)}` })
     if (durationHours > 10) createNotification({ type: 'SHIFT_LONG', message: `⏱️ Cashier ${shift.cashier_username} on shift for ${Math.floor(durationHours)}h ${Math.round((durationHours % 1) * 60)}m` })
+    if (unverifiedReason) createNotification({
+      type: 'SHIFT_UNVERIFIED',
+      message: `⚠️ ${shift.cashier_username}'s shift was closed before till ${shift.till_code} had sent everything — recheck it once that till syncs.`,
+    })
   } catch (_) {}
 
-  return getShiftById(shiftId)
+  const closed = getShiftById(shiftId)
+  return unverifiedReason ? { ...closed, __unverified: true, __unverifiedReason: unverifiedReason } : closed
 }
 
 function getCurrentShift(cashierUsername) {
@@ -287,7 +453,11 @@ function getShiftSummary(shiftId) {
     held_count:       heldRow.count || 0,
     sales_count:      salesRow.count || 0,
     duration_minutes: durationMinutes,
-    is_balanced:      Math.abs(balance) < 0.01,
+    // A drawer nobody counted, or one closed while its till was unreachable, is
+    // never "balanced" — its variance is 0 only because there was nothing to
+    // compare against. Anything reading is_balanced as a tick must not get one.
+    is_balanced:      Math.abs(balance) < 0.01 && !UNVERIFIED_STATUSES.has(shift.reconciliation_status),
+    is_verified:      !UNVERIFIED_STATUSES.has(shift.reconciliation_status),
     // Legacy zeros kept for backward compat
     start_float_usd: 0, end_float_usd: 0, expected_usd: 0, actual_usd: 0, usd_variance: 0,
     usd_sales: 0, usd_expenses: 0,
@@ -300,10 +470,23 @@ function reopenShift(shiftId) {
   if (!shift) throw new Error('Shift not found')
   if (shift.status !== 'closed') throw new Error('Shift is not closed')
 
-  db.prepare(
-    `UPDATE shifts SET status = 'open', closed_at = NULL, closing_cash = NULL, variance = NULL, reconciliation_status = NULL, sync_updated_at = datetime('now') WHERE id = ?`
-  ).run(shiftId)
-  db.prepare('UPDATE users SET current_shift_id = ? WHERE username = ?').run(shiftId, shift.cashier_username)
+  // A cashier may only have one drawer open at a time — otherwise sales split
+  // silently across two shifts and neither reconciles.
+  const otherOpen = db.prepare(
+    `SELECT id FROM shifts WHERE cashier_username = ? AND status = 'open' AND id != ? LIMIT 1`
+  ).get(shift.cashier_username, shiftId)
+  if (otherOpen) throw new Error(`${shift.cashier_username} already has an open shift (#${otherOpen.id}) — close that one first`)
+
+  // Clear the transfer figures too. Leaving them behind showed a reopened shift
+  // as still carrying a counted transfer amount that no longer applied to it.
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE shifts SET status = 'open', closed_at = NULL, closing_cash = NULL, variance = NULL,
+       closing_transfer = NULL, transfer_variance = NULL,
+       reconciliation_status = NULL, sync_updated_at = datetime('now') WHERE id = ?`
+    ).run(shiftId)
+    db.prepare('UPDATE users SET current_shift_id = ? WHERE username = ?').run(shiftId, shift.cashier_username)
+  })()
   try { logAuditAction('system', 'SHIFT_REOPENED', 'SHIFT', String(shiftId), `Shift ${shiftId} reopened by admin`) } catch (_) {}
   return getShiftById(shiftId)
 }
@@ -328,14 +511,21 @@ function closeStaleShifts() {
       const closedAt = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59).toISOString()
       // closed_at is backdated, so the delta query's closed_at check won't pick this
       // row up — sync_updated_at = now is what propagates it to satellites.
-      db.prepare(
-        `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = 0, usd_variance = 0,
-         reconciliation_status = 'balanced', notes = ?, closed_at = ?, status = 'closed',
-         total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
-         sync_updated_at = datetime('now')
-         WHERE id = ?`
-      ).run(expectedCash, 'Auto-closed — left open overnight', closedAt, salesTotal, shift.id, shift.id)
-      db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+      //
+      // Status is 'unreconciled', NOT 'balanced': nobody counted this drawer. The
+      // recorded cash is the expected figure, so the variance is 0 by construction —
+      // calling that "balanced" made a forgotten till look like a verified one, and
+      // every report that sums variance treated it as clean.
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = 0, usd_variance = 0,
+           reconciliation_status = 'unreconciled', notes = ?, closed_at = ?, status = 'closed',
+           total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
+           sync_updated_at = datetime('now')
+           WHERE id = ? AND status = 'open'`
+        ).run(expectedCash, 'Auto-closed — left open overnight. Drawer was never counted, so these figures are the expected amounts, not a verified count.', closedAt, salesTotal, shift.id, shift.id)
+        db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+      })()
       try {
         logAuditAction('system', 'SHIFT_AUTO_CLOSED', 'SHIFT', String(shift.id),
           `Shift for ${shift.cashier_username} auto-closed (left open overnight). Recorded cash: $${expectedCash.toFixed(2)}`)
@@ -352,7 +542,10 @@ function closeStaleShifts() {
   return results
 }
 
-function closeAllOpenShifts(closingDataArray, eodNote) {
+// End of Day. `opts.force` closes drawers whose till is unreachable anyway (the
+// admin's explicit call — recorded on each such shift as 'unverified'), and
+// `opts.closedBy` records who actually pressed the button.
+function closeAllOpenShifts(closingDataArray, eodNote, opts = {}) {
   const note = eodNote || 'Auto-closed by End of Day'
   const results = []
   for (const item of (closingDataArray || [])) {
@@ -362,12 +555,28 @@ function closeAllOpenShifts(closingDataArray, eodNote) {
     try {
       const result = closeShift(
         shiftId,
-        { closing_cash: closingCash || 0, closing_transfer: closingTransfer ?? null },
+        {
+          closing_cash: closingCash || 0,
+          closing_transfer: closingTransfer ?? null,
+          force: opts.force === true,
+          closed_by: opts.closedBy || null,
+        },
         note
       )
-      results.push({ shiftId, success: true, result })
+      results.push({
+        shiftId, success: true, result,
+        cashier: shift.cashier_username,
+        unverified: !!result?.__unverified,
+      })
     } catch (err) {
-      results.push({ shiftId, success: false, error: err.message })
+      // A blocked till is a refusal the admin can act on (reconnect it, or
+      // override) — keep it distinguishable from a genuine failure.
+      results.push({
+        shiftId, success: false, error: err.message,
+        code: err.code || null,
+        cashier: shift.cashier_username,
+        tillCode: err.tillCode || shift.till_code || null,
+      })
     }
   }
   return results

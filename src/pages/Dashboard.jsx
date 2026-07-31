@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import './Dashboard.css'
+import '../components/Modal.css'
 import fullLogo from '../assets/full_logo.png'
 import iconLogo from '../assets/icon.png'
 import Products from './Products'
@@ -163,6 +164,12 @@ function Dashboard() {
   const [showClosingFloatModal, setShowClosingFloatModal] = useState(false)
   const [closingShiftData, setClosingShiftData] = useState(null)
   const [isClosingShift, setIsClosingShift] = useState(false)
+  // Why the close didn't go through, shown inside the closing modal. Without this
+  // a failed close only reached the console and the button looked inert.
+  const [closeShiftError, setCloseShiftError] = useState('')
+  // Set when Main was unreachable and the close is only queued — the cashier is
+  // told the variance isn't final rather than being logged out on a silent maybe.
+  const [queuedClose, setQueuedClose] = useState(null)
   const [showOpeningFloatModal, setShowOpeningFloatModal] = useState(false)
   const [isStartingShift, setIsStartingShift] = useState(false)
   // Why the shift is being closed: 'closeOnly' keeps the user logged in (e.g. an
@@ -276,15 +283,48 @@ function Dashboard() {
 
   const handleClosingFloatSubmit = async (closingFloat, notes) => {
     setIsClosingShift(true)
+    setCloseShiftError('')
     try {
       // A provisional shift (started while Main was unreachable) has no id yet, so
       // send the cashier along — Main resolves their open shift on replay. Threading
       // it through closingFloat, which closeShift already unwraps, keeps the IPC
       // signature unchanged across preload/ipc/lanServer.
       const float = typeof closingFloat === 'object' && closingFloat !== null
-        ? { ...closingFloat, cashier: user?.username || currentShift?.cashier_username || null }
+        ? { ...closingFloat, cashier: user?.username || currentShift?.cashier_username || null, closed_by: user?.username || null }
         : closingFloat
-      await closeShift(currentShift.id ?? null, float, notes)
+      const result = await closeShift(currentShift.id ?? null, float, notes)
+
+      // Offline, the write never touches this machine's DB — Main computes the real
+      // variance from its own sales rows when the queue drains. Saying nothing and
+      // logging the cashier out let them walk away believing a number that was
+      // never calculated.
+      // Same warning for a close that DID reach Main but was computed while this
+      // till still had sales queued: the shift comes back marked unverified, and
+      // its variance is provisional for exactly the same reason.
+      if (result?.__queued || result?.__unverified) {
+        setQueuedClose({
+          cash: typeof closingFloat === 'object' ? (closingFloat.closing_cash || 0) : (parseFloat(closingFloat) || 0),
+          transfer: typeof closingFloat === 'object' ? closingFloat.closing_transfer : null,
+          signout: closeShiftIntent === 'signout',
+          unverifiedReason: result?.__unverified ? result.__unverifiedReason : null,
+        })
+        setShowClosingFloatModal(false)
+        setClosingShiftData(null)
+        setIsClosingShift(false)
+        return
+      }
+
+      // Someone else closed this shift first (End of Day, or the overnight sweep).
+      // The count is recorded as a note for an admin, not applied — say so.
+      if (result?.__alreadyClosed && !result?.__duplicate) {
+        setCloseShiftError(
+          'This shift had already been closed by an administrator, so your count could not be applied to it. ' +
+          'It has been recorded against the shift for review — tell your supervisor.'
+        )
+        setIsClosingShift(false)
+        return
+      }
+
       setShowClosingFloatModal(false)
       setClosingShiftData(null)
       clearShift()
@@ -298,12 +338,30 @@ function Dashboard() {
       }
     } catch (err) {
       console.error('Failed to close shift:', err)
+      setCloseShiftError(
+        err?.code === 'TILL_UNREACHABLE'
+          ? err.message
+          : `Could not close the shift: ${err?.message || 'unknown error'}. Your count has NOT been saved — try again.`
+      )
       setIsClosingShift(false)
+    }
+  }
+
+  const handleQueuedCloseAcknowledged = () => {
+    const signout = queuedClose?.signout
+    setQueuedClose(null)
+    clearShift()
+    if (signout) {
+      logout()
+      navigate('/login', { replace: true })
+    } else {
+      loadDashboardData()
     }
   }
 
   const handleClosingFloatCancel = () => {
     setClosingShiftData(null)
+    setCloseShiftError('')
     setShowClosingFloatModal(false)
   }
 
@@ -757,7 +815,48 @@ function Dashboard() {
           onCancel={handleClosingFloatCancel}
           isLoading={isClosingShift}
           varianceTolerance={shopSettings?.variance_tolerance ?? 0.01}
+          error={closeShiftError}
         />
+      )}
+
+      {queuedClose && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Count saved — not yet confirmed</h2>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 14, lineHeight: 1.6, margin: '0 0 12px' }}>
+                {queuedClose.unverifiedReason
+                  ? `Your drawer count was saved, but this till had not finished sending today's sales to the Main Computer. ${queuedClose.unverifiedReason}`
+                  : 'The Main Computer could not be reached, so your drawer count was saved on this till and will be sent as soon as it reconnects.'}
+              </p>
+              <div style={{ padding: '12px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 14, marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Cash counted</span>
+                  <strong style={{ fontFamily: 'monospace' }}>${(queuedClose.cash || 0).toFixed(2)}</strong>
+                </div>
+                {queuedClose.transfer !== null && queuedClose.transfer !== undefined && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+                    <span>Transfers counted</span>
+                    <strong style={{ fontFamily: 'monospace' }}>${(queuedClose.transfer || 0).toFixed(2)}</strong>
+                  </div>
+                )}
+              </div>
+              <p style={{ fontSize: 13, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 12px', margin: '0 0 20px' }}>
+                Your final short/over figure is worked out by the Main Computer once it has all
+                of today's sales — it is <strong>not</strong> known yet. Check with your supervisor
+                before assuming this shift balanced.
+              </p>
+              <button
+                onClick={handleQueuedCloseAcknowledged}
+                style={{ width: '100%', padding: '12px', backgroundColor: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: 600 }}
+              >
+                {queuedClose.signout ? 'I understand — sign out' : 'I understand'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {shiftForceClosed && (

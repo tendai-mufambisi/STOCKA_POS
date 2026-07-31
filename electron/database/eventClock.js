@@ -50,4 +50,12 @@ function eventNowMs() {
   return _eventTimeMs ?? Date.now()
 }
 
-module.exports = { setEventTime, clearEventTime, eventNowIso, eventNowSql, eventNowMs }
+// True while a queued offline write is being replayed. Callers that reason about
+// what the satellite has and hasn't sent need this: during a replay the queue is
+// FIFO, so everything that happened before this write has already landed, and a
+// non-empty queue behind it says nothing about missing earlier data.
+function isReplay() {
+  return _eventTimeMs !== null
+}
+
+module.exports = { setEventTime, clearEventTime, eventNowIso, eventNowSql, eventNowMs, isReplay }

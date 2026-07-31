@@ -193,7 +193,21 @@ ipcMain.on('app:get-version', (event) => {
 // PRINTER IPC HANDLERS - Using @plick/electron-pos-printer
 // ══════════════════════════════════════════════════════════
 
-const { printReceipt: rawPrintReceipt } = require('./printer-raw')
+const { printReceipt: rawPrintReceipt, printEodReport: rawPrintEodReport, buildEodReportBytes } = require('./printer-raw')
+
+ipcMain.handle('printer:print-eod-by-name', async (event, printerName, report, shopInfo, isReprint = false) => {
+  if (!printerName || typeof printerName !== 'string') {
+    return { success: false, error: 'No printer configured. Go to Settings → Printer, scan and save a printer.' }
+  }
+  if (!report || typeof report !== 'object') {
+    return { success: false, error: 'Invalid end of day report data.' }
+  }
+  logger.info(`🖨️ [PRINT-EOD] Printing ${report.date} report to "${printerName}"`)
+  const result = await rawPrintEodReport(printerName, report, shopInfo, isReprint)
+  if (result.success) logger.info('✅ [PRINT-EOD] Success')
+  else logger.error('❌ [PRINT-EOD] ' + result.error)
+  return result
+})
 
 ipcMain.handle('printer:print-by-name', async (event, printerName, receiptData, shopInfo, isDuplicate = false) => {
   if (!printerName || typeof printerName !== 'string') {
@@ -1215,6 +1229,28 @@ ipcMain.handle('bt:print-receipt', async (event, portPath, receiptData, shopInfo
     return { success: true }
   } catch (err) {
     logger.error(`🔵 [BT] Receipt print failed: ${err.message}`)
+    return { success: false, error: err.message }
+  }
+})
+
+// Same report bytes as the Windows-printer path, written straight down the serial
+// port instead — so a shop on a COM-port Bluetooth printer gets the identical
+// document without configuring anything new.
+ipcMain.handle('bt:print-eod', async (event, portPath, report, shopInfo, isReprint) => {
+  if (!portPath || typeof portPath !== 'string' || portPath.length > 100) {
+    return { success: false, error: 'No serial port configured. Go to Settings → Printer.' }
+  }
+  if (!report || typeof report !== 'object') {
+    return { success: false, error: 'Invalid end of day report data.' }
+  }
+  try {
+    const data = buildEodReportBytes(report, shopInfo || {}, isReprint || false)
+    logger.info(`🔵 [BT] EOD report print → ${portPath} (${data.length} bytes)`)
+    await btPrinter.printRaw(portPath, data)
+    logger.info('🔵 [BT] EOD report print succeeded')
+    return { success: true }
+  } catch (err) {
+    logger.error(`🔵 [BT] EOD report print failed: ${err.message}`)
     return { success: false, error: err.message }
   }
 })

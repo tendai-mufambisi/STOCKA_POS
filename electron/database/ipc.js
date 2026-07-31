@@ -23,7 +23,7 @@ function updateMakeHandler(mh) {
 function wrap(fn) {
   return (event, ...args) => {
     try { return fn(...args) }
-    catch (err) { return { __error: err.message } }
+    catch (err) { return { __error: err.message, __code: err.code || null } }
   }
 }
 

@@ -3,7 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron')
 // Helper: invoke an IPC channel and unwrap errors thrown by the wrap() helper in ipc.js
 const invoke = (channel, ...args) =>
   ipcRenderer.invoke(channel, ...args).then(result => {
-    if (result && typeof result === 'object' && '__error' in result) throw new Error(result.__error)
+    if (result && typeof result === 'object' && '__error' in result) {
+      // contextBridge clones a thrown Error across the isolation boundary and keeps
+      // ONLY the message — any custom property (err.code) is silently dropped. So a
+      // machine-readable refusal code has to travel inside the message itself;
+      // src/database/errorCode.js unwraps it back into err.code on the other side.
+      throw new Error(result.__code ? `[${result.__code}] ${result.__error}` : result.__error)
+    }
     return result
   })
 
@@ -16,6 +22,8 @@ contextBridge.exposeInMainWorld('stocka', {
   // ── PRINTER ──────────────────────────────────────────────
   printer: {
     printByName:  (name, data, shop, dup = false) => ipcRenderer.invoke('printer:print-by-name', name, data, shop, dup),
+    // End of Day summary — same printer, different document
+    printEodByName: (name, report, shop, reprint = false) => ipcRenderer.invoke('printer:print-eod-by-name', name, report, shop, reprint),
     testByName:   (name)                          => ipcRenderer.invoke('printer:test-by-name', name),
     scan:         ()                              => ipcRenderer.invoke('printer:scan'),
     printBluetooth: (port, data)                  => ipcRenderer.invoke('printer:print-bluetooth', port, data),
@@ -166,7 +174,7 @@ contextBridge.exposeInMainWorld('stocka', {
     getAll:         (status, from, to)    => invoke('domain:shifts:getAll', status, from, to),
     getActive:      ()                    => invoke('domain:shifts:getActive'),
     getSummary:     (id)                  => invoke('domain:shifts:getSummary', id),
-    closeAll:       (data, note)          => invoke('domain:shifts:closeAll', data, note),
+    closeAll:       (data, note, opts)    => invoke('domain:shifts:closeAll', data, note, opts),
     reopen:         (id)                  => invoke('domain:shifts:reopen', id),
     previewOrphaned:   (shiftId) => invoke('domain:shifts:previewOrphaned', shiftId),
     reconcileOrphaned: (shiftId) => invoke('domain:shifts:reconcileOrphaned', shiftId),
@@ -284,6 +292,7 @@ contextBridge.exposeInMainWorld('stocka', {
     scan:      ()                              => ipcRenderer.invoke('bt:scan'),
     testPrint: (portPath, shopName)            => ipcRenderer.invoke('bt:print-test', portPath, shopName),
     print:     (portPath, receipt, shop, dup)  => ipcRenderer.invoke('bt:print-receipt', portPath, receipt, shop, dup),
+    printEod:  (portPath, report, shop, reprint) => ipcRenderer.invoke('bt:print-eod', portPath, report, shop, reprint),
   },
 
   // ── CLOUD AUTH & TOKEN STORAGE ────────────────────────────

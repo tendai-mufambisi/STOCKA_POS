@@ -341,9 +341,29 @@ function runMigrations(db) {
     // different causes and different remedies, and summing them hides both.
     addColIfMissing('shifts', 'closing_transfer', 'REAL')
     addColIfMissing('shifts', 'transfer_variance', 'REAL')
+
+    // Which physical till opened this drawer ('M' for Main, 'S1'/'S2'… for
+    // satellites). Without it Main has no way to tell whether the machine that
+    // holds a shift's cash is still connected — and closing a drawer for a till
+    // Main can't see means computing the variance from sales it has never
+    // received. Null on shifts opened before this column existed; the close
+    // guard treats that as "unknown till" and lets the close proceed.
+    addColIfMissing('shifts', 'till_code', 'TEXT')
     addColIfMissing('end_of_day', 'expected_transfer', 'REAL DEFAULT 0')
     addColIfMissing('end_of_day', 'actual_transfer', 'REAL DEFAULT 0')
     addColIfMissing('end_of_day', 'transfer_difference', 'REAL DEFAULT 0')
+
+    // Frozen copy of the printed day summary (JSON): per-cashier lines, payment mix
+    // and the reconciliation arithmetic as they stood when the day was signed off.
+    // Reprinting from history must reproduce the paper the cash was counted against
+    // — rebuilding it from live shifts would let a void entered next week silently
+    // rewrite last Tuesday's report.
+    addColIfMissing('end_of_day', 'report_snapshot', 'TEXT')
+
+    // end_of_day reached satellites only in the pairing snapshot, so their History
+    // froze at the moment they were paired. Re-closing a day updates the row in
+    // place without touching created_at, so the delta query needs its own column.
+    addColIfMissing('end_of_day', 'sync_updated_at', 'TEXT')
 
     // Normalize legacy payment_method values to 'Cash' or 'USD'
     try {
