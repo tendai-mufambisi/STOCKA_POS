@@ -21,7 +21,7 @@ export function addProduct({ name, category = 'Food', sellingPrice = 10, reorder
   return getDb().prepare('SELECT id FROM products WHERE name = ?').pluck().get(name)
 }
 
-export function receive(productId, { units, costPerUnit, dateReceived = '2026-07-01' }) {
+export function receive(productId, { units, costPerUnit, dateReceived = '2026-07-01', expiryDate = null }) {
   return stock.addStockReceiving({
     supplier_id: null,
     product_id: productId,
@@ -33,13 +33,14 @@ export function receive(productId, { units, costPerUnit, dateReceived = '2026-07
     cost_per_unit: costPerUnit,
     total_value: units * costPerUnit,
     recorded_by: 'tester',
+    expiry_date: expiryDate,
   })
 }
 
 /** A product that exists and has stock at a known cost. */
-export function stockedProduct({ name, category = 'Food', cost = 2, price = 5, units = 100 }) {
+export function stockedProduct({ name, category = 'Food', cost = 2, price = 5, units = 100, expiryDate = null }) {
   const id = addProduct({ name, category, sellingPrice: price })
-  receive(id, { units, costPerUnit: cost })
+  receive(id, { units, costPerUnit: cost, expiryDate })
   return id
 }
 

@@ -58,13 +58,20 @@ defineCheck({
 defineCheck({
   id: 'movements.coverageGap',
   severity: 'blocker',
+  // Only OPENING stock is affected, not closing.
+  //
+  // Reconstructing the quantity on day D means rolling today's figure back
+  // through every movement after D. That works for any D at or after the day
+  // the ledger begins. It fails only when D predates the ledger, because the
+  // movements between D and the ledger's first entry were never recorded.
+  //
+  // Opening stock is the day BEFORE the period, so it is the one that falls off
+  // the front. Closing stock sits at the period end, comfortably inside the
+  // ledger, and blocking it too would withhold a figure the engine can prove.
+  affects: ['inventory.openingValue'],
   label: 'Movement ledger starts after this period',
-  affects: ['inventory.openingValue', 'inventory.closingValue'],
   run(ctx) {
     const earliest = earliestMovementDay(ctx.db)
-    // Historical stock is reconstructed by rolling movements back from today's
-    // quantity. Before the first movement there is nothing to roll back through,
-    // so opening stock for that period is unknowable — not zero.
     const gap = !!earliest && earliest > ctx.period.start
     return {
       passed: !gap,
@@ -194,6 +201,37 @@ defineCheck({
         row?.n > 0
           ? `${row.n} shift${row.n === 1 ? ' is' : 's are'} still open, so the cash figures are provisional.`
           : null,
+    }
+  },
+})
+
+defineCheck({
+  id: 'inventory.rollbackResidual',
+  severity: 'warning',
+  label: 'Stock changes that were never logged',
+  affects: ['inventory.openingValue', 'inventory.stockReconciliationResidual'],
+  run(ctx) {
+    // Historical stock is reconstructed by rolling movements back from the live
+    // quantity. Rolling back to the end of TODAY must reproduce the live figure
+    // exactly — nothing can have moved since. If it does not, some code path is
+    // changing stock without writing a stock_movements row, and every
+    // historical inventory figure is built on sand.
+    //
+    // This is the difference between a valuation that is checked and one that is
+    // merely asserted, and it costs a single scan.
+    const { rollbackResidual } = require('../sql/inventoryLedger')
+    const today = require('../kernel/time').today()
+    const res = rollbackResidual(ctx.db, today)
+    return {
+      passed: res.passed,
+      count: res.mismatches.length,
+      exposure: 0,
+      weight: res.mismatches.length ? 0.25 : 0,
+      detail: { products: res.mismatches.slice(0, 10) },
+      message: res.passed
+        ? null
+        : `${res.mismatches.length} product${res.mismatches.length === 1 ? "'s" : "s'"} stock cannot be ` +
+          `reconstructed from the movement log, so historical stock figures for ${res.mismatches.length === 1 ? 'it' : 'them'} may be wrong.`,
     }
   },
 })

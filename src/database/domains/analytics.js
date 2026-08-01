@@ -12,6 +12,7 @@ export const getMetrics = (ids, period, scope, opts) => w.metrics(ids, period, s
 export const compareMetrics = (ids, period, scope, opts) => w.compare(ids, period, scope, opts)
 export const getQuality = (period, scope, opts) => w.quality(period, scope, opts)
 export const explainMetric = (id, period, scope, opts) => w.explain(id, period, scope, opts)
+export const getMetricTrend = (id, period, scope, opts) => w.trend(id, period, scope, opts)
 export const listMetrics = () => w.listMetrics()
 
 /** True when a failure means "ask the Main Computer", not "something broke". */

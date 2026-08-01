@@ -5,8 +5,6 @@ const { Period } = require('./kernel/period')
 const { Scope } = require('./kernel/scope')
 const { resolveAll, resolveMetric } = require('./kernel/resolver')
 const { lineage } = require('./kernel/provenance')
-const { unavailable } = require('./kernel/figure')
-const { CODES } = require('./kernel/errors')
 const { runPreflight } = require('./quality/preflight')
 const { allCheckIds } = require('./quality/checks')
 const { ENGINE_VERSION } = require('./version')
@@ -78,18 +76,11 @@ function computeMetrics(ids, periodSpec, scopeSpec, opts = {}) {
   const ctx = makeContext(periodSpec, scopeSpec, opts)
   const wanted = ids?.length ? ids : registry.allMetricIds()
 
+  // Blocked metrics report as unavailable with the reason attached, never as 0.
+  // Enforced inside the resolver so the block propagates to anything derived
+  // from a blocked figure rather than only to directly-requested ones.
   const out = {}
   for (const id of wanted) {
-    // A blocker means this figure cannot be produced honestly. It reports as
-    // unavailable with the reason attached — never as 0.
-    if (ctx.quality.isBlocked(id)) {
-      const blocker = ctx.quality.blockers[0]
-      out[id] = serialiseFigure(
-        unavailable(CODES.SOURCE_NOT_AUTHORITATIVE, blocker?.message || 'Blocked by a data-quality check'),
-        id
-      )
-      continue
-    }
     out[id] = serialiseFigure(resolveMetric(ctx, id), id)
   }
 
@@ -175,6 +166,33 @@ function explain(metricId, periodSpec, scopeSpec, opts = {}) {
   }
 }
 
+/**
+ * A metric's value across the last N periods, plus its trend and next-period
+ * forecast.
+ *
+ * The forecast is deliberately refused rather than fudged when there is too
+ * little history — see metrics/trend.js.
+ */
+function trend(metricId, periodSpec, scopeSpec, opts = {}) {
+  const ctx = makeContext(periodSpec, scopeSpec, opts)
+  const { comparison, trend: trendFns } = require('./metrics')
+
+  const count = opts.periods || 12
+  const series = comparison.history(ctx, metricId, count)
+  const points = series.map((s, i) => ({ x: s.label, y: s.value, i }))
+
+  return {
+    metricId,
+    label: registry.hasMetric(metricId) ? registry.getMetric(metricId).label : metricId,
+    period: ctx.period.toJSON(),
+    scope: ctx.scope.toJSON(),
+    series,
+    trend: trendFns.linearTrend(points),
+    forecast: trendFns.forecastNext(points, { confidence: opts.confidence || 0.8 }),
+    quality: ctx.quality.toJSON(),
+  }
+}
+
 function listMetrics() {
   return registry.allMetrics().map((m) => ({
     id: m.id,
@@ -192,6 +210,7 @@ module.exports = {
   compare: compareMetrics,
   quality,
   explain,
+  trend,
   listMetrics,
   ENGINE_VERSION,
   // exported for tests and future report templates

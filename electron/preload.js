@@ -152,6 +152,7 @@ contextBridge.exposeInMainWorld('stocka', {
     compare:     (ids, period, scope, opts) => invoke('domain:analytics:compare', ids, period, scope, opts),
     quality:     (period, scope, opts)      => invoke('domain:analytics:quality', period, scope, opts),
     explain:     (id, period, scope, opts)  => invoke('domain:analytics:explain', id, period, scope, opts),
+    trend:       (id, period, scope, opts)  => invoke('domain:analytics:trend', id, period, scope, opts),
     listMetrics: ()                         => invoke('domain:analytics:listMetrics'),
   },
 

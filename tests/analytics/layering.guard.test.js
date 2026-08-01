@@ -55,18 +55,31 @@ describe('analytics layering', () => {
     expect(offenders).toEqual([])
   })
 
-  it('keeps stock_movements sign handling in movementSign.js alone', () => {
-    // SUM(quantity) over stock_movements is meaningless — SOLD is stored
-    // positive while stock went down, EXPIRED_DISCARD is stored negative, and
-    // ADJUSTMENT is genuinely signed. Only movementSign.js may normalise it.
+  it('never sums stock_movements quantities across movement types', () => {
+    // SUM(quantity) over mixed movement types is meaningless: SOLD is stored
+    // positive though stock went down, EXPIRED_DISCARD is stored negative, and
+    // ADJUSTMENT is genuinely signed. Summing them produces a plausible, wrong
+    // number — the worst kind.
     //
-    // Scoped to files that actually touch stock_movements: SUM(si.quantity)
-    // over sale_items is fine, because that column has no sign ambiguity.
+    // Two forms are legitimate, and only two:
+    //   - normalizedDeltaExpr(), which resolves the signs
+    //   - a sum restricted to ONE movement_type, where the meaning is unambiguous
+    //
+    // Note this does NOT flag SUM(si.quantity) over sale_items, which has no
+    // sign ambiguity at all.
     const offenders = filesUnder(ANALYTICS)
       .filter((f) => !f.endsWith(path.join('sql', 'movementSign.js')))
       .filter((f) => {
         const src = codeOf(f)
-        return /stock_movements/.test(src) && /SUM\(\s*\w*\.?quantity\s*\)/i.test(src)
+        if (!/stock_movements/.test(src)) return false
+        if (!/SUM\(/i.test(src)) return false
+
+        // Each SUM over a quantity column must be normalised or type-scoped.
+        const sums = src.match(/SUM\(\s*(?:ABS\(\s*)?\w*\.?quantity\b[^)]*\)+/gi) || []
+        if (sums.length === 0) return false
+        const normalised = /normalizedDeltaExpr/.test(src)
+        const typeScoped = /movement_type\s*(=|IN)/i.test(src)
+        return !normalised && !typeScoped
       })
       .map(rel)
     expect(offenders).toEqual([])

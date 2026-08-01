@@ -24,6 +24,9 @@ const CHANNELS = {
   'domain:analytics:explain': (metricId, period, scope, opts) =>
     analytics.explain(metricId, period, scope, opts),
 
+  'domain:analytics:trend': (metricId, period, scope, opts) =>
+    analytics.trend(metricId, period, scope, opts),
+
   'domain:analytics:listMetrics': () => analytics.listMetrics(),
 }
 

@@ -26,6 +26,26 @@ function resolveMetric(ctx, id, seen = new Set()) {
   const def = registry.getMetric(id)
   let result
 
+  // Blockers are enforced HERE, not at the facade, so that a metric derived
+  // from a blocked one is blocked too.
+  //
+  // Enforcing it only where a caller asks directly meant the stock
+  // reconciliation residual would happily subtract an opening stock figure the
+  // engine had just declared unknowable, and present the difference as
+  // shrinkage. A figure the engine refuses to state must not leak into another
+  // one through the back door.
+  if (ctx.quality?.isBlocked?.(id)) {
+    const blocker = ctx.quality.blockers.find((b) => b.affects.includes(id) || b.affects.includes('*'))
+    result = unavailable(
+      CODES.SOURCE_NOT_AUTHORITATIVE,
+      blocker?.message || 'Blocked by a data-quality check',
+      buildProvenance({ metricId: id, unit: def.unit, period: ctx.period, scope: ctx.scope })
+    )
+    seen.delete(id)
+    ctx.cache.set(key, result)
+    return result
+  }
+
   try {
     result = def.derived ? evaluateDerived(ctx, def, seen) : evaluateLeaf(ctx, def)
   } catch (err) {
