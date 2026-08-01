@@ -84,6 +84,11 @@ let _userDataPath = null
 // Unified dispatch table: maps IPC channel → domain function.
 // Used by POST /lan/invoke so client satellites can proxy any domain call.
 const DISPATCH = {
+  // Spread from the shared analytics table so a new analytics channel is
+  // reachable from satellites automatically. This entry is the one that
+  // historically gets forgotten, because omitting it fails ONLY on a satellite.
+  ...require('../analytics/ipc.analytics').CHANNELS,
+
   'domain:shop:get':       () => shop.getShop(),
   'domain:shop:init':      (...a) => shop.initializeShop(...a),
   'domain:shop:update':    (...a) => shop.updateShop(...a),
@@ -138,6 +143,7 @@ const DISPATCH = {
   'domain:sales:void':          (...a) => sales.voidSale(...a),
   'domain:sales:complete':      (...a) => sales.completeHeldSale(...a),
   'domain:sales:getVoided':     () => sales.getVoidedSales(),
+  'domain:sales:getDiscardedHolds': () => sales.getDiscardedHolds(),
   'domain:sales:getLastReceipt':() => sales.getLastReceiptNumber(),
   'domain:sales:getReceipt':    (...a) => sales.getReceiptBySaleId(...a),
   'domain:sales:updateReceipt': (...a) => sales.updateSaleReceiptNumber(...a),

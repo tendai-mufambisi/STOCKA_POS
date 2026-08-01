@@ -128,10 +128,23 @@ function addSale(sale, saleItems) {
   return saleId
 }
 
+// Discarded holds are excluded here on purpose. They used to be DELETEd, so no
+// caller has ever seen one; keeping them in the table for audit must not make
+// them appear in transaction lists that never showed them before. They remain
+// queryable via getDiscardedHolds().
 function getSales() {
   return getDb().prepare(
     `SELECT s.*, (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS items_count
-     FROM sales s ORDER BY s.created_at DESC`
+     FROM sales s WHERE s.status != 'discarded' ORDER BY s.created_at DESC`
+  ).all()
+}
+
+// Holds that were rung up and abandoned. Previously unknowable — the rows were
+// deleted — so this only has data from the release that stopped deleting them.
+function getDiscardedHolds() {
+  return getDb().prepare(
+    `SELECT s.*, (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS items_count
+     FROM sales s WHERE s.status = 'discarded' ORDER BY s.voided_at DESC`
   ).all()
 }
 
@@ -173,17 +186,42 @@ function recallHeldSale(saleId) {
   return { ...sale, items }
 }
 
-function discardHeldSale(saleId) {
+// Discarding a hold marks it 'discarded' rather than deleting it.
+//
+// It used to DELETE both the sale and its items. That returned the stock
+// correctly, but erased the fact that the transaction had ever existed: the
+// receipt number vanished from the sequence, the audit log had no counterpart
+// row to point at, and a cashier repeatedly ringing up and discarding large
+// holds left no trace at all. Deletion is also the one operation LAN sync
+// cannot carry — satellites replicate by upsert, so a row deleted on Main
+// simply stays behind on every till that already had it.
+//
+// The stock return is unchanged. Only the evidence is kept.
+function discardHeldSale(saleId, discardedBy) {
   const db = getDb()
+  const sale = getSaleById(saleId)
+  if (!sale) throw new Error('Sale not found')
+  if (sale.status !== 'held') throw new Error(`Only held sales can be discarded (this one is '${sale.status}')`)
+
   const items = getSaleItems(saleId)
   db.transaction(() => {
     for (const item of items) {
       const product = getProductById(item.product_id)
       if (product) updateProductQuantity(item.product_id, (product.current_quantity || 0) + item.quantity)
     }
-    db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(saleId)
-    db.prepare('DELETE FROM sales WHERE id = ?').run(saleId)
+    db.prepare(
+      `UPDATE sales SET status = 'discarded', void_reason = 'Held sale discarded',
+         voided_by = ?, voided_at = ?, sync_dirty = 1, sync_updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(discardedBy || 'System', eventNowIso(), saleId)
   })()
+
+  try {
+    logAuditAction(
+      discardedBy || 'System', 'DISCARD_HOLD', 'SALE', String(saleId),
+      `Discarded held sale #${saleId} (${items.length} item${items.length === 1 ? '' : 's'}, $${(sale.total || 0).toFixed(2)}) — stock returned`
+    )
+  } catch (_) {}
 }
 
 function voidSale(saleId, voidReason, voidedBy) {
@@ -276,7 +314,7 @@ function updateSaleReceiptNumber(saleId, receiptNumber) {
 
 module.exports = {
   addSale, getSales, getSaleById, getSaleItems, holdSale, getHeldSales,
-  recallHeldSale, discardHeldSale, voidSale, completeHeldSale, getVoidedSales,
+  recallHeldSale, discardHeldSale, getDiscardedHolds, voidSale, completeHeldSale, getVoidedSales,
   getLastReceiptNumber, getReceiptBySaleId, updateSaleReceiptNumber, getSalesByShift,
   getSalesByTillCode,
 }

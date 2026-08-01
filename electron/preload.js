@@ -130,7 +130,8 @@ contextBridge.exposeInMainWorld('stocka', {
     hold:          (id, name)    => invoke('domain:sales:hold', id, name),
     getHeld:       ()            => invoke('domain:sales:getHeld'),
     recall:        (id)          => invoke('domain:sales:recall', id),
-    discard:       (id)          => invoke('domain:sales:discard', id),
+    discard:       (id, by)      => invoke('domain:sales:discard', id, by),
+    getDiscardedHolds: ()        => invoke('domain:sales:getDiscardedHolds'),
     void:          (id, r, by)   => invoke('domain:sales:void', id, r, by),
     complete:      (id, paymentData, shiftId) => invoke('domain:sales:complete', id, paymentData, shiftId),
     getVoided:     ()            => invoke('domain:sales:getVoided'),
@@ -139,6 +140,19 @@ contextBridge.exposeInMainWorld('stocka', {
     updateReceipt: (id, num)     => invoke('domain:sales:updateReceipt', id, num),
     getByShift:    (shiftId)     => invoke('domain:sales:getByShift', shiftId),
     getByTill:     (tillCode)    => invoke('domain:sales:getByTill', tillCode),
+  },
+
+  // ── ANALYTICS ─────────────────────────────────────────────
+  // On a satellite these are proxied to the Main Computer rather than answered
+  // locally, and refuse with code ANALYTICS_MAIN_REQUIRED when it is
+  // unreachable — the local mirror is incomplete, so a local answer would be
+  // wrong without looking wrong. See lanClient FORCE_REMOTE_READ_CHANNELS.
+  analytics: {
+    metrics:     (ids, period, scope, opts) => invoke('domain:analytics:metrics', ids, period, scope, opts),
+    compare:     (ids, period, scope, opts) => invoke('domain:analytics:compare', ids, period, scope, opts),
+    quality:     (period, scope, opts)      => invoke('domain:analytics:quality', period, scope, opts),
+    explain:     (id, period, scope, opts)  => invoke('domain:analytics:explain', id, period, scope, opts),
+    listMetrics: ()                         => invoke('domain:analytics:listMetrics'),
   },
 
   // ── EXPENSES ──────────────────────────────────────────────

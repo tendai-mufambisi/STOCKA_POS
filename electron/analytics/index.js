@@ -1,0 +1,201 @@
+const { getDb } = require('../database')
+const registry = require('./kernel/registry')
+const { AnalyticsContext } = require('./kernel/context')
+const { Period } = require('./kernel/period')
+const { Scope } = require('./kernel/scope')
+const { resolveAll, resolveMetric } = require('./kernel/resolver')
+const { lineage } = require('./kernel/provenance')
+const { unavailable } = require('./kernel/figure')
+const { CODES } = require('./kernel/errors')
+const { runPreflight } = require('./quality/preflight')
+const { allCheckIds } = require('./quality/checks')
+const { ENGINE_VERSION } = require('./version')
+
+// Public face of the analytics engine.
+//
+// Everything above this line is internal; IPC, reports and tests come through
+// here. Nothing in the renderer ever sees a metric definition, a Period object
+// or a SQL fragment — only plain serialisable results.
+
+require('./metrics')
+
+// Structural validation once at load: unknown dependency ids, cycles, unknown
+// bundles, unknown quality check ids. A wiring mistake becomes a startup
+// failure rather than a report that quietly prints a wrong number.
+registry.assertValid({ knownCheckIds: allCheckIds() })
+
+/** Build a Period from a plain object sent over IPC. */
+function toPeriod(spec) {
+  if (!spec) return Period.day()
+  if (spec instanceof Period) return spec
+  switch (spec.type) {
+    case 'day': return Period.day(spec.date)
+    case 'week': return Period.week(spec.date)
+    case 'month': return Period.month(spec.year, spec.month)
+    case 'quarter': return Period.quarter(spec.year, spec.quarter)
+    case 'year': return Period.year(spec.year)
+    case 'monthOf': return Period.monthOf(spec.date)
+    case 'range':
+    default: return Period.range(spec.start, spec.end)
+  }
+}
+
+function toScope(spec) {
+  if (!spec) return Scope.all()
+  if (spec instanceof Scope) return spec
+  return new Scope(spec)
+}
+
+function makeContext(periodSpec, scopeSpec, opts = {}) {
+  const ctx = new AnalyticsContext({
+    db: getDb(),
+    period: toPeriod(periodSpec),
+    scope: toScope(scopeSpec),
+    opts,
+  })
+  ctx.quality = runPreflight(ctx)
+  return ctx
+}
+
+/** Serialise a Figure for IPC — drops nothing the renderer needs, adds nothing it doesn't. */
+function serialiseFigure(fig, id) {
+  return {
+    id,
+    value: fig.value,
+    unit: fig.unit,
+    unavailable: fig.unavailable,
+    confidence: fig.provenance?.confidence ?? null,
+    notes: fig.provenance?.notes || [],
+    label: registry.hasMetric(id) ? registry.getMetric(id).label : id,
+  }
+}
+
+/**
+ * Compute a set of metrics.
+ * @returns { period, scope, quality, metrics: { id: SerialisedFigure } }
+ */
+function computeMetrics(ids, periodSpec, scopeSpec, opts = {}) {
+  const ctx = makeContext(periodSpec, scopeSpec, opts)
+  const wanted = ids?.length ? ids : registry.allMetricIds()
+
+  const out = {}
+  for (const id of wanted) {
+    // A blocker means this figure cannot be produced honestly. It reports as
+    // unavailable with the reason attached — never as 0.
+    if (ctx.quality.isBlocked(id)) {
+      const blocker = ctx.quality.blockers[0]
+      out[id] = serialiseFigure(
+        unavailable(CODES.SOURCE_NOT_AUTHORITATIVE, blocker?.message || 'Blocked by a data-quality check'),
+        id
+      )
+      continue
+    }
+    out[id] = serialiseFigure(resolveMetric(ctx, id), id)
+  }
+
+  return {
+    engineVersion: ENGINE_VERSION,
+    period: ctx.period.toJSON(),
+    scope: ctx.scope.toJSON(),
+    quality: ctx.quality.toJSON(),
+    metrics: out,
+  }
+}
+
+/**
+ * Compute a metric alongside the same metric over the previous period and the
+ * same period last year. This is the entire mechanism behind every "↑ 14%" on
+ * the reports — no metric is comparison-aware.
+ */
+function compareMetrics(ids, periodSpec, scopeSpec, opts = {}) {
+  const ctx = makeContext(periodSpec, scopeSpec, opts)
+  const prevCtx = ctx.withPeriod(ctx.period.previous())
+  const yoyCtx = ctx.withPeriod(ctx.period.priorYear())
+  prevCtx.quality = runPreflight(prevCtx)
+  yoyCtx.quality = runPreflight(yoyCtx)
+
+  const { pctChange } = require('./kernel/money')
+  const out = {}
+
+  for (const id of ids) {
+    const cur = resolveMetric(ctx, id)
+    const prev = resolveMetric(prevCtx, id)
+    const yoy = resolveMetric(yoyCtx, id)
+
+    out[id] = {
+      ...serialiseFigure(cur, id),
+      previous: prev.value,
+      priorYear: yoy.value,
+      // null rather than Infinity when there is no baseline: a first month of
+      // trading has not grown infinitely, the comparison simply does not exist.
+      changeVsPrevious: pctChange(cur.value, prev.value),
+      changeVsPriorYear: pctChange(cur.value, yoy.value),
+      comparable: prev.unavailable == null && prev.value != null,
+    }
+  }
+
+  return {
+    engineVersion: ENGINE_VERSION,
+    period: ctx.period.toJSON(),
+    comparisonPeriod: prevCtx.period.toJSON(),
+    priorYearPeriod: yoyCtx.period.toJSON(),
+    scope: ctx.scope.toJSON(),
+    quality: ctx.quality.toJSON(),
+    metrics: out,
+  }
+}
+
+/** The quality report on its own, for a persistent dashboard banner. */
+function quality(periodSpec, scopeSpec, opts = {}) {
+  const ctx = makeContext(periodSpec, scopeSpec, opts)
+  return { period: ctx.period.toJSON(), ...ctx.quality.toJSON() }
+}
+
+/**
+ * "Where did this number come from?" — the full dependency tree with each node's
+ * value, the SQL that produced it and how many rows it touched.
+ */
+function explain(metricId, periodSpec, scopeSpec, opts = {}) {
+  const ctx = makeContext(periodSpec, scopeSpec, { ...opts, explain: true })
+  const bundle = resolveAll(ctx, [metricId])
+  // Every figure the resolver touched, so the tree can be walked without re-running.
+  const figures = {}
+  for (const [key, val] of ctx.cache) {
+    if (key.startsWith('bundle:')) continue
+    const id = key.split('|')[0]
+    if (val && typeof val === 'object' && 'unavailable' in val) figures[id] = val
+  }
+  return {
+    metricId,
+    period: ctx.period.toJSON(),
+    scope: ctx.scope.toJSON(),
+    lineage: lineage(metricId, figures),
+    quality: ctx.quality.toJSON(),
+    value: bundle.value(metricId),
+  }
+}
+
+function listMetrics() {
+  return registry.allMetrics().map((m) => ({
+    id: m.id,
+    label: m.label,
+    unit: m.unit,
+    grain: m.grain,
+    derived: m.derived,
+    dependsOn: m.dependsOn,
+  }))
+}
+
+module.exports = {
+  computeMetrics,
+  compareMetrics,
+  compare: compareMetrics,
+  quality,
+  explain,
+  listMetrics,
+  ENGINE_VERSION,
+  // exported for tests and future report templates
+  makeContext,
+  toPeriod,
+  toScope,
+}

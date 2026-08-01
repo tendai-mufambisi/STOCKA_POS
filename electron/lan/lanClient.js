@@ -51,6 +51,22 @@ const IDEMPOTENT_CHANNELS = new Set([
 // events); the rest were 73 distinct stock alerts requeued ~60 times each.
 const NEVER_QUEUE = NON_BUSINESS_CHANNELS
 
+// READS that must still come from Main.
+//
+// Every other read is answered from this satellite's local mirror, which is
+// correct for a product list or a receipt lookup. It is NOT correct for
+// analytics: the delta sync never ships stock_movements, sale_holds,
+// notifications or transaction_audit_log at all, and sales/sale_items can lag
+// behind Main by a sync interval or an offline stretch.
+//
+// A margin computed here would therefore be wrong WITHOUT LOOKING WRONG — a
+// plausible number on a clean page, which is the single worst failure mode a
+// reporting system has. Offline, these refuse rather than answer.
+//
+// Built from the shared table so a new analytics channel is covered on the day
+// it is added, not the day someone notices.
+const FORCE_REMOTE_READ_CHANNELS = new Set(require('../analytics/ipc.analytics').CHANNEL_IDS)
+
 const PING_INTERVAL_MS = 8000   // was 3000 — less aggressive on WiFi, avoids false disconnects from single dropped packets
 const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handles instant push anyway
 // How long a write will wait for its own pull-back before returning to the renderer.
@@ -468,6 +484,28 @@ function setOnline(nowOnline) {
 // ── IPC handler factory (called by ipc.js) ───────────────────────────────────
 
 function makeHandler(channel, fn) {
+  // READ that must come from Main — see FORCE_REMOTE_READ_CHANNELS above.
+  // Never queued (there is nothing to replay: a read changes nothing) and never
+  // silently answered from the local mirror.
+  if (FORCE_REMOTE_READ_CHANNELS.has(channel)) {
+    return async (event, ...args) => {
+      if (!_online) {
+        return {
+          __error: 'Reports are produced on the Main Computer, which this till cannot reach right now.',
+          __code: 'ANALYTICS_MAIN_REQUIRED',
+        }
+      }
+      try {
+        return await lanRequest(channel, args)
+      } catch (err) {
+        return {
+          __error: `Could not reach the Main Computer for this report: ${err.message}`,
+          __code: 'ANALYTICS_MAIN_REQUIRED',
+        }
+      }
+    }
+  }
+
   if (!WRITE_CHANNELS.has(channel)) {
     // READ: use local DB (kept in sync via periodic /lan/changes pull)
     return (event, ...args) => {

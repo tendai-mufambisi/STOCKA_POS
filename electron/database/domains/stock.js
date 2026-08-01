@@ -2,6 +2,7 @@ const { getDb } = require('../index')
 const { getProductById } = require('./products')
 const { logAuditAction } = require('./audit')
 const { eventNowIso, eventNowSql } = require('../eventClock')
+const { costResolverFor } = require('../../analytics/sql/costResolver')
 
 // Date portion (YYYY-MM-DD) of the true action time — the real receiving date for a
 // write replayed from a satellite's offline queue, today otherwise.
@@ -201,13 +202,28 @@ function recordDirectPurchase(purchase) {
 
 function getDeadStockProducts(days = 30) {
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-  return getDb().prepare(`
-    SELECT p.*,
-      COALESCE((SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1), 0) as latest_cost_per_unit
+  const db = getDb()
+  const rows = db.prepare(`
+    SELECT p.*
     FROM products p
     WHERE p.current_quantity > 0 AND (p.last_sold_date IS NULL OR p.last_sold_date < ?)
     ORDER BY p.last_sold_date ASC
   `).all(cutoff)
+
+  // Valued through the canonical resolver rather than an inline
+  // ORDER BY date_received subquery, so the capital reported as tied up in dead
+  // stock matches the inventory value reported everywhere else.
+  // has_known_cost distinguishes "worth nothing" from "cost unknown" — the two
+  // look identical once a missing cost is coerced to 0.
+  const costs = costResolverFor(db).costMap()
+  return rows.map(p => {
+    const rec = costs.get(p.id)
+    return {
+      ...p,
+      latest_cost_per_unit: rec && rec.source === 'receiving' ? rec.cost : 0,
+      has_known_cost: !!(rec && rec.source === 'receiving')
+    }
+  })
 }
 
 function getRestockNeeded() {

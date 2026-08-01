@@ -13,6 +13,7 @@ const backup       = require('./domains/backup')
 const eod          = require('./domains/eod')
 const branches     = require('./domains/branches')
 const holds        = require('./domains/holds')
+const { CHANNELS: ANALYTICS_CHANNELS } = require('../analytics/ipc.analytics')
 
 let _makeHandler = null
 
@@ -101,6 +102,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:sales:void',          h('domain:sales:void',          sales.voidSale))
   ipcMain.handle('domain:sales:complete',      h('domain:sales:complete',      sales.completeHeldSale))
   ipcMain.handle('domain:sales:getVoided',     h('domain:sales:getVoided',     sales.getVoidedSales))
+  ipcMain.handle('domain:sales:getDiscardedHolds', h('domain:sales:getDiscardedHolds', sales.getDiscardedHolds))
   ipcMain.handle('domain:sales:getLastReceipt',h('domain:sales:getLastReceipt',sales.getLastReceiptNumber))
   ipcMain.handle('domain:sales:getReceipt',    h('domain:sales:getReceipt',    sales.getReceiptBySaleId))
   ipcMain.handle('domain:sales:updateReceipt', h('domain:sales:updateReceipt', sales.updateSaleReceiptNumber))
@@ -205,6 +207,14 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   // ── BACKUP (always local — not routed through LAN) ──
   ipcMain.handle('domain:backup:exportAsFile',   (event, filename) => backup.exportBackupAsFile(backupsDir, filename))
   ipcMain.handle('domain:backup:importFromFile', wrap(backup.importBackupFromFile))
+
+  // ── ANALYTICS ──
+  // Registered from the shared table in analytics/ipc.analytics.js, which
+  // lanServer's DISPATCH and lanClient's forced-remote set are also built from,
+  // so the three can never drift apart.
+  for (const [channel, fn] of Object.entries(ANALYTICS_CHANNELS)) {
+    ipcMain.handle(channel, h(channel, fn))
+  }
 }
 
 module.exports = { registerAll, updateMakeHandler }

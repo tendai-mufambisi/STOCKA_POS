@@ -3,6 +3,7 @@ const { createNotification } = require('./notifications')
 const { logAuditAction } = require('./audit')
 const { eventNowIso, isReplay } = require('../eventClock')
 const { getRequestTill, isRemoteRequest, getLocalTillCode, getTillPresence } = require('../tillPresence')
+const { drawerCashSql, nonDrawerSql, splitSql, cashExpenseSql } = require('../../analytics/sql/paymentClassifier')
 
 
 // Closed shifts whose figures were never confirmed against a physical count:
@@ -60,8 +61,8 @@ function updateShiftSalesForPaymentMethod(shiftId, paymentMethod, amount) {
 function queryCashExpenses(db, shiftId) {
   return db.prepare(
     `SELECT COALESCE(SUM(amount), 0) as total
-     FROM expenses
-     WHERE shift_id = ? AND (payment_method = 'Cash' OR payment_method IS NULL OR payment_method = '')`
+     FROM expenses e
+     WHERE e.shift_id = ? AND ${cashExpenseSql('e')}`
   ).get(shiftId)?.total || 0
 }
 
@@ -75,13 +76,13 @@ function computeDrawerTotals(db, shift) {
   // Cash-method sales only — Transfer/EcoCash/Swipe sales never go into the cash drawer
   const cashSalesOnly = db.prepare(
     `SELECT COALESCE(SUM(total), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Cash'`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${drawerCashSql('s')}`
   ).get(shift.id)?.t || 0
 
   // Split payments: only the ZWG cash_amount portion lands in the drawer
   const splitCashPortion = db.prepare(
     `SELECT COALESCE(SUM(cash_amount), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${splitSql('s')}`
   ).get(shift.id)?.t || 0
 
   // Only cash expenses reduce the drawer — Transfer/EcoCash expenses do not
@@ -92,13 +93,12 @@ function computeDrawerTotals(db, shift) {
   // getShiftSummary uses, kept here so closeShift doesn't need the full summary.
   const transferSalesOnly = db.prepare(
     `SELECT COALESCE(SUM(total), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed'
-     AND payment_method IN ('Transfer','Swipe','EcoCash','USD')`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${nonDrawerSql('s')}`
   ).get(shift.id)?.t || 0
 
   const splitTransferPortion = db.prepare(
     `SELECT COALESCE(SUM(usd_amount), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${splitSql('s')}`
   ).get(shift.id)?.t || 0
 
   const expectedCash = (shift.opening_cash || 0) + cashSalesOnly + splitCashPortion - cashExpensesTotal
@@ -379,20 +379,22 @@ function getShiftSummary(shiftId) {
   ).get(shiftId) || {}
 
   // ── Payment-method breakdown ──────────────────────────────────────────────
+  // Classification comes from analytics/sql/paymentClassifier so the drawer
+  // figures here, the ones closeShift computes, and the ones reports show are
+  // all derived from one taxonomy.
   const cashSalesOnly = db.prepare(
     `SELECT COALESCE(SUM(total), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Cash'`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${drawerCashSql('s')}`
   ).get(shiftId)?.t || 0
 
   const transferSalesOnly = db.prepare(
     `SELECT COALESCE(SUM(total), 0) as t
-     FROM sales WHERE shift_id = ? AND status = 'completed'
-     AND payment_method IN ('Transfer','Swipe','EcoCash','USD')`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${nonDrawerSql('s')}`
   ).get(shiftId)?.t || 0
 
   const splitRow = db.prepare(
     `SELECT COALESCE(SUM(cash_amount), 0) as cash_part, COALESCE(SUM(usd_amount), 0) as transfer_part
-     FROM sales WHERE shift_id = ? AND status = 'completed' AND payment_method = 'Split'`
+     FROM sales s WHERE s.shift_id = ? AND s.status = 'completed' AND ${splitSql('s')}`
   ).get(shiftId) || {}
 
   // Only cash-paid expenses reduce the drawer balance

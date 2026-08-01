@@ -7,7 +7,7 @@ const fs = require('fs')
 const logger = require('./logger')
 const { verifyLicense, saveLicense, loadLicense, getRawKey } = require('./license')
 const { initDb, saveDb, closeDb } = require('./database/index')
-const { createTables, runMigrations } = require('./database/schema')
+const { createTables, runMigrations, ensureIndexes } = require('./database/schema')
 const { registerAll: registerDomainIpc } = require('./database/ipc')
 const { initLan } = require('./lan/index')
 const backgroundServer = require('./backgroundServer')
@@ -110,6 +110,9 @@ app.whenReady().then(async () => {
     const db = initDb(dbFilePath)
     createTables(db)
     runMigrations(db)
+    // After the migrations, so an index can never reference a column that this
+    // boot was responsible for adding. Has its own internal guard.
+    ensureIndexes(db)
     saveDb()
     // initLan MUST run before registerDomainIpc so CLIENT mode can inject makeHandler
     const { lanHandlers, stopLan: _stopLan, makeHandler } = initLan(userDataPath, () => mainWindow)

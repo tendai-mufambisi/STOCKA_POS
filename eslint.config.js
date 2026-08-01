@@ -4,10 +4,23 @@ import reactPlugin from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
 
 export default [
-  { ignores: ['dist', 'release', 'node_modules', 'electron'] },
+  // electron/ is unlinted for historical reasons, but electron/analytics/ is new
+  // and holds the accounting logic, so it starts linted and stays that way.
+  { ignores: ['dist', 'release', 'node_modules', 'electron/!(analytics)/**', 'electron/*.js'] },
   js.configs.recommended,
   {
-    files: ['**/*.{js,jsx}'],
+    files: ['electron/analytics/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node },
+      parserOptions: { ecmaVersion: 'latest', sourceType: 'commonjs' },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  {
+    files: ['src/**/*.{js,jsx}'],
     plugins: {
       react: reactPlugin,
       'react-hooks': reactHooks,

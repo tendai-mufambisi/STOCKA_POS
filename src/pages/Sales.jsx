@@ -702,7 +702,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     const heldSaleId = confirmDiscard
     setConfirmDiscard(null)
     try {
-      await discardHeldSale(heldSaleId)
+      await discardHeldSale(heldSaleId, user?.username)
       await loadHeldSales()
       flash('Held sale discarded', 'info', 2500)
     } catch { flash('Failed to discard') }

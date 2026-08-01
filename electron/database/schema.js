@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs')
 
-const CURRENT_DB_VERSION = 4
+const CURRENT_DB_VERSION = 5
 
 function createTables(db) {
   db.exec(`
@@ -214,6 +214,54 @@ function createTables(db) {
       status TEXT DEFAULT 'completed',
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Frozen analytics reports, as JSON ReportDocuments.
+    --
+    -- Generalises end_of_day.report_snapshot, which already proved the rule:
+    -- a report that has been printed and signed off must reprint identically
+    -- forever. Recomputing it would let a void entered next week silently
+    -- rewrite last month's figures. Once a document lands here, reprint reads
+    -- this row and never recomputes.
+    --
+    -- content_hash covers the document minus generatedAt, so two runs over
+    -- unchanged data are provably identical.
+    CREATE TABLE IF NOT EXISTS report_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      report_id TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      granularity TEXT,
+      scope_key TEXT NOT NULL DEFAULT '',
+      document_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      engine_version TEXT,
+      schema_version INTEGER,
+      quality_confidence TEXT,
+      created_by TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Per-day inventory valuation, written forward on End of Day close.
+    --
+    -- Opening/closing stock for a past month is otherwise only obtainable by
+    -- rolling stock_movements back from products.current_quantity, which works
+    -- but costs a scan per product and depends on the movement ledger being
+    -- complete. This is the cache; the reconstruction stays the source of
+    -- truth and is used to verify it.
+    --
+    -- built_from records which path produced the row ('live' | 'reconstructed')
+    -- so a report can state how its opening stock was arrived at.
+    CREATE TABLE IF NOT EXISTS inventory_daily_snapshots (
+      date TEXT NOT NULL,
+      product_id INTEGER NOT NULL,
+      qty INTEGER NOT NULL,
+      unit_cost REAL,
+      value_at_cost REAL,
+      cost_source TEXT,
+      built_from TEXT DEFAULT 'live',
+      created_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (date, product_id)
+    );
   `)
 }
 
@@ -407,6 +455,29 @@ function runMigrations(db) {
       }
     } catch (_) {}
 
+    // ── Analytics: data that cannot be recovered retroactively ──────────────
+    //
+    // Each of these records something the current schema throws away at write
+    // time. A discounted sale today is stored as nothing more than a lower
+    // selling_price — indistinguishable from a price change — so no future
+    // report can ever reconstruct discount history for sales rung up before
+    // these columns existed. Adding them now is what makes next year's report
+    // possible; adding them later cannot backfill a single row.
+    addColIfMissing('sale_items', 'discount_amount', 'REAL DEFAULT 0')
+    addColIfMissing('sales', 'discount_total', 'REAL DEFAULT 0')
+    addColIfMissing('sales', 'discount_reason', 'TEXT')
+
+    // VAT is currently a single shops.vat_rate. Back-deriving tax for a past
+    // period at the CURRENT rate is wrong the moment the rate changes, and
+    // Zimbabwe's has. Freezing the rate onto the sale makes each period
+    // self-describing.
+    addColIfMissing('sales', 'tax_rate', 'REAL DEFAULT 0')
+    addColIfMissing('sales', 'tax_amount', 'REAL DEFAULT 0')
+
+    // Stock adjustments record how much but never why, so shrinkage can be
+    // measured and not explained. Structured reason codes fix that forward.
+    addColIfMissing('stock_movements', 'reason_code', 'TEXT')
+
     // Sync columns (future LAN/cloud tier)
     const SYNC_TABLES = ['products', 'sales', 'sale_items', 'stock_movements', 'expenses', 'shifts', 'suppliers', 'users']
     for (const table of SYNC_TABLES) {
@@ -438,6 +509,77 @@ function runMigrations(db) {
   }
 }
 
+// Indexes for the reporting/analytics engine.
+//
+// The database shipped with none, so every period aggregate was a full table
+// scan — tolerable at 200 sales, not at 200,000.
+//
+// Deliberately NOT inside runMigrations(): that function wraps its entire body
+// in one try/catch, so a single failing statement silently aborts every
+// migration after it. Index creation gets its own guard so it can never take
+// the column migrations down with it.
+//
+// Also deliberately not version-gated. Every statement is IF NOT EXISTS, so
+// running it on each boot is cheap and idempotent — and it is the only way
+// existing v4 installs ever receive these indexes.
+//
+// Note on sargability: `date(created_at,'localtime')` is a function on the
+// column and cannot use an index. Analytics queries pair it with a raw
+// `created_at BETWEEN ...` prefilter (see electron/analytics/kernel/time.js)
+// so these indexes actually get used; the localtime clause then narrows the
+// result exactly. Both clauses are required — see salePeriodPredicate().
+const INDEXES = [
+  // sales — the spine of every period aggregate
+  `CREATE INDEX IF NOT EXISTS idx_sales_status_created  ON sales(status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_created         ON sales(created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_shift_status    ON sales(shift_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_cashier_created ON sales(cashier, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_till_created    ON sales(till_code, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_receipt         ON sales(receipt_number)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_external        ON sales(external_id)`,
+
+  // sale_items — the COGS join, previously a full scan for every report
+  `CREATE INDEX IF NOT EXISTS idx_sale_items_sale       ON sale_items(sale_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sale_items_product    ON sale_items(product_id)`,
+
+  // stock_receivings — cost resolution walks this per product, newest first
+  `CREATE INDEX IF NOT EXISTS idx_recv_product_date     ON stock_receivings(product_id, date_received DESC, id DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_recv_corrects         ON stock_receivings(corrects_receiving_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_recv_date             ON stock_receivings(date_received)`,
+  `CREATE INDEX IF NOT EXISTS idx_recv_supplier_date    ON stock_receivings(supplier_id, date_received)`,
+
+  // stock_movements — historical inventory reconstruction rolls these back
+  `CREATE INDEX IF NOT EXISTS idx_mov_product_created   ON stock_movements(product_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_mov_created_type      ON stock_movements(created_at, movement_type)`,
+
+  // expenses / shifts / end_of_day / products
+  `CREATE INDEX IF NOT EXISTS idx_expenses_date         ON expenses(date)`,
+  `CREATE INDEX IF NOT EXISTS idx_expenses_shift        ON expenses(shift_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_shifts_started_status ON shifts(started_at, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_shifts_cashier        ON shifts(cashier_username, started_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_eod_date              ON end_of_day(date)`,
+  `CREATE INDEX IF NOT EXISTS idx_products_supplier     ON products(supplier_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_products_reorder      ON products(current_quantity, reorder_level)`,
+]
+
+function ensureIndexes(db) {
+  let created = 0
+  for (const sql of INDEXES) {
+    // Per-statement guard: one index referencing a column an old install never
+    // got must not stop the other twenty from being created.
+    try {
+      db.prepare(sql).run()
+      created++
+    } catch (err) {
+      console.warn('Index creation skipped:', sql.split(' ON ')[1] || sql, '—', err.message)
+    }
+  }
+  // Without ANALYZE, SQLite's planner has no statistics and may ignore the
+  // indexes it was just given.
+  try { db.exec('ANALYZE') } catch (_) {}
+  return created
+}
+
 function ensureDefaultAdminUser(db) {
   try {
     const count = db.prepare('SELECT COUNT(*) as n FROM users').pluck().get()
@@ -452,4 +594,4 @@ function ensureDefaultAdminUser(db) {
   }
 }
 
-module.exports = { createTables, runMigrations, CURRENT_DB_VERSION }
+module.exports = { createTables, runMigrations, ensureIndexes, CURRENT_DB_VERSION }
