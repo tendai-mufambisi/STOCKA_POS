@@ -7,9 +7,9 @@ afterAll(disposeDb)
 
 const cols = (db, t) => db.pragma(`table_info(${t})`).map((c) => c.name)
 
-describe('schema v5', () => {
-  it('is at version 5', () => {
-    expect(CURRENT_DB_VERSION).toBe(5)
+describe('schema v5+', () => {
+  it('is at the current version', () => {
+    expect(CURRENT_DB_VERSION).toBe(6)
   })
 
   it('creates the analytics indexes', () => {
@@ -50,6 +50,9 @@ describe('schema v5', () => {
     )
     expect(cols(db, 'sale_items')).toContain('discount_amount')
     expect(cols(db, 'stock_movements')).toContain('reason_code')
+    // Stamps a line whose cost was entered after the sale, so a report can say
+    // the figure was corrected rather than presenting it as original.
+    expect(cols(db, 'sale_items')).toContain('cost_backfilled_at')
   })
 
   it('leaves the existing schema intact', () => {

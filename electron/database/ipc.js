@@ -13,6 +13,7 @@ const backup       = require('./domains/backup')
 const eod          = require('./domains/eod')
 const branches     = require('./domains/branches')
 const holds        = require('./domains/holds')
+const costEntry    = require('./domains/costEntry')
 const { CHANNELS: ANALYTICS_CHANNELS } = require('../analytics/ipc.analytics')
 
 let _makeHandler = null
@@ -207,6 +208,13 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   // ── BACKUP (always local — not routed through LAN) ──
   ipcMain.handle('domain:backup:exportAsFile',   (event, filename) => backup.exportBackupAsFile(backupsDir, filename))
   ipcMain.handle('domain:backup:importFromFile', wrap(backup.importBackupFromFile))
+
+  // ── COST ENTRY ──
+  ipcMain.handle('domain:cost:missing',    h('domain:cost:missing',    costEntry.getProductsMissingCost))
+  ipcMain.handle('domain:cost:coverage',   h('domain:cost:coverage',   costEntry.getCostCoverageSummary))
+  ipcMain.handle('domain:cost:set',        h('domain:cost:set',        costEntry.setProductCost))
+  ipcMain.handle('domain:cost:setMany',    h('domain:cost:setMany',    costEntry.setProductCosts))
+  ipcMain.handle('domain:cost:backfill',   h('domain:cost:backfill',   costEntry.backfillSaleItemCosts))
 
   // ── ANALYTICS ──
   // Registered from the shared table in analytics/ipc.analytics.js, which

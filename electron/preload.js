@@ -142,7 +142,16 @@ contextBridge.exposeInMainWorld('stocka', {
     getByTill:     (tillCode)    => invoke('domain:sales:getByTill', tillCode),
   },
 
-  // ── ANALYTICS ─────────────────────────────────────────────
+  // ── COST ENTRY ─────────────────────────────────────────────
+  cost: {
+    missing:  (opts)          => invoke('domain:cost:missing', opts),
+    coverage: (opts)          => invoke('domain:cost:coverage', opts),
+    set:      (id, cost, by)  => invoke('domain:cost:set', id, cost, by),
+    setMany:  (entries, by)   => invoke('domain:cost:setMany', entries, by),
+    backfill: (opts)          => invoke('domain:cost:backfill', opts),
+  },
+
+  // ── ANALYTICS ─────────────────────────────────────────────────────────────
   // On a satellite these are proxied to the Main Computer rather than answered
   // locally, and refuse with code ANALYTICS_MAIN_REQUIRED when it is
   // unreachable — the local mirror is incomplete, so a local answer would be

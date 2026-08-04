@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs')
 
-const CURRENT_DB_VERSION = 5
+const CURRENT_DB_VERSION = 6
 
 function createTables(db) {
   db.exec(`
@@ -477,6 +477,18 @@ function runMigrations(db) {
     // Stock adjustments record how much but never why, so shrinkage can be
     // measured and not explained. Structured reason codes fix that forward.
     addColIfMissing('stock_movements', 'reason_code', 'TEXT')
+
+    // When a line's cost was filled in AFTER the sale.
+    //
+    // sale_items.cost_price is frozen at sale time, but a product that had
+    // never been received froze a cost of 0 — so the line reports a 100%
+    // margin. Once the real cost is known those zeros can be corrected, and a
+    // 0 was never a recorded figure in the first place; it was missing data.
+    //
+    // But a corrected figure must not masquerade as an original one. This stamp
+    // is what lets a report say "COGS for this period includes N lines costed
+    // after the sale" instead of quietly restating history.
+    addColIfMissing('sale_items', 'cost_backfilled_at', 'TEXT')
 
     // Sync columns (future LAN/cloud tier)
     const SYNC_TABLES = ['products', 'sales', 'sale_items', 'stock_movements', 'expenses', 'shifts', 'suppliers', 'users']

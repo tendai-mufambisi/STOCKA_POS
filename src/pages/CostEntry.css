@@ -1,0 +1,168 @@
+.cost-entry { padding: 0 0 3rem; }
+
+/* Summary — the coverage figure leads, because it is the number that decides
+   whether any margin on any report is worth printing. */
+.ce-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.ce-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 12px;
+  background: var(--card-bg, #fff);
+}
+
+.ce-stat.warn { border-color: #f0c9c9; background: #fdf6f6; }
+.ce-stat.ok   { border-color: #cfe6d4; background: #f5faf6; }
+
+.ce-stat-value { font-size: 1.7rem; font-weight: 700; line-height: 1.1; }
+.ce-of { font-size: 1rem; font-weight: 500; opacity: 0.55; }
+.ce-stat-label { font-size: 0.82rem; font-weight: 600; opacity: 0.8; }
+.ce-stat-sub { font-size: 0.75rem; opacity: 0.6; }
+
+.ce-message {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 0.95rem;
+  border-radius: 10px;
+  font-size: 0.87rem;
+  margin-bottom: 1rem;
+  border: 1px solid transparent;
+}
+.ce-ok    { background: #f2f8f3; border-color: #cfe6d4; color: #2f6b3d; }
+.ce-warn  { background: #fff8ec; border-color: #f0dcb4; color: #8a6314; }
+.ce-error { background: #fdf1f1; border-color: #f2cdcd; color: #9c2c2c; }
+
+/* Backfill — visually distinct because it is the only action here that changes
+   an already-reported figure. */
+.ce-backfill {
+  display: flex;
+  gap: 0.85rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid #d9d3ee;
+  background: #f7f5fd;
+  border-radius: 12px;
+  margin-bottom: 1.25rem;
+}
+
+.ce-backfill-icon { flex: 0 0 auto; width: 1.2rem; height: 1.2rem; margin-top: 0.15rem; color: #5b4b9e; }
+.ce-backfill-body { flex: 1; min-width: 0; }
+.ce-backfill-body strong { display: block; margin-bottom: 0.25rem; }
+.ce-backfill-body p { margin: 0 0 0.7rem; font-size: 0.85rem; opacity: 0.82; line-height: 1.5; }
+
+.ce-backfill-preview {
+  padding: 0.75rem 0.9rem;
+  border-radius: 9px;
+  background: rgba(91, 75, 158, 0.09);
+  border: 1px solid rgba(91, 75, 158, 0.2);
+}
+.ce-backfill-preview p { margin-bottom: 0.7rem; }
+.ce-backfill-actions { display: flex; gap: 0.5rem; }
+
+.ce-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.ce-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 260px;
+}
+.ce-search svg { position: absolute; left: 0.7rem; opacity: 0.5; width: 1rem; height: 1rem; }
+.ce-search input {
+  width: 100%;
+  padding: 0.55rem 0.8rem 0.55rem 2.1rem;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.ce-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 12px;
+  background: var(--card-bg, #fff);
+}
+
+.ce-table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+
+.ce-table th {
+  text-align: left;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.65;
+  border-bottom: 1px solid var(--border, #e3e6ea);
+  white-space: nowrap;
+}
+
+.ce-table td { padding: 0.5rem 0.85rem; border-bottom: 1px solid var(--border-light, #f0f2f4); }
+.ce-table tr:last-child td { border-bottom: none; }
+.ce-table .num { text-align: right; }
+.ce-table th.num { text-align: right; }
+
+.ce-name { font-weight: 600; }
+.ce-muted { opacity: 0.55; }
+/* Revenue already reported at a fabricated 100% margin — the cost of leaving
+   this row unfilled. */
+.ce-risk { color: #9c2c2c; font-weight: 600; }
+
+.ce-dirty { background: #f5faf6; }
+
+.ce-input {
+  width: 6.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border, #d8dbe0);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: right;
+}
+.ce-input:focus { outline: 2px solid #5b8def; outline-offset: -1px; border-color: transparent; }
+
+.ce-empty { padding: 2rem; text-align: center; opacity: 0.6; }
+
+.ce-done {
+  padding: 3rem 1rem;
+  text-align: center;
+  border: 1px solid #cfe6d4;
+  background: #f5faf6;
+  border-radius: 12px;
+  color: #2f6b3d;
+}
+.ce-done svg { width: 2.2rem; height: 2.2rem; margin-bottom: 0.5rem; }
+.ce-done h2 { margin: 0 0 0.3rem; font-size: 1.1rem; }
+.ce-done p { margin: 0; font-size: 0.88rem; opacity: 0.8; }
+
+@media (prefers-color-scheme: dark) {
+  .ce-stat { background: #1c1f24; border-color: #333840; }
+  .ce-stat.warn { background: #2c1818; border-color: #573030; }
+  .ce-stat.ok { background: #16261a; border-color: #2b4a33; }
+  .ce-ok { background: #16261a; border-color: #2b4a33; color: #8fd6a2; }
+  .ce-warn { background: #2a2214; border-color: #4d3f22; color: #e6c078; }
+  .ce-error { background: #2c1818; border-color: #573030; color: #eb9a9a; }
+  .ce-backfill { background: #1e1b2b; border-color: #3a3350; }
+  .ce-backfill-icon { color: #a898e8; }
+  .ce-table-wrap { background: #1c1f24; border-color: #333840; }
+  .ce-table th { border-color: #333840; }
+  .ce-table td { border-color: #262a30; }
+  .ce-dirty { background: #16261a; }
+  .ce-risk { color: #eb9a9a; }
+  .ce-done { background: #16261a; border-color: #2b4a33; color: #8fd6a2; }
+  .ce-search input, .ce-input { background: #23272e; border-color: #3a3f47; color: inherit; }
+}

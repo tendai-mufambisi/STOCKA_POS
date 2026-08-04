@@ -24,6 +24,7 @@ export const NAV_PRIVILEGES = [
   { id: 'restock',          label: 'Restock Needed',    group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'deadstock',        label: 'Dead Stock',        group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'expiry',           label: 'Expiry Tracking',   group: 'Inventory',  roles: ['Admin', 'Manager'] },
+  { id: 'cost-prices',      label: 'Cost Prices',       group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'my-transactions',  label: 'Transactions',      group: 'Sales',      roles: ['Admin', 'Manager', 'Cashier'] },
   { id: 'expenses',         label: 'Expenses',          group: 'Finance',    roles: ['Admin', 'Manager'] },
   { id: 'reports',          label: 'Reports',           group: 'Finance',    roles: ['Admin', 'Manager'] },

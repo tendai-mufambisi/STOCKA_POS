@@ -21,6 +21,7 @@ import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
+import CostEntry from './CostEntry'
 import ActivityLogs from './ActivityLogs'
 import MyTransactions from './MyTransactions'
 import Notifications from '../components/Notifications'
@@ -87,6 +88,7 @@ const NAV_SECTIONS = [
     { id: 'restock',          icon: LuPackageSearch,  label: 'Restock Needed' },
     { id: 'deadstock',        icon: LuPackageX,       label: 'Dead Stock' },
     { id: 'expiry',           icon: LuCalendarClock,  label: 'Expiry Tracking' },
+    { id: 'cost-prices',      icon: LuCircleDollarSign, label: 'Cost Prices' },
   ]},
   { id: 'finance', label: 'Finance', items: [
     { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
@@ -618,6 +620,8 @@ function Dashboard() {
         return <DeadStock />
       case 'expiry':
         return <ExpiryTracking />
+      case 'cost-prices':
+        return <CostEntry />
       case 'my-transactions':
         return <MyTransactions />
       case 'activitylogs':

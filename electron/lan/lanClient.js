@@ -12,6 +12,7 @@ const WRITE_CHANNELS = new Set([
   'domain:products:add', 'domain:products:update', 'domain:products:delete',
   'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
+  'domain:cost:set', 'domain:cost:setMany', 'domain:cost:backfill',
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings',
   'domain:stock:recordInitialCost', 'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
   'domain:stock:correctReceiving', 'domain:stock:discardExpiredBatch',
