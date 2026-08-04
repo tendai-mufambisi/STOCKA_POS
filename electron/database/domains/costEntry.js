@@ -109,10 +109,18 @@ function getCostCoverageSummary({ salesWindowDays = 90 } = {}) {
   }
 }
 
+// Must use exactly the same filter backfillSaleItemCosts does, or the screen
+// promises to correct N lines and then corrects none — which is worse than
+// offering nothing, because it makes the tool look broken.
+function backfillableProductIds(db) {
+  return [...costResolverFor(db).costMap().entries()]
+    .filter(([, rec]) => rec.source === 'receiving' && rec.cost > 0)
+    .map(([id]) => id)
+}
+
 function countBackfillable(db) {
-  const withCost = costResolverFor(db).costMap()
-  if (withCost.size === 0) return 0
-  const ids = [...withCost.keys()]
+  const ids = backfillableProductIds(db)
+  if (ids.length === 0) return 0
   const placeholders = ids.map(() => '?').join(',')
   return (
     db
@@ -199,9 +207,7 @@ function backfillSaleItemCosts({ productIds = null, recordedBy = 'System', dryRu
   const db = getDb()
   const costs = costResolverFor(db).costMap()
 
-  let candidates = [...costs.entries()]
-    .filter(([, rec]) => rec.source === 'receiving' && rec.cost > 0)
-    .map(([id]) => id)
+  let candidates = backfillableProductIds(db)
   if (productIds?.length) candidates = candidates.filter((id) => productIds.includes(id))
   if (candidates.length === 0) {
     return { linesUpdated: 0, cogsAdded: 0, productsAffected: 0, dryRun }

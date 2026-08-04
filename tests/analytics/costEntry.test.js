@@ -177,6 +177,27 @@ describe('backfilling history', () => {
     expect(note.message).toMatch(/corrected, not originally recorded/i)
   })
 
+  it('never promises more corrections than it will actually make', () => {
+    // Found by driving the real app: the summary counted every product in the
+    // cost map while the backfill required a cost above zero, so the screen
+    // offered "7 sales can be corrected" and then corrected none. A tool that
+    // promises work it does not do is worse than one that offers nothing.
+    const priceless = uncostedProduct({ name: 'Priceless', price: 8 })
+    getDb()
+      .prepare(
+        `INSERT INTO stock_receivings
+           (supplier_id, product_id, date_received, cartons, units_per_carton, total_units,
+            cost_per_carton, cost_per_unit, total_value, recorded_by)
+         VALUES (NULL, ?, '2026-07-10', 0, 0, 50, 0, 0, 0, 'import')`
+      )
+      .run(priceless)
+    sell({ lines: [{ productId: priceless, name: 'Priceless', qty: 2, cost: 0, price: 8 }] })
+
+    const promised = costEntry.getCostCoverageSummary().backfillableLines
+    const actual = costEntry.backfillSaleItemCosts({ dryRun: true }).linesUpdated
+    expect(promised).toBe(actual)
+  })
+
   it('leaves products that still have no cost alone', () => {
     const stillMissing = uncostedProduct({ name: 'Nameless', price: 8 })
     sell({ lines: [{ productId: stillMissing, name: 'Nameless', qty: 2, cost: 0, price: 8 }] })

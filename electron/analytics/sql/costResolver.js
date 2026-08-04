@@ -112,23 +112,38 @@ function costResolverFor(db, { asOf = null, mode = 'business' } = {}) {
       )
       .all(params)
 
-    // Rows arrive newest-first per product, so the first batch seen for a
-    // product is the winner and later ones are ignored.
+    // Rows arrive newest-first per product. The winner is the newest batch that
+    // carries a USABLE cost.
+    //
+    // "Usable" means greater than zero, and that qualifier is load-bearing. A
+    // receiving can record a price of 0 — stock reconciliations and priceless
+    // imports both produce them — and treating that as "this costs nothing"
+    // reintroduces the silent 100% margin through a different door. It says
+    // nothing about what the goods cost; it says nobody wrote it down.
+    //
+    // So a zero-priced receiving is skipped in favour of an older one that has a
+    // real price. On the live database that is the difference between valuing a
+    // product at 0 and valuing it at the $0.10 it was actually received for.
+    // Only when no batch has a price at all does the product report 'none'.
     const map = new Map()
     for (const r of rows) {
-      if (map.has(r.product_id)) continue
+      const existing = map.get(r.product_id)
+      if (existing && existing.source === 'receiving') continue
 
       // Weighted average across the batch. Falls back to the newest row's
-      // cost_per_unit when the batch nets to zero units — which is a real case,
-      // not a defensive guard: recordInitialCost() writes a zero-unit receiving
-      // purely to seed a cost for a product that has never been delivered, and a
-      // correction to zero quantity produces the same shape.
-      const cost =
+      // cost_per_unit when the batch nets to zero units — a real case, not a
+      // defensive guard: recordInitialCost() writes a zero-unit receiving purely
+      // to seed a cost for a product that has never been delivered, and a
+      // correction down to zero quantity produces the same shape.
+      const raw =
         r.units > 0 ? r.value / r.units : r.last_cost_per_unit != null ? r.last_cost_per_unit : null
+      const usable = raw != null && Number.isFinite(raw) && raw > 0
+
+      if (!usable && existing) continue // keep the earlier 'none' placeholder
 
       map.set(r.product_id, {
-        cost: cost != null && Number.isFinite(cost) ? cost : null,
-        source: cost != null && Number.isFinite(cost) ? 'receiving' : 'none',
+        cost: usable ? raw : null,
+        source: usable ? 'receiving' : 'none',
         rootReceivingId: r.root_id,
         dateReceived: r.date_received,
         corrected: r.correction_count > 0,

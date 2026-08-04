@@ -176,6 +176,33 @@ describe('costResolver', () => {
       expect(unknown in lookup).toBe(false) // absent, not 0
     })
 
+    it('treats a zero-priced receiving as no cost, not as free goods', () => {
+      // Found on the live database: stock reconciliations and priceless imports
+      // write receivings with cost_per_unit = 0. Reading that as "this costs
+      // nothing" reintroduces the silent 100% margin through a different door.
+      // It says nothing about what the goods cost — only that nobody wrote it
+      // down.
+      const id = addProduct('Priceless')
+      receive(id, { units: 50, costPerUnit: 0, dateReceived: '2026-07-10' })
+
+      const rec = costResolverFor(db).costOf(id)
+      expect(rec.cost).toBeNull()
+      expect(rec.source).toBe('none')
+    })
+
+    it('falls back to an older receiving that does have a price', () => {
+      // The live shape exactly: received at a real price, then adjusted twice at
+      // zero. The $0.10 it was actually received for is the honest answer.
+      const id = addProduct('Adjusted')
+      receive(id, { units: 300, costPerUnit: 0.1, dateReceived: '2026-07-11' })
+      receive(id, { units: 288, costPerUnit: 0, dateReceived: '2026-07-15' })
+      receive(id, { units: 10, costPerUnit: 0, dateReceived: '2026-07-15' })
+
+      const rec = costResolverFor(db).costOf(id)
+      expect(rec.cost).toBeCloseTo(0.1, 6)
+      expect(rec.source).toBe('receiving')
+    })
+
     it('honours a zero-unit receiving used purely to seed a cost', () => {
       // recordInitialCost writes a 0-unit row so a product that has never been
       // delivered still has a cost. Batch units net to 0, so the weighted
