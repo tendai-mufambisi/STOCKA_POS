@@ -163,6 +163,14 @@ contextBridge.exposeInMainWorld('stocka', {
     explain:     (id, period, scope, opts)  => invoke('domain:analytics:explain', id, period, scope, opts),
     trend:       (id, period, scope, opts)  => invoke('domain:analytics:trend', id, period, scope, opts),
     listMetrics: ()                         => invoke('domain:analytics:listMetrics'),
+
+    listReports:  ()                            => invoke('domain:analytics:listReports'),
+    runReport:    (id, period, scope, opts)     => invoke('domain:analytics:runReport', id, period, scope, opts),
+    reportHtml:   (id, period, scope, opts)     => invoke('domain:analytics:reportHtml', id, period, scope, opts),
+    reportPdf:    (id, period, scope, opts)     => invoke('domain:analytics:reportPdf', id, period, scope, opts),
+    saveSnapshot: (doc, by)                     => invoke('domain:analytics:saveSnapshot', doc, by),
+    listSnapshots:(opts)                        => invoke('domain:analytics:listSnapshots', opts),
+    getSnapshot:  (id)                          => invoke('domain:analytics:getSnapshot', id),
   },
 
   // ── EXPENSES ──────────────────────────────────────────────

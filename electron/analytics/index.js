@@ -193,6 +193,148 @@ function trend(metricId, periodSpec, scopeSpec, opts = {}) {
   }
 }
 
+// ── Reports ──────────────────────────────────────────────────────────────────
+
+/**
+ * Build a ReportDocument.
+ *
+ * The pipeline, in order, because the order is the design:
+ *   preflight → metrics → insights → health → narrative → template → document
+ *
+ * Quality runs FIRST so that every downstream layer knows what it can and
+ * cannot claim: metrics report blocked figures as unavailable, rules that need
+ * confidence they do not have are skipped, and the narrator attaches the caveat
+ * to the paragraph containing the figure it qualifies.
+ */
+function runReport(reportId, periodSpec, scopeSpec, opts = {}) {
+  const { getTemplate } = require('./reportTemplates')
+  const { runInsights, makeBundle } = require('./insights')
+  const { businessHealth } = require('./insights/scoring/businessHealth')
+  const { narrate } = require('./insights/narrative/templateNarrator')
+  const { createDocument, assertValid } = require('./render/document')
+  require('./insights/rules')
+
+  const template = getTemplate(reportId)
+  const ctx = makeContext(periodSpec, scopeSpec, opts)
+
+  // Warm every metric the template declares in one pass, so the bundle handed
+  // to rules and to the template is already resolved and shared.
+  const bundle = makeBundle(ctx)
+  for (const id of template.metrics || []) bundle.get(id)
+
+  const { insights, skipped } = runInsights(ctx, { ruleIds: opts.ruleIds || null })
+  const health = businessHealth(bundle, ctx)
+  const narrative = narrate({ bundle, insights, health, ctx })
+
+  const built = template.build({ bundle, insights, health, narrative, ctx })
+
+  let shop = {}
+  try { shop = require('../database/domains/shop').getShop() || {} } catch { shop = {} }
+
+  const doc = createDocument({
+    id: template.id,
+    title: template.title,
+    shop,
+    period: ctx.period.toJSON(),
+    comparisonPeriod: ctx.period.previous().toJSON(),
+    scope: ctx.scope.toJSON(),
+    quality: ctx.quality.toJSON(),
+    sections: built.sections,
+    insights,
+    narrative,
+    footnotes: built.footnotes || [],
+    provenance: {
+      tillCode: safeTillCode(),
+      host: require('os').hostname(),
+      costMode: ctx.costResolver.mode,
+      health,
+      skippedRules: skipped,
+      // The full figure-level provenance is large and only needed when
+      // someone asks "where did this come from", so it is fetched on demand
+      // via analytics:explain rather than stored on every document.
+      figureCount: ctx.cache.size,
+    },
+  })
+
+  return assertValid(doc)
+}
+
+function safeTillCode() {
+  try { return require('../database/tillPresence').getLocalTillCode() } catch { return null }
+}
+
+/** Report as a self-contained HTML string — preview, email, or print source. */
+function renderReportHtml(reportId, periodSpec, scopeSpec, opts = {}) {
+  const { toHtml } = require('./render/html/toHtml')
+  const doc = opts.document || runReport(reportId, periodSpec, scopeSpec, opts)
+  return toHtml(doc, { cover: opts.cover !== false, fragment: !!opts.fragment })
+}
+
+/** Report as a PDF buffer. Requires Electron; not available in plain Node. */
+async function renderReportPdf(reportId, periodSpec, scopeSpec, opts = {}) {
+  const { documentToPdf } = require('./render/pdf/toPdf')
+  const doc = opts.document || runReport(reportId, periodSpec, scopeSpec, opts)
+  const buffer = await documentToPdf(doc, opts)
+  return { buffer, document: doc }
+}
+
+/**
+ * Freeze a document so a reprint reproduces it exactly.
+ *
+ * Generalises what end_of_day.report_snapshot already does: a report that has
+ * been printed and acted on must reprint identically forever, or a void entered
+ * next week silently rewrites last month's figures.
+ */
+function saveReportSnapshot(doc, createdBy = 'System') {
+  const db = getDb()
+  const info = db
+    .prepare(
+      `INSERT INTO report_snapshots
+         (report_id, period_start, period_end, granularity, scope_key, document_json,
+          content_hash, engine_version, schema_version, quality_confidence, created_by)
+       VALUES (@report_id, @period_start, @period_end, @granularity, @scope_key, @document_json,
+               @content_hash, @engine_version, @schema_version, @quality_confidence, @created_by)`
+    )
+    .run({
+      report_id: doc.id,
+      period_start: doc.period.start,
+      period_end: doc.period.end,
+      granularity: doc.period.granularity || null,
+      scope_key: JSON.stringify(doc.scope || {}),
+      document_json: JSON.stringify(doc),
+      content_hash: doc.contentHash,
+      engine_version: doc.engineVersion,
+      schema_version: doc.schemaVersion,
+      quality_confidence: doc.quality?.confidence || null,
+      created_by: createdBy,
+    })
+  return { id: info.lastInsertRowid, contentHash: doc.contentHash }
+}
+
+function listReportSnapshots({ reportId = null, limit = 50 } = {}) {
+  const db = getDb()
+  const where = reportId ? 'WHERE report_id = @reportId' : ''
+  return db
+    .prepare(
+      `SELECT id, report_id, period_start, period_end, granularity, content_hash,
+              engine_version, quality_confidence, created_by, created_at
+         FROM report_snapshots ${where}
+        ORDER BY created_at DESC LIMIT @limit`
+    )
+    .all({ reportId, limit })
+}
+
+/** Reprint reads the frozen document; it never recomputes. */
+function getReportSnapshot(snapshotId) {
+  const row = getDb().prepare('SELECT * FROM report_snapshots WHERE id = ?').get(snapshotId)
+  if (!row) return null
+  return { ...row, document: JSON.parse(row.document_json) }
+}
+
+function listReports() {
+  return require('./reportTemplates').listTemplates()
+}
+
 function listMetrics() {
   return registry.allMetrics().map((m) => ({
     id: m.id,
@@ -212,6 +354,13 @@ module.exports = {
   explain,
   trend,
   listMetrics,
+  runReport,
+  renderReportHtml,
+  renderReportPdf,
+  saveReportSnapshot,
+  listReportSnapshots,
+  getReportSnapshot,
+  listReports,
   ENGINE_VERSION,
   // exported for tests and future report templates
   makeContext,

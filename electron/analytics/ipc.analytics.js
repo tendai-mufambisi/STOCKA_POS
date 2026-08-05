@@ -28,6 +28,26 @@ const CHANNELS = {
     analytics.trend(metricId, period, scope, opts),
 
   'domain:analytics:listMetrics': () => analytics.listMetrics(),
+
+  'domain:analytics:listReports': () => analytics.listReports(),
+
+  'domain:analytics:runReport': (reportId, period, scope, opts) =>
+    analytics.runReport(reportId, period, scope, opts),
+
+  'domain:analytics:reportHtml': (reportId, period, scope, opts) =>
+    analytics.renderReportHtml(reportId, period, scope, opts),
+
+  // Returns base64 rather than a Buffer: an IPC hop and the LAN JSON transport
+  // both mangle raw binary, and a satellite legitimately renders a PDF from a
+  // document Main computed.
+  'domain:analytics:reportPdf': async (reportId, period, scope, opts) => {
+    const { buffer, document } = await analytics.renderReportPdf(reportId, period, scope, opts)
+    return { pdfBase64: buffer.toString('base64'), contentHash: document.contentHash, title: document.title }
+  },
+
+  'domain:analytics:saveSnapshot': (doc, by) => analytics.saveReportSnapshot(doc, by),
+  'domain:analytics:listSnapshots': (opts) => analytics.listReportSnapshots(opts),
+  'domain:analytics:getSnapshot': (id) => analytics.getReportSnapshot(id),
 }
 
 const CHANNEL_IDS = Object.keys(CHANNELS)
