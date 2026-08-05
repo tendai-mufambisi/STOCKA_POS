@@ -21,13 +21,16 @@ import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
+import CostEntry from './CostEntry'
+import BusinessReports from './BusinessReports'
 import ActivityLogs from './ActivityLogs'
 import MyTransactions from './MyTransactions'
 import Notifications from '../components/Notifications'
 import LanStatusBar from '../components/LanStatusBar'
-import { getSales, getExpenses, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary, getDailyRevenue, getDailyCOGS } from '../database/db'
+import { getSales, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary, getMetrics, isMainRequired } from '../database/db'
+import DataConfidenceBanner from '../components/DataConfidenceBanner'
 import { useLanSync } from '../hooks/useLanSync'
-import { isToday, todayCompletedSales, localDateStr, formatDbTime } from '../utils/salesDay'
+import { todayCompletedSales, localDateStr, formatDbTime } from '../utils/salesDay'
 import { parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
 import ClosingFloatModal from '../components/ClosingFloatModal'
 import OpeningFloatModal from '../components/OpeningFloatModal'
@@ -50,6 +53,7 @@ import {
   LuCalendarClock,
   LuWallet,
   LuChartColumn,
+  LuFileText,
   LuSunset,
   LuTimer,
   LuUsers,
@@ -86,10 +90,12 @@ const NAV_SECTIONS = [
     { id: 'restock',          icon: LuPackageSearch,  label: 'Restock Needed' },
     { id: 'deadstock',        icon: LuPackageX,       label: 'Dead Stock' },
     { id: 'expiry',           icon: LuCalendarClock,  label: 'Expiry Tracking' },
+    { id: 'cost-prices',      icon: LuCircleDollarSign, label: 'Cost Prices' },
   ]},
   { id: 'finance', label: 'Finance', items: [
     { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
-    { id: 'reports',          icon: LuChartColumn,    label: 'Reports' },
+    { id: 'business-reports', icon: LuFileText,       label: 'Business Reports' },
+    { id: 'reports',          icon: LuChartColumn,    label: 'Classic Reports' },
     { id: 'endofday',         icon: LuSunset,         label: 'End of Day' },
     { id: 'shifts',           icon: LuTimer,          label: 'Shift Management' },
     { id: 'cashier-sessions', icon: LuUsers,          label: 'Cashier Sessions' },
@@ -108,6 +114,9 @@ function Dashboard() {
   const { currentShift, setCurrentShift, clearShift } = useShiftStore()
   const [activePage, setActivePage] = useState('dashboard')
   const [dashboardStats, setDashboardStats] = useState(null)
+  // How far today's figures can be trusted, from the engine's preflight.
+  const [dataQuality, setDataQuality] = useState(null)
+  const [metricsUnreachable, setMetricsUnreachable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [sidebarExpanded, setSidebarExpanded] = useState(false)
   // Missing key = open, so every section shows on first run
@@ -416,14 +425,35 @@ function Dashboard() {
   // Reload dashboard stats when any LAN machine changes data
   useLanSync(() => { if (user?.id) loadDashboardData() })
 
+  // Today's money figures come from the analytics engine, not from reducing
+  // whole tables in the browser. That is not only faster — it is what stops the
+  // Dashboard and the Reports page quietly disagreeing, which they did for as
+  // long as each computed revenue, COGS and the payment split its own way.
+  //
+  // Lists (low stock, recent sales) still come from the raw tables: they are
+  // rows to display, not business calculations.
+  const DASHBOARD_METRICS = [
+    'sales.gross',
+    'sales.transactionCount',
+    'profit.gross',
+    'expenses.total',
+  ]
+
   const loadDashboardData = async () => {
     try {
-      const [sales, expenses, products] = await Promise.all([
+      const day = localDateStr()
+      const [sales, products, metricsResult] = await Promise.all([
         getSales(),
-        getExpenses(),
-        getProducts()
+        getProducts(),
+        getMetrics(DASHBOARD_METRICS, { type: 'day', date: day }).catch(err => {
+          // On a satellite the engine answers from the Main Computer; if it is
+          // unreachable we show no figure rather than a locally-computed one
+          // that would be wrong without looking wrong.
+          if (!isMainRequired(err)) console.error('Metrics failed', err)
+          return { unreachable: true, error: err }
+        })
       ])
-      
+
       // Load active cashiers if user is admin or manager
       if (user?.role === 'Admin' || user?.role === 'Manager') {
         setActiveCashiersLoading(true)
@@ -437,33 +467,35 @@ function Dashboard() {
           setActiveCashiersLoading(false)
         }
       }
-      
-      const todaysSales = todayCompletedSales(sales)
-      const todaysExpenses = expenses.filter(e => isToday(e.date))
 
-      // Gross profit so far today = completed revenue − cost of goods sold
-      let grossProfit = null
-      try {
-        const day = localDateStr()
-        const [rev, cogs] = await Promise.all([getDailyRevenue(day), getDailyCOGS(day)])
-        grossProfit = (rev || 0) - (cogs || 0)
-      } catch { /* leave null — card shows a dash */ }
+      const m = metricsResult?.metrics || {}
+      // `value` is null when the engine could not compute a figure honestly.
+      // Passed through as null so the card renders '—' instead of $0.00 — a
+      // zero would be a claim that nothing was sold.
+      const figure = (id) => (m[id] ? m[id].value : null)
 
       const lowStockItems = products.filter(p => p.current_quantity <= p.reorder_level)
-      const stockValue = products.reduce((sum, p) => sum + ((p.current_quantity || 0) * (p.selling_price || 0)), 0)
-      
+      const todaysSales = todayCompletedSales(sales)
+
       setDashboardStats({
-        grossProfit,
-        todaysSales: todaysSales.reduce((sum, s) => sum + (s.total || 0), 0),
-        todaysSalesCount: todaysSales.length,
+        grossProfit: figure('profit.gross'),
+        todaysSales: figure('sales.gross'),
+        todaysSalesCount: figure('sales.transactionCount'),
+        todaysExpenses: figure('expenses.total'),
         totalProducts: products.length,
         lowStockCount: lowStockItems.length,
-        stockValue: stockValue,
-        todaysExpenses: todaysExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
-        lowStockItems: lowStockItems,
-        recentSales: todaysSales.reverse().slice(0, 5),
-        totalCompletedSales: sales.filter(s => s.status === 'completed').length,
+        // Stock at RETAIL price — deliberately named, because the reports value
+        // the same shelves at COST. Both are legitimate; calling both of them
+        // "stock value" was the bug.
+        stockValueAtRetail: products.reduce(
+          (sum, p) => sum + ((p.current_quantity || 0) * (p.selling_price || 0)), 0
+        ),
+        lowStockItems,
+        recentSales: todaysSales.slice().reverse().slice(0, 5),
+        totalCompletedSales: todaysSales.length,
       })
+      setDataQuality(metricsResult?.unreachable ? null : metricsResult?.quality || null)
+      setMetricsUnreachable(!!metricsResult?.unreachable)
     } catch (err) {
       console.error('Failed to load dashboard stats', err)
     } finally {
@@ -487,19 +519,24 @@ function Dashboard() {
   }
 
   const d = dashboardStats
+  // A figure the engine could not compute renders as '—', never as $0.00.
+  // $0.00 is a claim that nothing happened; '—' says we do not know.
+  const money = (v) => (v == null ? '—' : `$${v.toFixed(2)}`)
   const stats = [
     {
       icon: LuCircleDollarSign,
       label: "Today's Sales",
-      value: `$${(d?.todaysSales ?? 0).toFixed(2)}`,
-      sub: d ? `${d.todaysSalesCount || 0} ${d.todaysSalesCount === 1 ? 'sale' : 'sales'} today` : 'No sales recorded yet',
+      value: money(d?.todaysSales),
+      sub: d ? `${d.todaysSalesCount ?? 0} ${d.todaysSalesCount === 1 ? 'sale' : 'sales'} today` : 'No sales recorded yet',
       type: 'green',
       page: 'sales',
     },
     {
       icon: LuTrendingUp,
       label: "Today's Gross Profit",
-      value: d?.grossProfit == null ? (d ? '—' : '$0.00') : `$${d.grossProfit.toFixed(2)}`,
+      value: money(d?.grossProfit),
+      // Named honestly: at low cost coverage this figure is mostly guesswork,
+      // and the confidence banner above says so.
       sub: 'Sales minus cost of goods',
       type: 'gold',
       page: null,
@@ -515,7 +552,7 @@ function Dashboard() {
     {
       icon: LuTrendingDown,
       label: "Today's Expenses",
-      value: `$${(d?.todaysExpenses ?? 0).toFixed(2)}`,
+      value: money(d?.todaysExpenses),
       sub: d ? 'Recorded expenses' : 'No expenses recorded',
       type: 'expense',
       page: 'expenses',
@@ -551,6 +588,9 @@ function Dashboard() {
                   activeCashiersLoading={activeCashiersLoading}
                   totalProducts={dashboardStats?.totalProducts ?? null}
                   totalCompletedSales={dashboardStats?.totalCompletedSales ?? null}
+                  dataQuality={dataQuality}
+                  metricsUnreachable={metricsUnreachable}
+                  onRetryMetrics={loadDashboardData}
                 />
       case 'products':
         return <Products />
@@ -583,6 +623,10 @@ function Dashboard() {
         return <DeadStock />
       case 'expiry':
         return <ExpiryTracking />
+      case 'cost-prices':
+        return <CostEntry />
+      case 'business-reports':
+        return <BusinessReports />
       case 'my-transactions':
         return <MyTransactions />
       case 'activitylogs':
@@ -944,7 +988,7 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
   )
 }
 
-function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales }) {
+function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales, dataQuality, metricsUnreachable, onRetryMetrics }) {
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -996,6 +1040,14 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
           setActivePage={setActivePage}
         />
       )}
+
+      {/* Sits directly above the figures it qualifies — a caveat placed
+          anywhere else is a caveat nobody reads. */}
+      <DataConfidenceBanner
+        quality={dataQuality}
+        unreachable={metricsUnreachable}
+        onRetry={onRetryMetrics}
+      />
 
       <div className="stats-grid">
         {stats.map((stat, i) => (

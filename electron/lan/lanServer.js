@@ -25,6 +25,7 @@ const WRITE_CHANNELS_SERVER = new Set([
   'domain:products:add', 'domain:products:update', 'domain:products:delete',
   'domain:products:updateQty', 'domain:products:updateImage', 'domain:products:updateLastSold',
   'domain:suppliers:add', 'domain:suppliers:update', 'domain:suppliers:delete',
+  'domain:cost:set', 'domain:cost:setMany', 'domain:cost:backfill',
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings', 'domain:stock:recordInitialCost',
   'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts', 'domain:stock:correctReceiving',
   'domain:stock:discardExpiredBatch',
@@ -84,6 +85,11 @@ let _userDataPath = null
 // Unified dispatch table: maps IPC channel → domain function.
 // Used by POST /lan/invoke so client satellites can proxy any domain call.
 const DISPATCH = {
+  // Spread from the shared analytics table so a new analytics channel is
+  // reachable from satellites automatically. This entry is the one that
+  // historically gets forgotten, because omitting it fails ONLY on a satellite.
+  ...require('../analytics/ipc.analytics').CHANNELS,
+
   'domain:shop:get':       () => shop.getShop(),
   'domain:shop:init':      (...a) => shop.initializeShop(...a),
   'domain:shop:update':    (...a) => shop.updateShop(...a),
@@ -138,6 +144,13 @@ const DISPATCH = {
   'domain:sales:void':          (...a) => sales.voidSale(...a),
   'domain:sales:complete':      (...a) => sales.completeHeldSale(...a),
   'domain:sales:getVoided':     () => sales.getVoidedSales(),
+  'domain:sales:getDiscardedHolds': () => sales.getDiscardedHolds(),
+
+  'domain:cost:missing':  (...a) => require('../database/domains/costEntry').getProductsMissingCost(...a),
+  'domain:cost:coverage': (...a) => require('../database/domains/costEntry').getCostCoverageSummary(...a),
+  'domain:cost:set':      (...a) => require('../database/domains/costEntry').setProductCost(...a),
+  'domain:cost:setMany':  (...a) => require('../database/domains/costEntry').setProductCosts(...a),
+  'domain:cost:backfill': (...a) => require('../database/domains/costEntry').backfillSaleItemCosts(...a),
   'domain:sales:getLastReceipt':() => sales.getLastReceiptNumber(),
   'domain:sales:getReceipt':    (...a) => sales.getReceiptBySaleId(...a),
   'domain:sales:updateReceipt': (...a) => sales.updateSaleReceiptNumber(...a),

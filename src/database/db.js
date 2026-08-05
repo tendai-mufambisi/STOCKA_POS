@@ -16,6 +16,9 @@ export * from './domains/eod'
 export * from './domains/branches'
 export * from './domains/holds'
 export * from './domains/backup'
+export * from './domains/analytics'
+export * from './domains/costEntry'
+export * from './domains/costEntry'
 
 // saveDb / getDb were internal sql.js helpers — no longer needed in renderer
 export const saveDb = async () => {}

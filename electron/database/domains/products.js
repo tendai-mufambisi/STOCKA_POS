@@ -1,6 +1,7 @@
 const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
 const { eventNowIso } = require('../eventClock')
+const { costResolverFor } = require('../../analytics/sql/costResolver')
 
 function getProducts() {
   return getDb().prepare('SELECT * FROM products ORDER BY name ASC').all()
@@ -60,23 +61,26 @@ function updateProductLastSoldDate(productId) {
   getDb().prepare('UPDATE products SET last_sold_date = ? WHERE id = ?').run(eventNowIso(), productId)
 }
 
+// Cost lookups both go through the canonical resolver
+// (electron/analytics/sql/costResolver.js). They previously used two different
+// rules — this one ORDER BY date_received DESC, getAllLatestCostPrices MAX(id) —
+// which return different numbers for a backdated receiving or a corrected one,
+// so the price shown on a product could disagree with the price used to value
+// the same product's stock. See the resolver for why date wins over id.
 function getLatestProductPrice(productId) {
   const row = getDb().prepare('SELECT selling_price FROM products WHERE id = ?').get(productId)
   if (!row) return null
-  const costRow = getDb().prepare(
-    `SELECT cost_per_unit FROM stock_receivings WHERE product_id = ? ORDER BY date_received DESC LIMIT 1`
-  ).get(productId)
-  return { selling_price_per_unit: row.selling_price || 0, cost_per_unit: costRow?.cost_per_unit || 0 }
+  const cost = costResolverFor(getDb()).costOf(productId)
+  return { selling_price_per_unit: row.selling_price || 0, cost_per_unit: cost.cost || 0 }
 }
 
+// Map of product_id → unit cost, used at sale time to freeze cost_price onto
+// each sale_item. Products with no receiving on record are OMITTED rather than
+// present as 0 — the caller's `|| 0` fallback is unchanged, but anything that
+// wants to distinguish "free" from "unknown" now can.
 function getAllLatestCostPrices() {
   try {
-    const rows = getDb().prepare(`
-      SELECT sr.product_id, sr.cost_per_unit
-      FROM stock_receivings sr
-      WHERE sr.id = (SELECT MAX(id) FROM stock_receivings WHERE product_id = sr.product_id)
-    `).all()
-    return rows.reduce((map, row) => { map[row.product_id] = row.cost_per_unit || 0; return map }, {})
+    return costResolverFor(getDb()).costLookup()
   } catch (_) { return {} }
 }
 

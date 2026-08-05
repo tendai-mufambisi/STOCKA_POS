@@ -4,6 +4,7 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, L
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
 import { parseDbDate, formatDbTime } from '../utils/salesDay'
+import { tenderBreakdown } from '../utils/paymentTender'
 import * as XLSX from 'xlsx'
 import { useAuthStore } from '../store/useAuthStore'
 import { useReceiptPrinter } from '../hooks/useReceiptPrinter'
@@ -221,10 +222,14 @@ function Reports() {
       days: data.length
     })
 
+    // Was three hand-written filters here that classified 'USD' as cash, while
+    // the drawer reconciliation classified it as non-drawer — so this chart and
+    // the End of Day cash figure disagreed. Both now derive from one taxonomy.
+    const tenders = tenderBreakdown(rangedSales)
     const paymentData = [
-      { name: 'Cash', value: parseFloat(rangedSales.filter(s => !s.payment_method || s.payment_method === 'Cash' || s.payment_method === 'USD Cash' || s.payment_method === 'ZWG Cash' || s.payment_method === 'USD').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
-      { name: 'Transfer', value: parseFloat(rangedSales.filter(s => s.payment_method === 'Transfer' || s.payment_method === 'Swipe' || s.payment_method === 'EcoCash').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) },
-      { name: 'Split', value: parseFloat(rangedSales.filter(s => s.payment_method === 'Split').reduce((sum, s) => sum + (s.total || 0), 0).toFixed(2)) }
+      { name: 'Cash', value: tenders.cash },
+      { name: 'Transfer', value: tenders.electronic },
+      { name: 'Split', value: tenders.split }
     ]
 
     setPaymentBreakdown(paymentData)

@@ -1,15 +1,43 @@
 const { getDb } = require('../index')
+const { costResolverFor } = require('../../analytics/sql/costResolver')
 
 // Timestamps are stored in UTC (SQLite datetime('now')); every "day" comparison
 // must convert with the 'localtime' modifier and count completed sales only, so
 // all machines and all pages agree on the same daily figure.
+
+// Inventory valued AT COST — what the stock on the shelves cost to buy.
+//
+// Note this is not the same quantity as the "stock value" the Dashboard shows,
+// which values the same shelves at SELLING price. Both are legitimate; they are
+// simply different questions, and the only bug was calling both of them "stock
+// value". This one is the accounting figure.
+//
+// Products with no cost on record contribute 0 to the total but are counted
+// separately, so a caller can tell "nothing in stock" from "we don't know what
+// this cost".
+function computeStockValueAtCost() {
+  const db = getDb()
+  const costs = costResolverFor(db).costMap()
+  const rows = db.prepare('SELECT id, current_quantity FROM products').all()
+  let total = 0
+  let unknownCostProducts = 0
+  for (const r of rows) {
+    const rec = costs.get(r.id)
+    if (!rec || rec.source !== 'receiving') {
+      if ((r.current_quantity || 0) > 0) unknownCostProducts++
+      continue
+    }
+    total += (r.current_quantity || 0) * rec.cost
+  }
+  return { total, unknownCostProducts }
+}
 function getDashboardStats() {
   try {
     const db = getDb()
     return {
       productCount:  db.prepare('SELECT COUNT(*) FROM products').pluck().get() || 0,
       lowStockCount: db.prepare('SELECT COUNT(*) FROM products WHERE current_quantity <= reorder_level').pluck().get() || 0,
-      stockValue:    db.prepare(`SELECT COALESCE(SUM(p.current_quantity * COALESCE((SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1), 0)), 0) FROM products p`).pluck().get() || 0,
+      stockValue:    computeStockValueAtCost().total,
       todaySales:    db.prepare(`SELECT COALESCE(SUM(total), 0) FROM sales WHERE status = 'completed' AND date(created_at, 'localtime') = date('now', 'localtime')`).pluck().get() || 0,
       todayExpenses: db.prepare(`SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE date(date) = date('now', 'localtime')`).pluck().get() || 0,
       customerCount: 0
@@ -64,7 +92,7 @@ function getLowStockItems() {
 
 function getStockValue() {
   try {
-    return getDb().prepare(`SELECT COALESCE(SUM(p.current_quantity * COALESCE((SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1), 0)), 0) FROM products p`).pluck().get() || 0
+    return computeStockValueAtCost().total
   } catch (_) { return 0 }
 }
 
@@ -73,7 +101,7 @@ function getManagerAnalytics() {
     const db = getDb()
     return {
       totalRevenue:      db.prepare(`SELECT COALESCE(SUM(total), 0) FROM sales WHERE status = 'completed'`).pluck().get() || 0,
-      inventoryValue:    db.prepare(`SELECT COALESCE(SUM(p.current_quantity * COALESCE((SELECT cost_per_unit FROM stock_receivings WHERE product_id = p.id ORDER BY date_received DESC LIMIT 1), 0)), 0) FROM products p`).pluck().get() || 0,
+      inventoryValue:    computeStockValueAtCost().total,
       productCount:      db.prepare('SELECT COUNT(*) FROM products').pluck().get() || 0,
       deadStockCount:    db.prepare(`SELECT COUNT(*) FROM products WHERE current_quantity > 0 AND (last_sold_date IS NULL OR last_sold_date < datetime('now', '-30 days'))`).pluck().get() || 0,
       understockedCount: db.prepare('SELECT COUNT(*) FROM products WHERE current_quantity <= reorder_level').pluck().get() || 0
@@ -83,5 +111,6 @@ function getManagerAnalytics() {
 
 module.exports = {
   getDashboardStats, getSalesForDay, getDailyRevenue, getDailyCOGS,
-  getMonthlyData, getRecentTransactions, getLowStockItems, getStockValue, getManagerAnalytics
+  getMonthlyData, getRecentTransactions, getLowStockItems, getStockValue, getManagerAnalytics,
+  computeStockValueAtCost
 }

@@ -1,0 +1,130 @@
+/* Data confidence banner.
+   Tuned to be noticed without shouting: a healthy day is one quiet line, and
+   the styling escalates only as far as the data problem justifies. */
+
+.dcb {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  margin-bottom: 1rem;
+}
+
+.dcb-icon {
+  flex: 0 0 auto;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: 0.12rem;
+}
+
+.dcb-body { flex: 1 1 auto; min-width: 0; }
+
+.dcb-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.2rem;
+}
+
+.dcb-score {
+  font-weight: 500;
+  font-size: 0.76rem;
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.07);
+}
+
+.dcb-text { opacity: 0.92; }
+
+/* High — deliberately understated. A verified day should not compete with the
+   figures it is vouching for. */
+.dcb-high {
+  background: #f2f8f3;
+  border-color: #cfe6d4;
+  color: #2f6b3d;
+  padding: 0.5rem 0.8rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.dcb-medium {
+  background: #fff8ec;
+  border-color: #f0dcb4;
+  color: #8a6314;
+}
+
+.dcb-low {
+  background: #fdf1f1;
+  border-color: #f2cdcd;
+  color: #9c2c2c;
+}
+
+.dcb-unreachable {
+  background: #f4f5f7;
+  border-color: #d8dbe0;
+  color: #4a5058;
+  align-items: center;
+}
+
+.dcb-toggle {
+  margin-top: 0.4rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.85;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dcb-toggle:hover { opacity: 1; text-decoration: underline; }
+
+.dcb-chevron { transition: transform 0.15s ease; width: 0.9rem; height: 0.9rem; }
+.dcb-chevron.open { transform: rotate(180deg); }
+
+.dcb-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.dcb-item { opacity: 0.92; }
+.dcb-item.dcb-info { opacity: 0.75; }
+
+.dcb-action {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0.35rem 0.8rem;
+  border-radius: 7px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dcb-action:hover { background: rgba(0, 0, 0, 0.05); }
+
+@media (prefers-color-scheme: dark) {
+  .dcb-high { background: #16261a; border-color: #2b4a33; color: #8fd6a2; }
+  .dcb-medium { background: #2a2214; border-color: #4d3f22; color: #e6c078; }
+  .dcb-low { background: #2c1818; border-color: #573030; color: #eb9a9a; }
+  .dcb-unreachable { background: #1d1f23; border-color: #34383f; color: #b3b9c2; }
+  .dcb-score { background: rgba(255, 255, 255, 0.1); }
+  .dcb-action:hover { background: rgba(255, 255, 255, 0.08); }
+}
