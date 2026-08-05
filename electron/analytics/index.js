@@ -331,6 +331,13 @@ function getReportSnapshot(snapshotId) {
   return { ...row, document: JSON.parse(row.document_json) }
 }
 
+/** Report as a workbook spec — the renderer turns this into an .xlsx file. */
+function reportWorkbook(reportId, periodSpec, scopeSpec, opts = {}) {
+  const { toWorkbook } = require('./render/xlsx/toWorkbook')
+  const doc = opts.document || runReport(reportId, periodSpec, scopeSpec, opts)
+  return toWorkbook(doc)
+}
+
 function listReports() {
   return require('./reportTemplates').listTemplates()
 }
@@ -357,6 +364,7 @@ module.exports = {
   runReport,
   renderReportHtml,
   renderReportPdf,
+  reportWorkbook,
   saveReportSnapshot,
   listReportSnapshots,
   getReportSnapshot,

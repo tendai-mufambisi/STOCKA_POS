@@ -261,16 +261,29 @@ function renderConfidence(q) {
     .map((i) => `<li>${esc(i.message)}</li>`)
     .join('')
 
+  // The headline has to agree with the score beside it. A blocker does not
+  // reduce confidence — it withholds a figure — so a report can legitimately be
+  // 100% confident in everything it DID print while still having had to leave
+  // something out. Saying "read with care — 100% confidence" in that case reads
+  // as a bug and costs the reader's trust in the rest of the page.
+  const heading =
+    q.confidence === 'low'
+      ? 'These figures are missing information'
+      : q.confidence === 'medium'
+        ? 'Read these figures with care'
+        : 'Figures verified — some could not be produced'
+
+  const lead =
+    q.confidence === 'low'
+      ? 'Some numbers below rest on data the system cannot verify. The specifics are listed here rather than hidden.'
+      : q.confidence === 'medium'
+        ? 'The report is usable, with the following caveats.'
+        : 'Everything shown was computed from complete data. These points are stated for the record.'
+
   return (
     `<div class="confidence ${esc(q.confidence)}">` +
-    `<div class="confidence-title">${
-      q.confidence === 'low' ? 'These figures are missing information' : 'Read these figures with care'
-    } — ${pct}% confidence</div>` +
-    `<div>${
-      q.confidence === 'low'
-        ? 'Some numbers below rest on data the system cannot verify. The specifics are listed here rather than hidden.'
-        : 'The report is usable, with the following caveats.'
-    }</div>` +
+    `<div class="confidence-title">${heading} — ${pct}% confidence</div>` +
+    `<div>${lead}</div>` +
     (list ? `<ul>${list}</ul>` : '') +
     `</div>`
   )

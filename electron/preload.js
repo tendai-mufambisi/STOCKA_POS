@@ -168,6 +168,7 @@ contextBridge.exposeInMainWorld('stocka', {
     runReport:    (id, period, scope, opts)     => invoke('domain:analytics:runReport', id, period, scope, opts),
     reportHtml:   (id, period, scope, opts)     => invoke('domain:analytics:reportHtml', id, period, scope, opts),
     reportPdf:    (id, period, scope, opts)     => invoke('domain:analytics:reportPdf', id, period, scope, opts),
+    reportWorkbook:(id, period, scope, opts)    => invoke('domain:analytics:reportWorkbook', id, period, scope, opts),
     saveSnapshot: (doc, by)                     => invoke('domain:analytics:saveSnapshot', doc, by),
     listSnapshots:(opts)                        => invoke('domain:analytics:listSnapshots', opts),
     getSnapshot:  (id)                          => invoke('domain:analytics:getSnapshot', id),

@@ -149,8 +149,9 @@ defineCheck({
       weight: 0,
       message:
         row?.n > 0
-          ? `${row.n} sold line${row.n === 1 ? '' : 's'} had their cost entered after the sale ` +
-            `($${(row.cogs || 0).toFixed(2)} of COGS). Margin for this period was corrected, not originally recorded.`
+          ? `${row.n} sold line${row.n === 1 ? '' : 's'} ($${(row.cogs || 0).toFixed(2)} of COGS) had ` +
+            `${row.n === 1 ? 'its' : 'their'} cost entered after the sale, so this margin is a corrected ` +
+            `figure rather than the one originally recorded.`
           : null,
     }
   },
@@ -313,37 +314,6 @@ defineCheck({
       message: noneRecorded
         ? 'No discounts are recorded for this period. Discounts were not captured before this release, so a discounted sale is indistinguishable from a lower price.'
         : null,
-    }
-  },
-})
-
-defineCheck({
-  id: 'cogs.costBackfilled',
-  severity: 'info',
-  label: 'Costs entered after the sale',
-  affects: ['cogs.total', 'profit.gross', 'profit.grossMargin'],
-  run(ctx) {
-    // A backfilled cost is better than the 0 it replaced, but it is still a
-    // correction rather than what was recorded at the time. Saying so is what
-    // separates "we improved this figure" from quietly restating history.
-    const w = completedSalesIn(ctx.period, ctx.scope, 's')
-    const row = ctx.db
-      .prepare(
-        `SELECT COUNT(*) AS n, COALESCE(SUM(si.quantity * si.cost_price), 0) AS cogs
-           FROM sale_items si JOIN sales s ON s.id = si.sale_id
-          WHERE ${w.sql} AND si.cost_backfilled_at IS NOT NULL`
-      )
-      .get(w.params)
-    return {
-      passed: (row?.n || 0) === 0,
-      count: row?.n || 0,
-      exposure: row?.cogs || 0,
-      weight: 0,
-      message:
-        row?.n > 0
-          ? `${row.n} sold line${row.n === 1 ? '' : 's'} ($${(row.cogs || 0).toFixed(2)} of COGS) had ` +
-            `${row.n === 1 ? 'its' : 'their'} cost entered after the sale, so this margin is a corrected figure rather than the one originally recorded.`
-          : null,
     }
   },
 })

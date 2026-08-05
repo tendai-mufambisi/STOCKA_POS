@@ -128,6 +128,25 @@ describe('HTML rendering', () => {
     expect(toHtml(doc)).toContain('ledger starts later')
   })
 
+  it('keeps the banner headline consistent with its own score', () => {
+    // A blocker withholds a figure without reducing confidence, so a report can
+    // legitimately be 100% confident and still have left something out. Saying
+    // "read with care — 100% confidence" reads as a bug.
+    const doc = createDocument({
+      id: 'x', title: 'X', period: { start: day, end: day, label: 'T' },
+      quality: {
+        confidence: 'high', score: 1,
+        blockers: [{ id: 'b', message: 'opening stock could not be reconstructed' }],
+        warnings: [], notes: [],
+      },
+      sections: [],
+    })
+    const html = toHtml(doc)
+    expect(html).toMatch(/100% confidence/)
+    expect(html).not.toMatch(/Read these figures with care — 100%/)
+    expect(html).toContain('opening stock could not be reconstructed')
+  })
+
   it('prints the confidence banner with its reasons', () => {
     const doc = createDocument({
       id: 'x', title: 'X', period: { start: day, end: day, label: 'Today' },

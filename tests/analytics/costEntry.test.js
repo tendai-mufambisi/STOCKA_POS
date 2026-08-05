@@ -174,7 +174,10 @@ describe('backfilling history', () => {
     const res = analytics.computeMetrics(['profit.grossMargin'], { type: 'day', date: day })
     const note = res.quality.notes.find((n) => n.id === 'saleItems.costBackfilled')
     expect(note).toBeTruthy()
-    expect(note.message).toMatch(/corrected, not originally recorded/i)
+    // The wording may change; what must not is that the report distinguishes a
+    // corrected figure from an originally-recorded one.
+    expect(note.message).toMatch(/corrected/i)
+    expect(note.message).toMatch(/originally recorded/i)
   })
 
   it('never promises more corrections than it will actually make', () => {

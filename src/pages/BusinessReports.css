@@ -1,0 +1,117 @@
+.business-reports { padding: 0 0 3rem; display: flex; flex-direction: column; min-height: 0; }
+
+.br-controls {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.br-field { display: flex; flex-direction: column; gap: 0.3rem; }
+.br-field span { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
+.br-field select {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border, #d8dbe0);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.9rem;
+  min-width: 140px;
+  background: var(--card-bg, #fff);
+}
+
+.br-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 9px;
+  font-size: 0.87rem;
+  margin-bottom: 0.9rem;
+  border: 1px solid transparent;
+}
+.br-alert.error { background: #fdf1f1; border-color: #f2cdcd; color: #9c2c2c; }
+.br-alert.ok    { background: #f2f8f3; border-color: #cfe6d4; color: #2f6b3d; }
+.br-retry {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  background: none; border: 1px solid currentColor; color: inherit;
+  font: inherit; font-size: 0.8rem; font-weight: 600;
+  padding: 0.25rem 0.6rem; border-radius: 6px; cursor: pointer;
+}
+
+/* Actions bar — the confidence label sits next to the export buttons on
+   purpose. Anyone about to send this to a bank or an accountant should see how
+   far it can be trusted in the same glance as the download button. */
+.br-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 10px;
+  background: var(--card-bg, #fff);
+  margin-bottom: 0.9rem;
+}
+
+.br-confidence { display: flex; flex-direction: column; gap: 0.1rem; }
+.br-confidence strong { font-size: 0.95rem; }
+.br-confidence span { font-size: 0.78rem; }
+.br-confidence.high span { color: #2f6b3d; }
+.br-confidence.medium span { color: #8a6314; }
+.br-confidence.low span { color: #9c2c2c; font-weight: 600; }
+
+.br-buttons { margin-left: auto; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.br-buttons button { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+.br-preview {
+  width: 100%;
+  min-height: 78vh;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 10px;
+  background: #e9edf1;
+}
+
+.br-placeholder {
+  text-align: center;
+  padding: 4rem 1.5rem;
+  border: 1px dashed var(--border, #d8dbe0);
+  border-radius: 12px;
+  opacity: 0.85;
+}
+.br-placeholder svg { width: 2.4rem; height: 2.4rem; opacity: 0.4; margin-bottom: 0.6rem; }
+.br-placeholder h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+.br-placeholder p { margin: 0 auto; max-width: 44ch; font-size: 0.88rem; opacity: 0.7; line-height: 1.5; }
+
+.br-history {
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--card-bg, #fff);
+}
+.br-history h3 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+.br-history table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.br-history th {
+  text-align: left; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.04em; opacity: 0.6; padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border, #e3e6ea);
+}
+.br-history td { padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border-light, #f0f2f4); }
+.br-conf.low { color: #9c2c2c; font-weight: 600; }
+.br-conf.medium { color: #8a6314; }
+.br-conf.high { color: #2f6b3d; }
+.br-empty { font-size: 0.86rem; opacity: 0.6; margin: 0; }
+
+.btn-ghost.sm { padding: 0.2rem 0.55rem; font-size: 0.8rem; }
+
+@media (prefers-color-scheme: dark) {
+  .br-field select, .br-actions, .br-history { background: #1c1f24; border-color: #333840; color: inherit; }
+  .br-preview { border-color: #333840; background: #14161a; }
+  .br-placeholder { border-color: #3a3f47; }
+  .br-alert.error { background: #2c1818; border-color: #573030; color: #eb9a9a; }
+  .br-alert.ok { background: #16261a; border-color: #2b4a33; color: #8fd6a2; }
+  .br-history th { border-color: #333840; }
+  .br-history td { border-color: #262a30; }
+}

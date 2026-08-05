@@ -45,6 +45,9 @@ const CHANNELS = {
     return { pdfBase64: buffer.toString('base64'), contentHash: document.contentHash, title: document.title }
   },
 
+  'domain:analytics:reportWorkbook': (reportId, period, scope, opts) =>
+    analytics.reportWorkbook(reportId, period, scope, opts),
+
   'domain:analytics:saveSnapshot': (doc, by) => analytics.saveReportSnapshot(doc, by),
   'domain:analytics:listSnapshots': (opts) => analytics.listReportSnapshots(opts),
   'domain:analytics:getSnapshot': (id) => analytics.getReportSnapshot(id),

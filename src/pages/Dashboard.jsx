@@ -22,6 +22,7 @@ import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
 import CostEntry from './CostEntry'
+import BusinessReports from './BusinessReports'
 import ActivityLogs from './ActivityLogs'
 import MyTransactions from './MyTransactions'
 import Notifications from '../components/Notifications'
@@ -52,6 +53,7 @@ import {
   LuCalendarClock,
   LuWallet,
   LuChartColumn,
+  LuFileText,
   LuSunset,
   LuTimer,
   LuUsers,
@@ -92,7 +94,8 @@ const NAV_SECTIONS = [
   ]},
   { id: 'finance', label: 'Finance', items: [
     { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
-    { id: 'reports',          icon: LuChartColumn,    label: 'Reports' },
+    { id: 'business-reports', icon: LuFileText,       label: 'Business Reports' },
+    { id: 'reports',          icon: LuChartColumn,    label: 'Classic Reports' },
     { id: 'endofday',         icon: LuSunset,         label: 'End of Day' },
     { id: 'shifts',           icon: LuTimer,          label: 'Shift Management' },
     { id: 'cashier-sessions', icon: LuUsers,          label: 'Cashier Sessions' },
@@ -622,6 +625,8 @@ function Dashboard() {
         return <ExpiryTracking />
       case 'cost-prices':
         return <CostEntry />
+      case 'business-reports':
+        return <BusinessReports />
       case 'my-transactions':
         return <MyTransactions />
       case 'activitylogs':
