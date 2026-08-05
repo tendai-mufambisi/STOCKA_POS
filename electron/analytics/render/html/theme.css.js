@@ -1,4 +1,5 @@
 const { PALETTE } = require('./palette')
+const { BRAND } = require('./brand')
 
 // The report stylesheet, as a JS string.
 //
@@ -31,7 +32,18 @@ html, body {
 
 /* ── Cover ─────────────────────────────────────────────────────────────── */
 .cover { min-height: 240mm; display: flex; flex-direction: column; justify-content: center; text-align: center; }
-.cover-brand { font-size: 26pt; font-weight: 800; letter-spacing: 0.16em; margin-bottom: 4mm; }
+
+/* Brand lockup — mark beside the wordmark, matching the app's own logo. */
+.brand-lockup { display: flex; align-items: center; justify-content: center; gap: 5mm; margin-bottom: 10mm; }
+.brand-lockup .brand-mark { flex: 0 0 auto; }
+.brand-words { text-align: left; }
+.brand-name { font-size: 30pt; font-weight: 800; letter-spacing: 0.12em; line-height: 1; color: ${BRAND.green}; }
+.brand-system { font-size: 8pt; font-weight: 700; letter-spacing: 0.19em; color: ${BRAND.green}; margin-top: 1.5mm; }
+.cover-footer { margin-top: 16mm; font-size: 8pt; color: ${PALETTE.inkFaint}; letter-spacing: 0.04em; }
+
+/* Attribution line, wherever it appears. */
+.generated-by { display: inline-flex; align-items: center; gap: 1.5mm; }
+.generated-by svg { display: block; }
 .cover-title { font-size: 17pt; font-weight: 600; margin-bottom: 14mm; color: ${PALETTE.accent}; }
 .cover-rule { width: 30mm; height: 2px; background: ${PALETTE.accent}; margin: 0 auto 14mm; }
 .cover-field { margin-bottom: 8mm; }

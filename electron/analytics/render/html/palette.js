@@ -24,11 +24,13 @@ const PALETTE = {
   positive: '#1f7a4d',
   negative: '#b3261e',
   caution: '#8a6314',
-  accent: '#2f4f8f',
+  // Sampled from src/assets/icon.png, so the report is branded rather than
+  // merely blue. See render/html/brand.js.
+  accent: '#005818',
 
   // Categorical, luminance-stepped so they survive greyscale printing.
   series: [
-    '#2f4f8f', // deep blue      L~34
+    '#005818', // brand green    L~30
     '#7aa5d2', // light blue     L~65
     '#1f7a4d', // green          L~44
     '#9cc4a8', // pale green     L~75
