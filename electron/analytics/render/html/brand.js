@@ -20,7 +20,7 @@ const BRAND = {
   greenLight: '#0a7a26',
   name: 'Stocka',
   system: 'Retail Management System',
-  url: 'www.stocka.app',
+  url: 'www.stocka.co.zw',
 }
 
 /**
