@@ -90,6 +90,13 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:stock:reconcileProducts',  h('domain:stock:reconcileProducts',  stock.reconcileProducts))
   ipcMain.handle('domain:stock:recordInitialCost',  h('domain:stock:recordInitialCost',  stock.recordInitialCost))
   ipcMain.handle('domain:stock:correctReceiving',   h('domain:stock:correctReceiving',   stock.correctStockReceiving))
+  ipcMain.handle('domain:stock:recordLoss',         h('domain:stock:recordLoss',         stock.recordStockLoss))
+  ipcMain.handle('domain:stock:reverseLoss',        h('domain:stock:reverseLoss',        stock.reverseStockLoss))
+  ipcMain.handle('domain:stock:getLosses',          h('domain:stock:getLosses',          stock.getStockLosses))
+  ipcMain.handle('domain:stock:getLossSummary',     h('domain:stock:getLossSummary',     stock.getStockLossSummary))
+  ipcMain.handle('domain:stock:reconSnapshot',      h('domain:stock:reconSnapshot',      stock.getReconciliationSnapshot))
+  ipcMain.handle('domain:stock:reconcileExplained', h('domain:stock:reconcileExplained', stock.reconcileProductExplained))
+  ipcMain.handle('domain:stock:reconcileExplainedMany', h('domain:stock:reconcileExplainedMany', stock.reconcileProductsExplained))
 
   // ── SALES ──
   ipcMain.handle('domain:sales:add',           h('domain:sales:add',           sales.addSale))

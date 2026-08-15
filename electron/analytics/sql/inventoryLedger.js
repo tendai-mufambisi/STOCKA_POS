@@ -1,5 +1,5 @@
 const { normalizedDeltaExpr } = require('./movementSign')
-const { movementDayExpr } = require('../kernel/time')
+const { movementDayExpr, addDays } = require('../kernel/time')
 
 // Historical inventory: what was on the shelves, and what it was worth, on a
 // given day in the past.
@@ -221,6 +221,140 @@ function expiryDiscardsIn(db, period, costResolver) {
 }
 
 /**
+ * Per-product account of how a period's stock arrived at today's figure:
+ * opening, then every category of movement, then the expected close.
+ *
+ * This is what turns a stock count from an overwrite into a reconciliation. The
+ * expected quantity was always available — products.current_quantity IS the
+ * expected close, since every write path updates it — but a number with no
+ * derivation cannot be argued with. An operator who sees
+ *
+ *     opening 100, received +50, sold −80, breakages −5  →  expected 65
+ *
+ * next to a counted 62 can act on the 3, because they can see the 5 is already
+ * accounted for. Shown only the 65, all they can do is overwrite it.
+ *
+ * Categories are kept apart rather than netted for the same reason: "sold" and
+ * "broken" are the same arithmetic and completely different management problems.
+ *
+ * Opening is the reconstruction from quantitiesAsOf() at the day before the
+ * period, so this decomposition and the valuation metrics cannot disagree.
+ */
+function movementBreakdownIn(db, period) {
+  // Each SUM is scoped to a single movement_type group, so the mixed sign
+  // conventions never meet inside one aggregate. ABS is safe within a group
+  // because the direction is fixed there; the two genuinely-signed groups keep
+  // their stored sign, which is their meaning.
+  const rows = db
+    .prepare(
+      `SELECT sm.product_id,
+              COALESCE(SUM(CASE WHEN sm.movement_type IN ('RECEIVED', 'DIRECT_PURCHASE')
+                                THEN ABS(sm.quantity) END), 0)               AS received,
+              COALESCE(SUM(CASE WHEN sm.movement_type = 'SOLD'
+                                THEN ABS(sm.quantity) END), 0)               AS sold,
+              COALESCE(SUM(CASE WHEN sm.movement_type = 'VOIDED'
+                                THEN ABS(sm.quantity) END), 0)               AS voided,
+              COALESCE(SUM(CASE WHEN sm.movement_type = 'EXPIRED_DISCARD'
+                                THEN ABS(sm.quantity) END), 0)               AS expired,
+              -- Signed, then negated: a write-off is stored negative and its
+              -- reversal positive, so this reports NET units lost.
+              COALESCE(-SUM(CASE WHEN sm.movement_type = 'STOCK_LOSS'
+                                 THEN sm.quantity END), 0)                   AS lost,
+              COALESCE(SUM(CASE WHEN sm.movement_type = 'ADJUSTMENT'
+                                THEN sm.quantity END), 0)                    AS adjusted,
+              COALESCE(SUM(CASE WHEN sm.movement_type = 'RECEIVING_CORRECTION'
+                                THEN sm.quantity END), 0)                    AS corrections
+         FROM stock_movements sm
+        WHERE ${movementDayExpr('sm')} BETWEEN @start AND @end
+        GROUP BY sm.product_id`
+    )
+    .all({ start: period.start, end: period.end })
+
+  const opening = quantitiesAsOf(db, addDays(period.start, -1))
+  const byProduct = new Map()
+
+  for (const rec of opening.values()) {
+    byProduct.set(rec.productId, {
+      productId: rec.productId,
+      name: rec.name,
+      category: rec.category,
+      opening: rec.qty,
+      received: 0, sold: 0, voided: 0, expired: 0, lost: 0, adjusted: 0, corrections: 0,
+      expected: rec.currentQty,
+    })
+  }
+
+  for (const r of rows) {
+    const rec = byProduct.get(r.product_id)
+    // A product deleted since the movement was logged has no row to attach to.
+    // Skipping it is the same choice quantitiesAsOf makes, for the same reason:
+    // the alternative is inventing one.
+    if (!rec) continue
+    rec.received = r.received
+    rec.sold = r.sold
+    rec.voided = r.voided
+    rec.expired = r.expired
+    rec.lost = r.lost
+    rec.adjusted = r.adjusted
+    rec.corrections = r.corrections
+  }
+
+  return byProduct
+}
+
+/**
+ * Units written off as breakage, damage, spoilage or theft during a period,
+ * valued at cost.
+ *
+ * Two things differ from expiryDiscardsIn().
+ *
+ * The quantity is SUMmed signed rather than ABSed. STOCK_LOSS is a signed type:
+ * a write-off is stored negative and its reversal positive, so summing nets a
+ * reversed loss to zero on its own. ABS would count both halves as losses and
+ * report double what was lost.
+ *
+ * The cost comes from unit_cost_at_loss where the row carries one, and only
+ * falls back to the resolver when it does not. The stamped figure is the cost
+ * that applied on the day the stock broke; the resolver returns the latest cost,
+ * which would silently revalue past write-offs every time a new delivery lands.
+ * Rows written before that column existed have no stamp, and the resolver is the
+ * only answer available for them.
+ *
+ * A reversal is counted in the period it happened, not the one it cancels. That
+ * is deliberate: closing stock is reconstructed from the same movement log, so
+ * the returned units reappear on the shelves in the later period too. Cancelling
+ * retroactively would balance one period's books by breaking the other's.
+ */
+function stockLossesIn(db, period, costResolver) {
+  const rows = db
+    .prepare(
+      `SELECT sm.product_id,
+              sm.unit_cost_at_loss           AS unit_cost,
+              -SUM(sm.quantity)              AS units
+         FROM stock_movements sm
+        WHERE sm.movement_type = 'STOCK_LOSS'
+          AND ${movementDayExpr('sm')} BETWEEN @start AND @end
+        GROUP BY sm.product_id, sm.unit_cost_at_loss`
+    )
+    .all({ start: period.start, end: period.end })
+
+  let value = 0
+  let units = 0
+  let unitsUnvalued = 0
+  for (const r of rows) {
+    units += r.units
+    if (r.unit_cost != null) {
+      value += r.units * r.unit_cost
+      continue
+    }
+    const cost = costResolver.costOf(r.product_id)
+    if (cost.source === 'receiving') value += r.units * cost.cost
+    else unitsUnvalued += r.units
+  }
+  return { value, units, unitsUnvalued }
+}
+
+/**
  * Net effect of stock-count adjustments during a period, valued at cost.
  * This is the measurable part of shrinkage: what a physical count found that
  * the books did not.
@@ -250,8 +384,10 @@ module.exports = {
   quantitiesAsOf,
   valuationAsOf,
   rollbackResidual,
+  movementBreakdownIn,
   purchasesIn,
   purchasesInvoicedIn,
   expiryDiscardsIn,
+  stockLossesIn,
   adjustmentsIn,
 }

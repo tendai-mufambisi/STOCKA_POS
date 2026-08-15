@@ -24,6 +24,11 @@ export const NAV_PRIVILEGES = [
   { id: 'restock',          label: 'Restock Needed',    group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'deadstock',        label: 'Dead Stock',        group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'expiry',           label: 'Expiry Tracking',   group: 'Inventory',  roles: ['Admin', 'Manager'] },
+  // Off for cashiers by default. Letting the person who broke something write it
+  // off themselves gets breakages recorded honestly and promptly, and makes
+  // breakage indistinguishable from theft — the shop's call, not ours, so it is
+  // a tick box here rather than a fixed rule.
+  { id: 'losses',           label: 'Breakages & Losses', group: 'Inventory', roles: ['Admin', 'Manager'] },
   { id: 'cost-prices',      label: 'Cost Prices',       group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'my-transactions',  label: 'Transactions',      group: 'Sales',      roles: ['Admin', 'Manager', 'Cashier'] },
   { id: 'expenses',         label: 'Expenses',          group: 'Finance',    roles: ['Admin', 'Manager'] },

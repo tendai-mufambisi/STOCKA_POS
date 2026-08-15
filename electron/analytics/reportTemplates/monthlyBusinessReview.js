@@ -22,6 +22,7 @@ const METRICS = [
   'expenses.total', 'expenses.byCategory', 'expenses.largestCategory',
   'inventory.valueAtCost', 'inventory.valueAtRetail', 'inventory.openingValue',
   'inventory.closingValue', 'inventory.purchases', 'inventory.expiryWriteOff',
+  'inventory.stockLossWriteOff',
   'inventory.adjustments', 'inventory.stockReconciliationResidual', 'inventory.reconciles',
   'inventory.turnover', 'inventory.deadStock', 'inventory.deadStockValue',
   'inventory.lowStockCount', 'inventory.outOfStockCount',
@@ -156,13 +157,17 @@ module.exports = {
           S.metricLine(bundle, 'inventory.purchases', 'Stock Received'),
           S.metricLine(bundle, 'cogs.total', 'Cost of Goods Sold', { kind: 'deduction' }),
           S.metricLine(bundle, 'inventory.expiryWriteOff', 'Expired / Written Off', { kind: 'deduction' }),
+          // Breakages are a term of the reconciliation identity, so the statement
+          // has to show them: without this line the figures on the page do not
+          // add up to the residual printed under them.
+          S.metricLine(bundle, 'inventory.stockLossWriteOff', 'Breakages & Losses', { kind: 'deduction' }),
           S.metricLine(bundle, 'inventory.closingValue', 'Closing Stock', { kind: 'subtotal' }),
           S.metricLine(bundle, 'inventory.stockReconciliationResidual', 'Unexplained Difference', { kind: 'total' }),
         ],
         {
           title: 'Stock Movement',
           note:
-            'Everything that left the shelves is either sold, written off, or unexplained. ' +
+            'Everything that left the shelves is either sold, written off, broken, or unexplained. ' +
             'A large unexplained figure means a counting error or stock leaving unrecorded.',
         }
       )
@@ -317,7 +322,8 @@ module.exports = {
           { label: 'Voided sales', value: v('sales.voidedValue'), unit: 'currency' },
           { label: 'Number of voids', value: v('sales.voidedCount'), unit: 'count' },
           { label: 'Cash variance', value: v('cash.variance'), unit: 'currency' },
-          { label: 'Stock written off', value: v('inventory.expiryWriteOff'), unit: 'currency' },
+          { label: 'Stock written off (expired)', value: v('inventory.expiryWriteOff'), unit: 'currency' },
+          { label: 'Breakages & losses', value: v('inventory.stockLossWriteOff'), unit: 'currency' },
           { label: 'Stock adjustments', value: v('inventory.adjustments'), unit: 'currency' },
           { label: 'Unexplained stock', value: v('inventory.stockReconciliationResidual'), unit: 'currency' },
         ],

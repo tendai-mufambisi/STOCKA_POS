@@ -16,6 +16,8 @@ const WRITE_CHANNELS = new Set([
   'domain:stock:addReceiving', 'domain:stock:recordDirect', 'domain:stock:importReceivings',
   'domain:stock:recordInitialCost', 'domain:stock:reconcileProduct', 'domain:stock:reconcileProducts',
   'domain:stock:correctReceiving', 'domain:stock:discardExpiredBatch',
+  'domain:stock:recordLoss', 'domain:stock:reverseLoss',
+  'domain:stock:reconcileExplained', 'domain:stock:reconcileExplainedMany',
   'domain:sales:add', 'domain:sales:void', 'domain:sales:hold', 'domain:sales:recall',
   'domain:sales:discard', 'domain:sales:complete', 'domain:sales:updateReceipt',
   'domain:expenses:add', 'domain:expenses:update', 'domain:expenses:delete',
@@ -41,6 +43,9 @@ const IDEMPOTENT_CHANNELS = new Set([
   'domain:sales:add',
   'domain:stock:addReceiving',
   'domain:stock:recordDirect',
+  // A replayed write-off would deduct the same broken units twice, and the
+  // second deduction is indistinguishable from a real one after the fact.
+  'domain:stock:recordLoss',
 ])
 
 // Writes that are proxied to Main when online but DROPPED (never queued) when offline.
@@ -67,6 +72,22 @@ const NEVER_QUEUE = NON_BUSINESS_CHANNELS
 // Built from the shared table so a new analytics channel is covered on the day
 // it is added, not the day someone notices.
 const FORCE_REMOTE_READ_CHANNELS = new Set(require('../analytics/ipc.analytics').CHANNEL_IDS)
+
+// Ledger reads, which land in the same trap for the same reason.
+//
+// The losses list and its summary are built entirely from stock_movements, and
+// the delta sync never ships that table. Answered from a satellite's mirror they
+// would not error — they would return an empty list and a confident "0 units
+// lost this month", which is worse than refusing. Kept separate from the
+// analytics set only so the message can say what actually failed.
+const LEDGER_READ_CHANNELS = new Set([
+  'domain:stock:getLosses',
+  'domain:stock:getLossSummary',
+  // The reconciliation snapshot's whole value is the movement breakdown behind
+  // each expected figure. On a satellite that breakdown would come back all
+  // zeroes, turning a reconciliation back into the blind overwrite it replaced.
+  'domain:stock:reconSnapshot',
+])
 
 const PING_INTERVAL_MS = 8000   // was 3000 — less aggressive on WiFi, avoids false disconnects from single dropped packets
 const SYNC_INTERVAL_MS = 8_000  // was 5000 — matches ping cadence; SSE handles instant push anyway
@@ -488,6 +509,26 @@ function makeHandler(channel, fn) {
   // READ that must come from Main — see FORCE_REMOTE_READ_CHANNELS above.
   // Never queued (there is nothing to replay: a read changes nothing) and never
   // silently answered from the local mirror.
+  // Same rule as the analytics reads, different wording — see LEDGER_READ_CHANNELS.
+  if (LEDGER_READ_CHANNELS.has(channel)) {
+    return async (event, ...args) => {
+      if (!_online) {
+        return {
+          __error: 'Stock movement history is kept on the Main Computer, which this till cannot reach right now.',
+          __code: 'LEDGER_MAIN_REQUIRED',
+        }
+      }
+      try {
+        return await lanRequest(channel, args)
+      } catch (err) {
+        return {
+          __error: `Could not reach the Main Computer for stock movement history: ${err.message}`,
+          __code: 'LEDGER_MAIN_REQUIRED',
+        }
+      }
+    }
+  }
+
   if (FORCE_REMOTE_READ_CHANNELS.has(channel)) {
     return async (event, ...args) => {
       if (!_online) {

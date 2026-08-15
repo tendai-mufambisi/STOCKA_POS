@@ -119,6 +119,13 @@ contextBridge.exposeInMainWorld('stocka', {
     reconcileProducts:  (adjs, by)   => invoke('domain:stock:reconcileProducts', adjs, by),
     recordInitialCost:  (id, cost, by) => invoke('domain:stock:recordInitialCost', id, cost, by),
     correctReceiving:   (id, corrected, by) => invoke('domain:stock:correctReceiving', id, corrected, by),
+    recordLoss:         (loss)              => invoke('domain:stock:recordLoss', loss),
+    reverseLoss:        (id, reason, by)    => invoke('domain:stock:reverseLoss', id, reason, by),
+    getLosses:          (filters)           => invoke('domain:stock:getLosses', filters),
+    getLossSummary:     (range)             => invoke('domain:stock:getLossSummary', range),
+    reconSnapshot:      (range)             => invoke('domain:stock:reconSnapshot', range),
+    reconcileExplained: (id, qty, why, by)  => invoke('domain:stock:reconcileExplained', id, qty, why, by),
+    reconcileExplainedMany: (entries, by)   => invoke('domain:stock:reconcileExplainedMany', entries, by),
   },
 
   // ── SALES ─────────────────────────────────────────────────

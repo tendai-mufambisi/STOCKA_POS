@@ -478,6 +478,23 @@ function runMigrations(db) {
     // measured and not explained. Structured reason codes fix that forward.
     addColIfMissing('stock_movements', 'reason_code', 'TEXT')
 
+    // Breakages / damage / theft written off through STOCK_LOSS movements.
+    //
+    // The cost is stamped at write time rather than resolved when a report runs.
+    // costResolver returns the LATEST cost for a product, so a loss recorded in
+    // August would be revalued by every receiving booked after it — a write-off
+    // that silently changes value months later is not an audit trail. NULL means
+    // no cost was on record; it must never be coerced to 0, because "worth
+    // nothing" and "cost unknown" are different claims and only one is a
+    // valuation.
+    addColIfMissing('stock_movements', 'unit_cost_at_loss', 'REAL')
+
+    // A mis-keyed write-off is corrected by appending a reversing movement that
+    // points back at the original, never by deleting it — the ledger is
+    // append-only, and historical reconstruction rolls every row back. Same
+    // shape as stock_receivings.corrects_receiving_id.
+    addColIfMissing('stock_movements', 'reverses_movement_id', 'INTEGER')
+
     // When a line's cost was filled in AFTER the sale.
     //
     // sale_items.cost_price is frozen at sale time, but a product that had
@@ -563,6 +580,9 @@ const INDEXES = [
   // stock_movements — historical inventory reconstruction rolls these back
   `CREATE INDEX IF NOT EXISTS idx_mov_product_created   ON stock_movements(product_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_mov_created_type      ON stock_movements(created_at, movement_type)`,
+  // The losses list resolves "is this row already reversed?" for every row it
+  // shows; without this that is a scan of the whole ledger per page load.
+  `CREATE INDEX IF NOT EXISTS idx_mov_reverses          ON stock_movements(reverses_movement_id)`,
 
   // expenses / shifts / end_of_day / products
   `CREATE INDEX IF NOT EXISTS idx_expenses_date         ON expenses(date)`,

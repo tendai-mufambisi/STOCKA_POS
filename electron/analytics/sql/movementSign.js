@@ -10,6 +10,7 @@
 //   VOIDED                written POSITIVE, stock went back UP
 //   ADJUSTMENT            genuinely signed — the sign IS the meaning
 //   RECEIVING_CORRECTION  genuinely signed — qtyDelta from correctStockReceiving
+//   STOCK_LOSS            genuinely signed — negative writes off, positive reverses
 //
 // So `SUM(quantity)` across movement types is meaningless, and any historical
 // stock reconstruction that does it produces a number that looks plausible and
@@ -31,8 +32,14 @@
 const DECREASES = ['SOLD', 'EXPIRED_DISCARD']
 const INCREASES = ['RECEIVED', 'DIRECT_PURCHASE', 'VOIDED']
 
-/** Types where the stored sign carries the meaning and must be preserved. */
-const SIGNED = ['ADJUSTMENT', 'RECEIVING_CORRECTION']
+/**
+ * Types where the stored sign carries the meaning and must be preserved.
+ *
+ * STOCK_LOSS is signed rather than a known-decrease because reversing a
+ * mis-keyed write-off appends a POSITIVE row of the same type. Forcing -ABS
+ * here would make the correction deduct the stock a second time.
+ */
+const SIGNED = ['ADJUSTMENT', 'RECEIVING_CORRECTION', 'STOCK_LOSS']
 
 const KNOWN_TYPES = [...DECREASES, ...INCREASES, ...SIGNED]
 

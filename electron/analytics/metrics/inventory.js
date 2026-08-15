@@ -109,6 +109,30 @@ defineMetric({
   reduce: (rows, ctx) => ledger.expiryDiscardsIn(ctx.db, ctx.period, ctx.costResolver).value,
 })
 
+// Breakage, damage, spoilage and theft recorded through the Breakages page.
+//
+// Distinct from adjustments: an adjustment is what a physical count FOUND
+// missing, this is what someone WATCHED go wrong and wrote down at the time.
+// Merging them would throw away the only distinction the owner actually cares
+// about — whether the shop knows where its stock went.
+defineMetric({
+  id: 'inventory.stockLossWriteOff',
+  label: 'Breakages & Losses Written Off',
+  unit: 'currency',
+  sourceTable: 'stock_movements',
+  sql: () => ({ text: 'SELECT 1', params: {} }),
+  reduce: (rows, ctx) => ledger.stockLossesIn(ctx.db, ctx.period, ctx.costResolver).value,
+})
+
+defineMetric({
+  id: 'inventory.stockLossUnits',
+  label: 'Units Lost to Breakage',
+  unit: 'count',
+  sourceTable: 'stock_movements',
+  sql: () => ({ text: 'SELECT 1', params: {} }),
+  reduce: (rows, ctx) => ledger.stockLossesIn(ctx.db, ctx.period, ctx.costResolver).units,
+})
+
 defineMetric({
   id: 'inventory.adjustments',
   label: 'Stock Count Adjustments',
@@ -121,11 +145,18 @@ defineMetric({
 
 // ── The reconciliation identity ──────────────────────────────────────────────
 //
-// opening + purchases − closing  ≈  COGS + write-offs + adjustments
+// opening + purchases − closing  ≈  COGS + write-offs + breakages + adjustments
 //
-// Everything that left the shelves is either sold, thrown away, or found
+// Everything that left the shelves is either sold, thrown away, broken, or found
 // missing. This single number tells an owner whether the books hang together,
 // and it costs nothing beyond metrics already computed.
+//
+// Every term must be counted exactly once. Breakages are their own term because
+// they are their own movement type: EXPIRED_DISCARD, STOCK_LOSS and ADJUSTMENT
+// never overlap, so adding one cannot double-count another. What WOULD
+// double-count is recording a breakage and then also adjusting the count down
+// for the same units — which is why the write paths are kept separate and the
+// Breakages page exists at all.
 
 defineMetric({
   id: 'inventory.stockReconciliationResidual',
@@ -137,6 +168,7 @@ defineMetric({
     'inventory.closingValue',
     'cogs.total',
     'inventory.expiryWriteOff',
+    'inventory.stockLossWriteOff',
     'inventory.adjustments',
   ],
   compute(ctx, d) {
@@ -146,7 +178,8 @@ defineMetric({
       d['inventory.closingValue'].value
     const accountedFor =
       d['cogs.total'].value +
-      d['inventory.expiryWriteOff'].value -
+      d['inventory.expiryWriteOff'].value +
+      d['inventory.stockLossWriteOff'].value -
       d['inventory.adjustments'].value
     return leftTheShelves - accountedFor
   },

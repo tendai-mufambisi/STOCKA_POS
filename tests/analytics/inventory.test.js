@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { freshDb, disposeDb, electronModule, domain, getDb } from '../helpers/db.js'
-import { stockedProduct, sell, todayStr } from '../helpers/seed.js'
+import { stockedProduct, addProduct, receive, sell, todayStr } from '../helpers/seed.js'
 
 const analytics = electronModule('analytics/index.js')
 const ledger = electronModule('analytics/sql/inventoryLedger.js')
@@ -151,6 +151,54 @@ describe('inventory metrics', () => {
       expect(m['inventory.reconciles'].value.reconciles).toBe(true)
     })
 
+    it('accounts for breakages recorded as stock losses', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 100 })
+      sell({ lines: [{ productId: p, name: 'Coke', qty: 20, cost: 2, price: 5 }] })
+      // The whole point of the feature: 5 units the shop KNOWS about must not
+      // come back as unexplained shrinkage.
+      stock.recordStockLoss({ product_id: p, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+
+      const m = compute([
+        'inventory.stockLossWriteOff', 'inventory.stockLossUnits',
+        'inventory.stockReconciliationResidual', 'inventory.reconciles',
+      ])
+      expect(m['inventory.stockLossUnits'].value).toBe(5)
+      expect(m['inventory.stockLossWriteOff'].value).toBeCloseTo(10, 6)
+      expect(m['inventory.stockReconciliationResidual'].value).toBeCloseTo(0, 6)
+      expect(m['inventory.reconciles'].value.reconciles).toBe(true)
+    })
+
+    it('nets a reversed loss back out of the period that recorded it', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 100 })
+      const loss = stock.recordStockLoss({ product_id: p, quantity: 8, reason_code: 'DAMAGED', recorded_by: 'tester' })
+      stock.reverseStockLoss(loss.id, 'wrong product', 'tester')
+
+      // Both halves fall in the same period here, so the write-off nets to zero
+      // rather than being counted twice. SUM(ABS(...)) would report 16 units lost.
+      const m = compute(['inventory.stockLossUnits', 'inventory.stockLossWriteOff', 'inventory.reconciles'])
+      expect(m['inventory.stockLossUnits'].value).toBe(0)
+      expect(m['inventory.stockLossWriteOff'].value).toBeCloseTo(0, 6)
+      expect(m['inventory.reconciles'].value.reconciles).toBe(true)
+      expect(qtyNow(p)).toBe(100)
+    })
+
+    it('keeps breakages and expiry write-offs as separate terms', () => {
+      const p = stockedProduct({
+        name: 'Yoghurt', cost: 2, price: 5, units: 50, expiryDate: '2026-07-20',
+      })
+      stock.discardExpiredBatch(p, '2026-07-20', 4, 'tester')
+      stock.recordStockLoss({ product_id: p, quantity: 3, reason_code: 'SPILLED', recorded_by: 'tester' })
+
+      // Neither term may absorb the other's units, or the identity balances by
+      // double-counting one and ignoring the other.
+      const m = compute([
+        'inventory.expiryWriteOff', 'inventory.stockLossWriteOff', 'inventory.reconciles',
+      ])
+      expect(m['inventory.expiryWriteOff'].value).toBeCloseTo(8, 6)
+      expect(m['inventory.stockLossWriteOff'].value).toBeCloseTo(6, 6)
+      expect(m['inventory.reconciles'].value.reconciles).toBe(true)
+    })
+
     it('scales its tolerance with turnover rather than using a flat figure', () => {
       const quiet = stockedProduct({ name: 'Quiet', cost: 2, price: 5, units: 20 })
       sell({ lines: [{ productId: quiet, name: 'Quiet', qty: 5, cost: 2, price: 5 }] })
@@ -230,6 +278,236 @@ describe('inventory metrics', () => {
       ).metrics
       expect(m['inventory.stockReconciliationResidual'].value).toBeNull()
       expect(m['inventory.stockReconciliationResidual'].unavailable).toBeTruthy()
+    })
+  })
+
+  describe('recording a stock loss', () => {
+    it('leaves the ledger reconstructable', () => {
+      // A write path that moves stock without a matching movement row is exactly
+      // what rollbackResidual exists to catch. This is that check, for the new path.
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 40 })
+      stock.recordStockLoss({ product_id: p, quantity: 6, reason_code: 'BROKEN', recorded_by: 'tester' })
+
+      expect(qtyNow(p)).toBe(34)
+      expect(ledger.rollbackResidual(getDb(), todayStr()).passed).toBe(true)
+    })
+
+    it('is not a movement type the engine has to guess at', () => {
+      // An unregistered type contributes 0 to every historical figure and trips
+      // movements.unknownType, downgrading confidence on reports that never
+      // mentioned breakages.
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 40 })
+      stock.recordStockLoss({ product_id: p, quantity: 6, reason_code: 'BROKEN', recorded_by: 'tester' })
+
+      const { findUnknownTypes } = electronModule('analytics/sql/movementSign.js')
+      expect(findUnknownTypes(getDb()).map((r) => r.movement_type)).not.toContain('STOCK_LOSS')
+    })
+
+    it('refuses to write off more units than are in stock', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 3 })
+      expect(() =>
+        stock.recordStockLoss({ product_id: p, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+      ).toThrow(/only 3 in stock/i)
+      // The refusal must be total — a partial write-off would silently disagree
+      // with the number the operator was told they were recording.
+      expect(qtyNow(p)).toBe(3)
+    })
+
+    it('rejects a reason it cannot report on', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 10 })
+      expect(() =>
+        stock.recordStockLoss({ product_id: p, quantity: 1, reason_code: 'ATE_IT', recorded_by: 'tester' })
+      ).toThrow(/not a valid loss reason/i)
+      // EXPIRED belongs to discardExpiredBatch, which also clears the batch from
+      // expiry tracking. Accepting it here would create a second write path.
+      expect(() =>
+        stock.recordStockLoss({ product_id: p, quantity: 1, reason_code: 'EXPIRED', recorded_by: 'tester' })
+      ).toThrow(/not a valid loss reason/i)
+    })
+
+    it('freezes the cost at the time of the loss', () => {
+      // costResolver returns the LATEST cost. Resolving at report time would let
+      // a delivery booked next week silently revalue a write-off already made.
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 40 })
+      const loss = stock.recordStockLoss({ product_id: p, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+      expect(loss.unit_cost_at_loss).toBeCloseTo(2, 6)
+
+      receive(p, { units: 100, costPerUnit: 9, dateReceived: todayStr() })
+
+      const m = analytics.computeMetrics(['inventory.stockLossWriteOff'], period()).metrics
+      expect(m['inventory.stockLossWriteOff'].value).toBeCloseTo(10, 6) // 5 × 2, not 5 × 9
+    })
+
+    it('corrects a mistake by reversal, never by deletion', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 40 })
+      const loss = stock.recordStockLoss({ product_id: p, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+      stock.reverseStockLoss(loss.id, 'wrong product', 'manager')
+
+      expect(qtyNow(p)).toBe(40)
+      // The original stays on the record, marked — a shop owner needs to see
+      // that units were written off and put back, not a tidy history.
+      const rows = stock.getStockLosses({})
+      expect(rows).toHaveLength(1)
+      expect(rows[0].id).toBe(loss.id)
+      expect(rows[0].reversed).toBe(true)
+      expect(rows[0].reversed_by).toBe('manager')
+
+      expect(() => stock.reverseStockLoss(loss.id, 'again', 'manager')).toThrow(/already been reversed/i)
+    })
+
+    it('shows expiry write-offs alongside breakages without merging them', () => {
+      const p = stockedProduct({
+        name: 'Yoghurt', cost: 2, price: 5, units: 50, expiryDate: '2026-07-20',
+      })
+      stock.discardExpiredBatch(p, '2026-07-20', 4, 'tester')
+      stock.recordStockLoss({ product_id: p, quantity: 3, reason_code: 'SPILLED', recorded_by: 'tester' })
+
+      const rows = stock.getStockLosses({})
+      expect(rows).toHaveLength(2)
+      // One list answers "what did we lose?", but each row still says where it
+      // came from, so the expiry write-off stays read-only on the losses page.
+      expect(rows.filter((r) => r.source === 'expiry')).toHaveLength(1)
+      expect(rows.find((r) => r.source === 'expiry').reason_code).toBe('EXPIRED')
+
+      const summary = stock.getStockLossSummary({})
+      expect(summary.units).toBe(7)
+      expect(summary.products_affected).toBe(1)
+    })
+
+    it('reports unvalued units rather than costing them at zero', () => {
+      // Most of this catalogue has no cost on record. A summary that treats
+      // unknown as zero looks authoritative and understates the loss.
+      const priced = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 20 })
+      const unpriced = addProduct({ name: 'Mystery', sellingPrice: 5 })
+      getDb().prepare('UPDATE products SET current_quantity = 10 WHERE id = ?').run(unpriced)
+
+      stock.recordStockLoss({ product_id: priced, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+      stock.recordStockLoss({ product_id: unpriced, quantity: 4, reason_code: 'LOST', recorded_by: 'tester' })
+
+      const summary = stock.getStockLossSummary({})
+      expect(summary.units).toBe(9)
+      expect(summary.valued_units).toBe(5)
+      expect(summary.unvalued_units).toBe(4)
+      expect(summary.value).toBeCloseTo(10, 6)
+      expect(stock.getStockLosses({}).find((r) => r.product_id === unpriced).total_cost).toBeNull()
+    })
+  })
+
+  describe('reconciliation', () => {
+    const snapshotFor = (id) =>
+      stock.getReconciliationSnapshot({ start: todayStr(), end: todayStr() })
+        .products.find((p) => p.id === id)
+
+    it('shows how the expected figure was reached, not just the figure', () => {
+      // The difference between a reconciliation and an overwrite. An operator
+      // who cannot see the derivation can only accept or overwrite the number.
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 100 })
+      sell({ lines: [{ productId: p, name: 'Coke', qty: 30, cost: 2, price: 5 }] })
+      stock.recordStockLoss({ product_id: p, quantity: 5, reason_code: 'BROKEN', recorded_by: 'tester' })
+
+      const row = snapshotFor(p)
+      expect(row.movements.received).toBe(100)
+      expect(row.movements.sold).toBe(30)
+      expect(row.movements.lost).toBe(5)
+      // opening 0 + 100 − 30 − 5 = 65, and that must equal the live figure.
+      expect(row.expected).toBe(65)
+      expect(qtyNow(p)).toBe(65)
+    })
+
+    it('does not count a reversed breakage against the shelf', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 40 })
+      const loss = stock.recordStockLoss({ product_id: p, quantity: 6, reason_code: 'BROKEN', recorded_by: 'tester' })
+      stock.reverseStockLoss(loss.id, 'wrong product', 'manager')
+
+      expect(snapshotFor(p).movements.lost).toBe(0)
+      expect(snapshotFor(p).expected).toBe(40)
+    })
+
+    it('records an explained shortfall as a loss, keeping the books balanced', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 50 })
+      const res = stock.reconcileProductExplained(
+        p, 47, { type: 'loss', reason_code: 'BROKEN', note: 'crate dropped' }, 'tester'
+      )
+
+      expect(res.outcome).toBe('explained')
+      expect(res.variance).toBe(-3)
+      expect(qtyNow(p)).toBe(47)
+
+      // The units are accounted for, so they belong in the breakage term and
+      // NOT in unexplained shrinkage.
+      const m = analytics.computeMetrics(
+        ['inventory.stockLossUnits', 'inventory.adjustments', 'inventory.reconciles'], period()
+      ).metrics
+      expect(m['inventory.stockLossUnits'].value).toBe(3)
+      expect(m['inventory.adjustments'].value).toBeCloseTo(0, 6)
+      expect(m['inventory.reconciles'].value.reconciles).toBe(true)
+    })
+
+    it('records an unexplained shortfall as shrinkage instead', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 50 })
+      const res = stock.reconcileProductExplained(p, 47, { type: 'adjustment' }, 'tester')
+
+      expect(res.outcome).toBe('unexplained')
+      expect(qtyNow(p)).toBe(47)
+
+      const m = analytics.computeMetrics(
+        ['inventory.stockLossUnits', 'inventory.adjustments'], period()
+      ).metrics
+      // Same 3 units, different meaning — and only one of them is a management
+      // problem the shop can already explain.
+      expect(m['inventory.stockLossUnits'].value).toBe(0)
+      expect(m['inventory.adjustments'].value).toBeCloseTo(-6, 6)
+    })
+
+    it('writes exactly one movement, so a variance cannot be counted twice', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 50 })
+      const before = getDb()
+        .prepare(`SELECT COUNT(*) FROM stock_movements WHERE product_id = ?`).pluck().get(p)
+      stock.reconcileProductExplained(p, 45, { type: 'loss', reason_code: 'THEFT' }, 'tester')
+      const after = getDb()
+        .prepare(`SELECT COUNT(*) FROM stock_movements WHERE product_id = ?`).pluck().get(p)
+
+      // A loss AND an adjustment for the same shortfall would balance the books
+      // by deducting the stock twice.
+      expect(after - before).toBe(1)
+      expect(qtyNow(p)).toBe(45)
+    })
+
+    it('writes nothing at all when the count matches', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 50 })
+      const before = getDb()
+        .prepare(`SELECT COUNT(*) FROM stock_movements WHERE product_id = ?`).pluck().get(p)
+      const res = stock.reconcileProductExplained(p, 50, { type: 'adjustment' }, 'tester')
+
+      expect(res.outcome).toBe('matched')
+      // A zero-quantity movement is a lie in the ledger and would appear in
+      // every "what happened this month" list.
+      expect(getDb().prepare(`SELECT COUNT(*) FROM stock_movements WHERE product_id = ?`).pluck().get(p))
+        .toBe(before)
+    })
+
+    it('refuses to call a surplus a loss', () => {
+      const p = stockedProduct({ name: 'Coke', cost: 2, price: 5, units: 50 })
+      expect(() =>
+        stock.reconcileProductExplained(p, 55, { type: 'loss', reason_code: 'BROKEN' }, 'tester')
+      ).toThrow(/surplus cannot be recorded as a loss/i)
+      expect(qtyNow(p)).toBe(50)
+    })
+
+    it('finishes the rest of a count when one row fails', () => {
+      const a = stockedProduct({ name: 'A', cost: 2, price: 5, units: 20 })
+      const b = stockedProduct({ name: 'B', cost: 2, price: 5, units: 20 })
+      const out = stock.reconcileProductsExplained([
+        { product_id: a, counted_qty: 18, explanation: { type: 'loss', reason_code: 'BROKEN' } },
+        { product_id: b, counted_qty: 25, explanation: { type: 'loss', reason_code: 'BROKEN' } },
+        { product_id: b, counted_qty: 19, explanation: { type: 'adjustment' } },
+      ], 'tester')
+
+      // A stock count takes an hour; one bad row must not discard the rest.
+      expect(out.results).toHaveLength(2)
+      expect(out.errors).toHaveLength(1)
+      expect(qtyNow(a)).toBe(18)
+      expect(qtyNow(b)).toBe(19)
     })
   })
 

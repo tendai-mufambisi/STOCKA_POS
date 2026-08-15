@@ -21,6 +21,7 @@ import CashierSessions from './CashierSessions'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
+import StockLosses from './StockLosses'
 import CostEntry from './CostEntry'
 import BusinessReports from './BusinessReports'
 import ActivityLogs from './ActivityLogs'
@@ -50,6 +51,7 @@ import {
   LuTruck,
   LuPackageSearch,
   LuPackageX,
+  LuPackageMinus,
   LuCalendarClock,
   LuWallet,
   LuChartColumn,
@@ -90,6 +92,7 @@ const NAV_SECTIONS = [
     { id: 'restock',          icon: LuPackageSearch,  label: 'Restock Needed' },
     { id: 'deadstock',        icon: LuPackageX,       label: 'Dead Stock' },
     { id: 'expiry',           icon: LuCalendarClock,  label: 'Expiry Tracking' },
+    { id: 'losses',           icon: LuPackageMinus,   label: 'Breakages & Losses' },
     { id: 'cost-prices',      icon: LuCircleDollarSign, label: 'Cost Prices' },
   ]},
   { id: 'finance', label: 'Finance', items: [
@@ -623,6 +626,8 @@ function Dashboard() {
         return <DeadStock />
       case 'expiry':
         return <ExpiryTracking />
+      case 'losses':
+        return <StockLosses />
       case 'cost-prices':
         return <CostEntry />
       case 'business-reports':
@@ -768,6 +773,7 @@ function Dashboard() {
             shifts: 'Shift Management',
             'cashier-sessions': 'Cashier Sessions',
             expiry: 'Expiry Tracking',
+            losses: 'Breakages & Losses',
             activitylogs: 'Activity Logs',
           }
           const title = pageTitles[activePage]
