@@ -219,6 +219,9 @@ contextBridge.exposeInMainWorld('stocka', {
     previewOrphaned:   (shiftId) => invoke('domain:shifts:previewOrphaned', shiftId),
     reconcileOrphaned: (shiftId) => invoke('domain:shifts:reconcileOrphaned', shiftId),
     onForceClose:   (cb) => { const l = (_, d) => cb(d); ipcRenderer.on('shift:force-closed', l); return () => ipcRenderer.removeListener('shift:force-closed', l) },
+    // The drawer changed under this window (midnight rollover). Distinct from
+    // onForceClose, which signs the cashier out — this one must not.
+    onChanged:      (cb) => { const l = (_, d) => cb(d); ipcRenderer.on('shift:changed', l); return () => ipcRenderer.removeListener('shift:changed', l) },
   },
 
   // ── NOTIFICATIONS ─────────────────────────────────────────
@@ -260,6 +263,7 @@ contextBridge.exposeInMainWorld('stocka', {
     add:       (e)    => invoke('domain:eod:add', e),
     getAll:    ()     => invoke('domain:eod:getAll'),
     getByDate: (date) => invoke('domain:eod:getByDate', date),
+    getUnclosed: (limit) => invoke('domain:eod:getUnclosed', limit),
   },
 
   // ── BRANCHES ──────────────────────────────────────────────

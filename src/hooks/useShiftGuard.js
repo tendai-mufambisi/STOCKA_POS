@@ -9,14 +9,21 @@ import { getCurrentShift, reconcileOrphanedSales } from '../database/db'
 export function useShiftGuard() {
   const { user } = useAuthStore()
   const { saleInProgress, setPendingForceClose, pendingForceClose } = useSaleStore()
+  const { currentShift, setCurrentShift, clearShift } = useShiftStore()
   const [shiftForceClosed, setShiftForceClosed] = useState(false)
 
   // Refs so callbacks always read the latest values without stale closures
   const saleRef = useRef(saleInProgress)
   useEffect(() => { saleRef.current = saleInProgress }, [saleInProgress])
 
+  const shiftRef = useRef(currentShift)
+  useEffect(() => { shiftRef.current = currentShift }, [currentShift])
+
   const pendingRef = useRef(false)
-  const shiftIdRef = useRef(user?.current_shift_id ?? null)
+  // Seeded from the live store first, not just users.current_shift_id: that column
+  // is NULLed the moment a shift is closed remotely, which is exactly when this
+  // guard is needed most. Keying off it alone left the guard permanently disabled.
+  const shiftIdRef = useRef(currentShift?.id ?? user?.current_shift_id ?? null)
   useEffect(() => {
     if (user?.current_shift_id) shiftIdRef.current = user.current_shift_id
   }, [user?.current_shift_id])
@@ -29,15 +36,29 @@ export function useShiftGuard() {
     }
   }, [setPendingForceClose])
 
+  // Reconciles this machine's idea of the open shift against the database, for
+  // EVERY role. It used to run only for Cashiers, so an admin or manager who sells
+  // kept a closed shift in memory indefinitely and every sale they rang up was
+  // filed against it. The force-close *modal* is still cashier-only (see below) —
+  // what is no longer cashier-only is noticing that the shift changed.
   const checkShift = useCallback(async () => {
-    if (!user || user.role !== 'Cashier' || !shiftIdRef.current) return
+    if (!user?.username) return
+    // The provisional healer below owns this case; it has no id to compare yet.
+    if (shiftRef.current?.__provisional) return
     try {
       const active = await getCurrentShift(user.username)
       if (!active) {
-        // Shift was closed remotely — trigger if not already triggered
-        if (!pendingRef.current) triggerForceClose()
+        if (shiftRef.current) clearShift()
+        // Only a cashier gets the "your shift was closed" logout modal; an admin
+        // just quietly loses the stale shift and is prompted for a float next time
+        // they open Sales.
+        if (user.role === 'Cashier' && !pendingRef.current) triggerForceClose()
       } else {
         shiftIdRef.current = active.id
+        // A DIFFERENT shift is open now — the overnight rollover opened a
+        // continuation, or an admin reopened one. Adopt it so sales bind to the
+        // right drawer without the cashier doing anything.
+        if (active.id !== shiftRef.current?.id) setCurrentShift(active)
         // Shift was reopened — clear everything
         if (pendingRef.current) {
           pendingRef.current = false
@@ -46,7 +67,7 @@ export function useShiftGuard() {
         }
       }
     } catch (_) {}
-  }, [user, triggerForceClose, setPendingForceClose])
+  }, [user, triggerForceClose, setPendingForceClose, setCurrentShift, clearShift])
 
   // When a sale finishes and there is a pending force-close, show the modal
   useEffect(() => {
@@ -55,9 +76,10 @@ export function useShiftGuard() {
     }
   }, [saleInProgress, shiftForceClosed])
 
-  // Poll every 8 s as the safety net
+  // Poll every 8 s as the safety net — all roles, so no machine can keep selling
+  // against a shift that closed underneath it.
   useEffect(() => {
-    if (!user || user.role !== 'Cashier') return
+    if (!user?.username) return
     const timer = setInterval(checkShift, 8000)
     return () => clearInterval(timer)
   }, [user, checkShift])
@@ -81,13 +103,23 @@ export function useShiftGuard() {
     return () => off?.()
   }, [user, triggerForceClose])
 
+  // The midnight rollover closed this drawer and opened its continuation. Every
+  // role, and deliberately NOT the force-close channel: nobody is signed out, the
+  // cashier just gets pointed at the new drawer so their next sale binds to the
+  // right day. The 8 s poll would catch this anyway; this makes it immediate.
+  useEffect(() => {
+    const shifts = window.stocka?.shifts
+    if (!shifts?.onChanged) return
+    const off = shifts.onChanged(checkShift)
+    return () => off?.()
+  }, [checkShift])
+
   // ── Provisional-shift auto-heal (all roles) ──────────────────────────────
   // If startShift got queued (Main unreachable at that instant), Dashboard stores a
   // __provisional shift with no id so selling isn't blocked — but any sale made
   // before the real shift confirms is written with shift_id: null. The moment the
   // real shift lands, reattach those orphaned sales so Shift Management / End of
   // Day agree with Transactions without any admin having to notice or intervene.
-  const { currentShift, setCurrentShift } = useShiftStore()
   const healingRef = useRef(false)
 
   const checkProvisionalShift = useCallback(async () => {

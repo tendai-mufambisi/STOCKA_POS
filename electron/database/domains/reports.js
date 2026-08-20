@@ -1,4 +1,5 @@
 const { getDb } = require('../index')
+const { localDayStr } = require('../../analytics/kernel/time')
 const { costResolverFor } = require('../../analytics/sql/costResolver')
 
 // Timestamps are stored in UTC (SQLite datetime('now')); every "day" comparison
@@ -71,7 +72,10 @@ function getDailyCOGS(date) {
 
 function getMonthlyData(year, month) {
   const startDate = `${year}-${String(month).padStart(2, '0')}-01`
-  const endDate = new Date(year, month, 0).toISOString().split('T')[0]
+  // localDayStr, not toISOString(): new Date(year, month, 0) is LOCAL midnight on
+  // the last day of the month, which in any positive UTC offset converts back to
+  // the day BEFORE — silently dropping the last day of every month from the report.
+  const endDate = localDayStr(new Date(year, month, 0))
   return getDb().prepare(`
     SELECT DATE(created_at, 'localtime') as date, SUM(total) as revenue FROM sales
     WHERE status = 'completed' AND DATE(created_at, 'localtime') BETWEEN ? AND ?

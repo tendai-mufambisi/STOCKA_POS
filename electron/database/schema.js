@@ -397,6 +397,33 @@ function runMigrations(db) {
     // received. Null on shifts opened before this column existed; the close
     // guard treats that as "unknown till" and lets the close proceed.
     addColIfMissing('shifts', 'till_code', 'TEXT')
+
+    // The trading day this drawer belongs to, as a local YYYY-MM-DD.
+    //
+    // Until now a shift had no day of its own — every reader derived one from
+    // started_at, three different ways (SQL in analytics/kernel/time.js, SQL in
+    // the day rollover, JS in EndOfDay). A shift that ran through midnight
+    // therefore belonged wholly to the day it opened, so the next day's takings
+    // were reported under the previous date and that date got no shift row at all.
+    //
+    // INVARIANT: business_date always equals date(started_at,'localtime').
+    // utcPeriodPredicate widens a raw started_at clause by +/-26h before narrowing
+    // it with the day expression, so a row whose two dates disagree by more than
+    // that would be silently dropped from every period query. Never set this to
+    // anything else.
+    addColIfMissing('shifts', 'business_date', 'TEXT')
+
+    // Links a shift opened by the midnight rollover back to the one it continues,
+    // so a drawer carried across a day boundary can be traced rather than looking
+    // like an unexplained second shift.
+    addColIfMissing('shifts', 'carried_from_shift_id', 'INTEGER')
+
+    // Backfill to the day every existing reader already files the shift under, so
+    // no historical figure moves. Only touches NULLs, so it is idempotent and can
+    // never overwrite a stamped value.
+    try {
+      db.prepare("UPDATE shifts SET business_date = date(started_at,'localtime') WHERE business_date IS NULL").run()
+    } catch (_) {}
     addColIfMissing('end_of_day', 'expected_transfer', 'REAL DEFAULT 0')
     addColIfMissing('end_of_day', 'actual_transfer', 'REAL DEFAULT 0')
     addColIfMissing('end_of_day', 'transfer_difference', 'REAL DEFAULT 0')
@@ -589,6 +616,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_expenses_shift        ON expenses(shift_id)`,
   `CREATE INDEX IF NOT EXISTS idx_shifts_started_status ON shifts(started_at, status)`,
   `CREATE INDEX IF NOT EXISTS idx_shifts_cashier        ON shifts(cashier_username, started_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_shifts_business_date  ON shifts(business_date)`,
   `CREATE INDEX IF NOT EXISTS idx_eod_date              ON end_of_day(date)`,
   `CREATE INDEX IF NOT EXISTS idx_products_supplier     ON products(supplier_id)`,
   `CREATE INDEX IF NOT EXISTS idx_products_reorder      ON products(current_quantity, reorder_level)`,

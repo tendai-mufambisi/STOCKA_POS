@@ -1,6 +1,10 @@
+import { withErrorCode } from '../errorCode'
+
 const w = window.stocka.sales
 
-export const addSale = (sale, saleItems) => w.add(sale, saleItems)
+// Wrapped so SHIFT_NOT_OPEN survives the contextBridge — Sales.jsx needs to tell
+// "your shift was closed, open a new one" apart from a genuine failure.
+export const addSale = (sale, saleItems) => withErrorCode(w.add(sale, saleItems))
 export const getSales = () => w.getAll()
 export const getSaleById = (id) => w.getById(id)
 export const getSaleItems = (saleId) => w.getItems(saleId)
@@ -10,7 +14,7 @@ export const recallHeldSale = (saleId) => w.recall(saleId)
 export const discardHeldSale = (saleId, discardedBy) => w.discard(saleId, discardedBy)
 export const getDiscardedHolds = () => w.getDiscardedHolds()
 export const voidSale = (saleId, reason, by) => w.void(saleId, reason, by)
-export const completeHeldSale = (saleId, paymentData, shiftId) => w.complete(saleId, paymentData, shiftId)
+export const completeHeldSale = (saleId, paymentData, shiftId) => withErrorCode(w.complete(saleId, paymentData, shiftId))
 export const getVoidedSales = () => w.getVoided()
 export const getLastReceiptNumber = () => w.getLastReceipt()
 export const getReceiptBySaleId = (id) => w.getReceipt(id)

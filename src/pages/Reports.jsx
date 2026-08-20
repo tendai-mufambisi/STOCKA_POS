@@ -3,7 +3,7 @@ import { FiDownload, FiLock, FiPrinter, FiCheck, FiBarChart2 } from 'react-icons
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import { getSales, getExpenses, getProducts, getStockReceivings, getSaleItems, getShop, getReceiptBySaleId } from '../database/db'
 import { hasPermission } from '../utils/permissions'
-import { parseDbDate, formatDbTime } from '../utils/salesDay'
+import { parseDbDate, formatDbTime, localDateStr } from '../utils/salesDay'
 import { tenderBreakdown } from '../utils/paymentTender'
 import * as XLSX from 'xlsx'
 import { useAuthStore } from '../store/useAuthStore'
@@ -16,9 +16,11 @@ function Reports() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
-  const [startDate, setStartDate] = useState(new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0])
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
+  // Local, not UTC: seeded from toISOString() these pickers defaulted to
+  // YESTERDAY for the first two hours of every day in Zimbabwe.
+  const [selectedDate, setSelectedDate] = useState(localDateStr())
+  const [startDate, setStartDate] = useState(localDateStr(new Date(new Date().setDate(new Date().getDate() - 30))))
+  const [endDate, setEndDate] = useState(localDateStr())
   const [chartData, setChartData] = useState([])
   const [paymentBreakdown, setPaymentBreakdown] = useState([])
   const [tableData, setTableData] = useState([])
@@ -426,7 +428,7 @@ function Reports() {
   }
 
   const handleExport = () => {
-    const filename = `${reportType}-report-${new Date().toISOString().split('T')[0]}.xlsx`
+    const filename = `${reportType}-report-${localDateStr()}.xlsx`
     const ws = XLSX.utils.json_to_sheet(tableData.map((row, idx) => {
       const baseObj = {}
       

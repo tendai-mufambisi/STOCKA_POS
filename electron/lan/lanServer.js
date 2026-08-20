@@ -212,6 +212,7 @@ const DISPATCH = {
   'domain:eod:add':       (...a) => eod.addEndOfDay(...a),
   'domain:eod:getAll':    () => eod.getEndOfDayRecords(),
   'domain:eod:getByDate': (...a) => eod.getEndOfDayByDate(...a),
+  'domain:eod:getUnclosed': (...a) => eod.getUnclosedBusinessDays(...a),
 
   'domain:branches:getAll': () => branches.getBranches(),
   'domain:branches:getById':(...a) => branches.getBranchById(...a),
@@ -355,8 +356,15 @@ const ROUTES = [
       // TILL_UNREACHABLE is a refusal, not a failure: the caller must not retry it
       // blindly and the satellite queue must not dead-letter it. 409 says "the
       // state is wrong, fix it and try again", which is exactly right.
+      //
+      // SHIFT_NOT_OPEN is the same shape of refusal: the till is holding a shift
+      // that has since been closed. 409 dead-letters a queued write, which would be
+      // catastrophic for a real sale — that is safe here only because
+      // resolveSaleShift never raises this for a replay (it returns shift_id null
+      // and lets the orphan reconciler adopt it instead).
       const status = err.message.includes('Insufficient stock') ? 409
         : err.code === 'TILL_UNREACHABLE' ? 409
+        : err.code === 'SHIFT_NOT_OPEN' ? 409
         : err.message.includes('not found') ? 404 : 500
       send(res, status, { error: err.message, code: err.code || null })
     }

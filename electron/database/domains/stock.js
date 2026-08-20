@@ -2,6 +2,7 @@ const { getDb } = require('../index')
 const { getProductById } = require('./products')
 const { logAuditAction } = require('./audit')
 const { eventNowIso, eventNowSql } = require('../eventClock')
+const { localDayStr } = require('../../analytics/kernel/time')
 const { costResolverFor } = require('../../analytics/sql/costResolver')
 
 // Date portion (YYYY-MM-DD) of the true action time — the real receiving date for a
@@ -260,8 +261,9 @@ function getProductSalesVelocity(days = 30) {
 // batch size. A batch drops out of tracking when it is discarded, when its
 // summed units hit 0, or when the product has no stock left on hand.
 function getExpiringProducts(days = 7) {
-  const today = new Date().toISOString().split('T')[0]
-  const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  // expiry_date is a local calendar day, so "today" must be one too.
+  const today = localDayStr()
+  const cutoff = localDayStr(new Date(Date.now() + days * 24 * 60 * 60 * 1000))
   return getDb().prepare(`
     SELECT p.*, sr.expiry_date,
            SUM(sr.total_units) as batch_units,
@@ -278,7 +280,7 @@ function getExpiringProducts(days = 7) {
 }
 
 function getExpiredProducts() {
-  const today = new Date().toISOString().split('T')[0]
+  const today = localDayStr()
   return getDb().prepare(`
     SELECT p.*, sr.expiry_date,
            SUM(sr.total_units) as batch_units,
@@ -296,9 +298,9 @@ function getExpiredProducts() {
 
 function getExpiryReport() {
   const db = getDb()
-  const today = new Date().toISOString().split('T')[0]
-  const week = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-  const month = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  const today = localDayStr()
+  const week = localDayStr(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000))
+  const month = localDayStr(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
   // Same batch definition as the two list queries, so the summary cards always
   // agree with the tabs below them.
   const row = db.prepare(`
@@ -390,7 +392,10 @@ function stockLossTimestamp(lossDate) {
   if (!ymd) return eventNowSql()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) throw new Error('Date must be in YYYY-MM-DD format')
 
-  const today = eventNowIso().split('T')[0]
+  // LOCAL day, not eventNowIso().split('T')[0]. The date being validated comes
+  // from a date picker seeded with the user's local day, so a UTC "today" rejected
+  // the unmodified default as a future date every evening after 22:00 in Zimbabwe.
+  const today = localDayStr(new Date(eventNowMs()))
   if (ymd > today) throw new Error('A loss cannot be recorded for a future date')
   if (ymd === today) return eventNowSql()
 

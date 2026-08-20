@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   addEndOfDay, getEndOfDayRecords,
   getAllShifts, getShiftSummary, closeAllOpenShifts, getShop,
+  getUnclosedBusinessDays,
 } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
@@ -69,7 +70,13 @@ export default function EndOfDay() {
   // print its day summary with no extra configuration.
   const { printEodReport, printError } = useReceiptPrinter()
 
+  // `today` is always the real calendar day. `targetDate` is the day being closed,
+  // which is usually today but may be a past one the shop forgot to sign off —
+  // before this, End of Day was today-only and a missed day could never be closed.
   const today = localDateStr()
+  const [targetDate, setTargetDate] = useState(today)
+  const isRetroactive = targetDate !== today
+  const [unclosedDays, setUnclosedDays] = useState([])
 
   // ── Load ────────────────────────────────────────────────────────────────────
   // `keepInputs` re-reads the shifts without discarding what the admin has already
@@ -87,14 +94,19 @@ export default function EndOfDay() {
       setShopInfo(shop)
 
       setAllRecords(records)
-      const record = records.find(r => r.date === today) || null
+      const record = records.find(r => r.date === targetDate) || null
       setTodaysRecord(record)
 
       // Today's shifts, plus ANY shift still open regardless of start date —
       // an overnight shift must never be invisible to End of Day.
+      // business_date is the day stamped on the drawer when it opened; the
+      // started_at fallback covers rows written before that column existed.
+      //
+      // An OPEN drawer belongs to today only. Closing 6 Aug retroactively must
+      // never force-close a till someone is standing at right now.
       const rawShifts = allRawShifts.filter(s =>
-        s.status === 'open' ||
-        (s.started_at && localDateStr(parseDbDate(s.started_at)) === today)
+        (!isRetroactive && s.status === 'open') ||
+        (s.business_date ?? (s.started_at && localDateStr(parseDbDate(s.started_at)))) === targetDate
       )
 
       // Load shift summaries in parallel
@@ -131,9 +143,15 @@ export default function EndOfDay() {
     } finally {
       setLoading(false)
     }
-  }, [today])
+  }, [targetDate, isRetroactive])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // Past days that took money but were never signed off. Read once per load so the
+  // picker can offer them and the admin can see what is outstanding.
+  useEffect(() => {
+    getUnclosedBusinessDays(30).then(rows => setUnclosedDays(rows || [])).catch(() => setUnclosedDays([]))
+  }, [allRecords])
 
   // ── Derived values ──────────────────────────────────────────────────────────
   const openShifts   = shifts.filter(s => s.status === 'open')
@@ -224,7 +242,7 @@ export default function EndOfDay() {
   }
 
   const buildReportPayload = (status, diff, unverifiedNow = new Set()) => ({
-    date:           today,
+    date:           targetDate,
     status,
     closed_by:      user?.username || 'System',
     total_sales:    totalSales,
@@ -362,6 +380,17 @@ export default function EndOfDay() {
         if (openShifts.some(s => s.cashier_username === user?.username)) clearShift()
       }
 
+      // Belt-and-braces. The filter above already keeps open drawers out of a
+      // retroactive close, so reaching here would mean a drawer is genuinely still
+      // open for that past date — which the rollover should have closed. Refuse
+      // rather than force-close a drawer nobody looked at.
+      if (isRetroactive && openShifts.length > 0) {
+        setError(`${openShifts.length} drawer${openShifts.length === 1 ? ' is' : 's are'} still open for ${targetDate}. ` +
+          `Close them from Shift Management first.`)
+        setClosing(false)
+        return
+      }
+
       // 2. Save EOD record
       const diff        = totalReceived - totalExpected
       const cashOk      = Math.abs(diff) < 0.01
@@ -376,7 +405,7 @@ export default function EndOfDay() {
             `Those shifts are recorded as unverified and these totals may be incomplete.`].filter(Boolean).join('\n')
         : notes
       await addEndOfDay({
-        date:           today,
+        date:           targetDate,
         cashier:        user?.username || 'System',
         total_sales:    totalSales,
         total_expenses: totalExpenses,
@@ -397,7 +426,7 @@ export default function EndOfDay() {
       setNotes('')
       setBlockedTills([])
       setForceUnreachableTills(false)
-      try { await window.stocka.lan?.broadcastDayClosed(today, user?.username || 'Admin') } catch (_) {}
+      try { await window.stocka.lan?.broadcastDayClosed(targetDate, user?.username || 'Admin') } catch (_) {}
       await loadData()
     } catch (err) {
       setError('Failed to close day: ' + err.message)
@@ -462,7 +491,7 @@ export default function EndOfDay() {
         <div className="eod-stat">
           <FiUsers size={15} className="eod-stat-icon" />
           <div>
-            <div className="eod-stat-label">Shifts Today</div>
+            <div className="eod-stat-label">{isRetroactive ? 'Shifts That Day' : 'Shifts Today'}</div>
             <div className="eod-stat-value">{shifts.length}</div>
             {openShifts.length > 0 && (
               <div className="eod-stat-sub eod-open-tag">{openShifts.length} still open</div>
@@ -470,6 +499,58 @@ export default function EndOfDay() {
           </div>
         </div>
       </div>
+
+      {/* Days that took money but were never signed off. Trading is never blocked
+          on this — the shop must always be able to sell — but a forgotten day has
+          to be visible and, unlike before, closable. */}
+      {unclosedDays.length > 0 && (
+        <div className="eod-warn-banner" style={{ background: '#fffbeb', borderColor: '#f59e0b', color: '#92400e', flexWrap: 'wrap' }}>
+          <FiAlertTriangle size={14} />
+          <strong>{unclosedDays.length} previous day{unclosedDays.length === 1 ? '' : 's'} never closed.</strong>
+          &nbsp;Pick one to reconcile it now:
+          <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 8 }}>
+            {unclosedDays.slice(0, 8).map(d => (
+              <button
+                key={d.day}
+                type="button"
+                onClick={() => setTargetDate(d.day)}
+                title={`${d.sales_count} sale${d.sales_count === 1 ? '' : 's'} — ${fmt.money(d.sales_total)}`}
+                style={{
+                  padding: '3px 10px', borderRadius: 14, cursor: 'pointer',
+                  border: `1px solid ${d.day === targetDate ? '#92400e' : '#fcd34d'}`,
+                  background: d.day === targetDate ? '#92400e' : '#fef3c7',
+                  color: d.day === targetDate ? '#fff' : '#92400e',
+                  fontWeight: 600, fontSize: 12,
+                }}
+              >
+                {fmt.date(d.day)} · {fmt.money(d.sales_total)}
+              </button>
+            ))}
+          </span>
+        </div>
+      )}
+
+      {/* Closing a past day is a different act from closing tonight: the money was
+          counted (or wasn't) days ago and cannot be recounted now. Say so plainly,
+          and give one obvious way back to today. */}
+      {isRetroactive && (
+        <div className="eod-warn-banner" style={{ background: '#eff6ff', borderColor: '#3b82f6', color: '#1e40af' }}>
+          <FiAlertTriangle size={14} />
+          <strong>Closing a past day — {fmt.date(targetDate)}.</strong>
+          &nbsp;It will be recorded as signed off today. No stock snapshot is taken for a past date;
+          that day&apos;s stock is reconstructed from the movement ledger.
+          <button
+            type="button"
+            onClick={() => setTargetDate(today)}
+            style={{
+              marginLeft: 10, padding: '3px 10px', borderRadius: 14, cursor: 'pointer',
+              border: '1px solid #3b82f6', background: '#fff', color: '#1e40af', fontWeight: 600, fontSize: 12,
+            }}
+          >
+            Back to today
+          </button>
+        </div>
+      )}
 
       {/* ══════════════════════════════════════════════════════
           ACTIVE STATE — day not yet closed, OR new shifts opened after close

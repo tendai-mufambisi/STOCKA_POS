@@ -32,9 +32,16 @@ function movementDayExpr(alias = 'sm') {
   return `date(${alias}.created_at, 'localtime')`
 }
 
-/** shifts.started_at — UTC ISO string */
+/**
+ * shifts.business_date — the local trading day stamped when the drawer opened.
+ *
+ * COALESCE, not a bare column, for two reasons. Rows written before the column
+ * existed (or by any path that forgets to stamp it) still bucket to the day every
+ * other reader already files them under. And keeping 'localtime' here keeps the
+ * one legitimate use of it inside this file, which the layering guard asserts.
+ */
 function shiftDayExpr(alias = 'sh') {
-  return `date(${alias}.started_at, 'localtime')`
+  return `COALESCE(${alias}.business_date, date(${alias}.started_at, 'localtime'))`
 }
 
 /** expenses.date — already a local calendar day. No 'localtime'. */

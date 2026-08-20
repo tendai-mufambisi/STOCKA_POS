@@ -11,6 +11,7 @@ const { createTables, runMigrations, ensureIndexes } = require('./database/schem
 const { registerAll: registerDomainIpc } = require('./database/ipc')
 const { initLan } = require('./lan/index')
 const backgroundServer = require('./backgroundServer')
+const dayRollover = require('./dayRollover')
 const btPrinter = require('./printer')
 
 // Set userData path before app is ready (must be first)
@@ -125,25 +126,13 @@ app.whenReady().then(async () => {
     logger.info('✅ Database ready')
     logger.info('✅ LAN subsystem ready')
 
-    // Auto-close shifts left open from a previous day. Only on the authoritative DB
-    // (standalone/server) — satellites mirror shifts from Main via delta sync.
-    // Re-check every 30 min so a machine left running across midnight also rolls over.
-    const runStaleShiftCheck = () => {
-      try {
-        const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
-        if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) return
-        const { closeStaleShifts } = require('./database/domains/shifts')
-        const closed = closeStaleShifts()
-        if (closed.length > 0) {
-          logger.info(`⏱️ Auto-closed ${closed.length} stale shift(s): ${closed.map(r => `${r.cashier}#${r.shiftId}`).join(', ')}`)
-          try { require('./lan/lanServer').broadcastChange('domain:shifts:close') } catch (_) {}
-        }
-      } catch (err) {
-        logger.error('Stale shift check failed: ' + err.message)
-      }
-    }
-    runStaleShiftCheck()
-    setInterval(runStaleShiftCheck, 30 * 60 * 1000)
+    // Roll any drawer left open from a previous day onto the current one: close it
+    // for the day it belongs to, give any day it swallowed a shift of its own, and
+    // open a continuation carrying the cash forward. Replaces a 30-minute interval
+    // that never fired while the laptop was asleep, which is how whole days ended
+    // up with no shift row and their takings filed under the previous date.
+    dayRollover.init(userDataPath)
+    app.on('before-quit', () => dayRollover.stop())
   } catch (err) {
     logger.error('❌ Database init failed: ' + err.message)
     dialog.showErrorBox('Stocka - Database Error', 'Failed to initialize database: ' + err.message)

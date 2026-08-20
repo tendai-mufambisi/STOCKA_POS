@@ -1,5 +1,7 @@
 const { getDb } = require('../index')
 const { costResolverFor } = require('../../analytics/sql/costResolver')
+const { today: localToday } = require('../../analytics/kernel/time')
+const { logAuditAction } = require('./audit')
 
 // Freezes what was on the shelves, and what it was worth, on the day just
 // closed.
@@ -52,6 +54,11 @@ function snapshotInventory(db, date) {
 function addEndOfDay(eod) {
   const db = getDb()
 
+  // A day cannot be signed off before it has happened.
+  const todayStr = localToday()
+  if (eod.date > todayStr) throw new Error(`Cannot close ${eod.date} — that day has not happened yet`)
+  const isRetroactive = eod.date < todayStr
+
   // Transfer figures are stored alongside — never folded into `difference`, which
   // stays cash-only so existing reports and history rows keep meaning what they
   // always meant.
@@ -83,7 +90,56 @@ function addEndOfDay(eod) {
   }
 
   // Freeze the shelves as they stand at close, for next month's opening stock.
-  snapshotInventory(db, eod.date)
+  //
+  // Only for today. A snapshot is a MEASUREMENT of what is physically on the
+  // shelves right now — writing today's quantities under last week's date would be
+  // a fabricated one, labelled 'live', and it would silently become that month's
+  // opening stock. Past days are answered by the movement-ledger reconstruction in
+  // analytics/sql/inventoryLedger.js, which this snapshot is only an optimisation
+  // of and which the header above names as the source of truth either way.
+  if (isRetroactive) {
+    try {
+      logAuditAction(eod.cashier || 'system', 'EOD_RETROACTIVE', 'EOD', eod.date,
+        `Day ${eod.date} closed retroactively on ${todayStr}. No inventory snapshot was taken — ` +
+        `stock for that date is reconstructed from the movement ledger.`)
+    } catch (_) {}
+  } else {
+    snapshotInventory(db, eod.date)
+  }
+}
+
+// Past trading days that took money, or had a drawer, but were never signed off.
+//
+// End of Day used to be today-only, so a day the admin forgot simply stayed open
+// forever with nothing to say so. This is what the dashboard banner reads, and
+// what makes those days closable after the fact.
+//
+// Floored at the first day the shop ever closed (or 30 days back if it never has),
+// so switching this on does not confront a long-running shop with hundreds of red
+// rows it was never going to reconcile.
+function getUnclosedBusinessDays(limit = 30) {
+  return getDb().prepare(
+    `WITH days AS (
+       SELECT DISTINCT date(created_at, 'localtime') AS day
+         FROM sales WHERE status = 'completed'
+       UNION
+       SELECT DISTINCT COALESCE(business_date, date(started_at, 'localtime')) FROM shifts
+     )
+     SELECT d.day,
+            (SELECT COUNT(*) FROM sales s
+              WHERE s.status = 'completed' AND date(s.created_at, 'localtime') = d.day) AS sales_count,
+            (SELECT COALESCE(SUM(total), 0) FROM sales s
+              WHERE s.status = 'completed' AND date(s.created_at, 'localtime') = d.day) AS sales_total,
+            (SELECT COUNT(*) FROM shifts sh
+              WHERE COALESCE(sh.business_date, date(sh.started_at, 'localtime')) = d.day) AS shift_count
+       FROM days d
+      WHERE d.day IS NOT NULL
+        AND d.day < date('now', 'localtime')
+        AND d.day NOT IN (SELECT date FROM end_of_day)
+        AND d.day >= COALESCE((SELECT MIN(date) FROM end_of_day), date('now', 'localtime', '-30 days'))
+      ORDER BY d.day DESC
+      LIMIT ?`
+  ).all(limit)
 }
 
 function getEndOfDayRecords() {
@@ -94,4 +150,4 @@ function getEndOfDayByDate(date) {
   return getDb().prepare('SELECT * FROM end_of_day WHERE date = ?').get(date) || null
 }
 
-module.exports = { addEndOfDay, getEndOfDayRecords, getEndOfDayByDate }
+module.exports = { addEndOfDay, getEndOfDayRecords, getEndOfDayByDate, getUnclosedBusinessDays }

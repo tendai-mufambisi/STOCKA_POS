@@ -2,7 +2,75 @@ const { getDb } = require('../index')
 const { getProductById, updateProductQuantity } = require('./products')
 const { logAuditAction } = require('./audit')
 const { createNotification } = require('./notifications')
-const { eventNowIso, eventNowSql, eventNowMs } = require('../eventClock')
+// Aliased: addSale already has a local `isReplay` const for its own flag.
+const { eventNowIso, eventNowSql, eventNowMs, isReplay: isReplayEvent } = require('../eventClock')
+
+// Decides which shift a sale belongs to. The SERVER decides — a shift_id from a
+// renderer is a hint, never authority.
+//
+// This is the fix for the bug where whole days of sales were filed under the
+// previous day. A till keeps its open shift in memory; when that shift is closed
+// underneath it (the overnight sweep, or an admin's End of Day) the renderer kept
+// sending the now-closed id, and it was written through unchecked. The next
+// morning's takings landed on yesterday's drawer, and the new day got no shift row
+// at all.
+//
+// `replayed` is the satellite offline-queue path and is treated as history: the
+// money was taken while that drawer was genuinely open, so a shift that has since
+// closed is the CORRECT home for it. Crucially a replay is never refused — see the
+// comment on the throw below.
+function resolveSaleShift(db, cashier, claimedShiftId, nowSql, replayed) {
+  if (claimedShiftId) {
+    const s = db.prepare('SELECT id, status, cashier_username FROM shifts WHERE id = ?').get(claimedShiftId)
+    // Ownership matters as much as status: a stale id belonging to another cashier
+    // must not pull this sale onto their drawer.
+    if (s && s.cashier_username === cashier) {
+      if (s.status === 'open') return s.id
+      if (replayed) {
+        const inWindow = db.prepare(
+          `SELECT 1 FROM shifts WHERE id = ?
+             AND datetime(?) >= datetime(started_at)
+             AND datetime(?) <= datetime(COALESCE(closed_at, '9999-12-31'))`
+        ).get(s.id, nowSql, nowSql)
+        if (inWindow) return s.id
+      }
+    }
+  }
+
+  // Time-window fallback — the original behaviour for a sale that arrives with no
+  // shift at all. For a live sale only an OPEN shift counts; for a replay a shift
+  // that has since closed is still the right answer.
+  const match = db.prepare(
+    `SELECT id FROM shifts
+       WHERE cashier_username = ?
+         ${replayed ? '' : "AND status = 'open'"}
+         AND datetime(?) >= datetime(started_at)
+         AND datetime(?) <= datetime(COALESCE(closed_at, '9999-12-31'))
+     ORDER BY started_at DESC LIMIT 1`
+  ).get(cashier, nowSql, nowSql)
+  if (match) return match.id
+
+  // Two cases land unlinked (shift_id NULL) rather than being refused, and both
+  // are then adopted by findOrphanedSalesForShift/reconcileOrphanedSales:
+  //
+  // - A replay. lanClient treats any 4xx from Main as permanent and archives the
+  //   write into failed_writes.json, so refusing here would silently destroy a sale
+  //   the cashier already took money for.
+  // - A sale that claimed no shift at all. That is a satellite's provisional sale,
+  //   rung up while its own shift-start was still sitting in the offline queue —
+  //   the __provisional path depends on it being accepted.
+  //
+  // Only a claim that resolved to a dead shift is refused. That is the actual bug:
+  // a till holding an id for a drawer that closed hours ago.
+  if (replayed || !claimedShiftId) return null
+
+  const err = new Error(
+    'This shift has already been closed, so the sale cannot be recorded against it. ' +
+    'Enter an opening float to start a new shift, then ring the sale up again — nothing has been charged.'
+  )
+  err.code = 'SHIFT_NOT_OPEN'
+  throw err
+}
 
 function addSale(sale, saleItems) {
   const db = getDb()
@@ -49,6 +117,12 @@ function addSale(sale, saleItems) {
     `UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`
   )
 
+  // Resolved BEFORE the transaction opens, so a refusal writes no sale row, moves
+  // no stock and logs nothing — the cashier can open a fresh shift and ring the
+  // same cart up again with no cleanup.
+  const nowSqlOuter = eventNowSql()
+  const resolvedShiftId = resolveSaleShift(db, sale.cashier, sale.shift_id || null, nowSqlOuter, isReplay)
+
   const doSale = db.transaction(() => {
     const cashAmt = parseFloat(sale.cash_amount) || 0
     const usdAmt  = parseFloat(sale.usd_amount)  || 0
@@ -61,24 +135,11 @@ function addSale(sale, saleItems) {
     const now = eventNowIso()
     const nowSql = eventNowSql()
 
-    // A sale that arrives with no shift is a satellite's provisional/offline sale:
-    // its shift-start was still sitting in the queue when the cashier rang it up, so
-    // it was written with shift_id null. Attach it here to the cashier's shift whose
-    // window covers when the sale actually happened (nowSql = its true time). Doing
-    // this at insert time means the counts are right no matter what order the queued
-    // writes replay in — the time-window reconcile that runs later is now just a
-    // backstop, not the only thing linking these sales.
-    let shiftId = sale.shift_id || null
-    if (!shiftId && sale.cashier) {
-      const match = db.prepare(
-        `SELECT id FROM shifts
-           WHERE cashier_username = ?
-             AND datetime(?) >= datetime(started_at)
-             AND datetime(?) <= datetime(COALESCE(closed_at, '9999-12-31'))
-         ORDER BY started_at DESC LIMIT 1`
-      ).get(sale.cashier, nowSql, nowSql)
-      if (match) shiftId = match.id
-    }
+    // Decided above by resolveSaleShift, which validates the renderer's claim and
+    // falls back to the shift whose window covers when the sale actually happened
+    // (nowSql = its true time, so a replayed offline sale lands on the right drawer
+    // no matter what order the queued writes arrive in).
+    const shiftId = resolvedShiftId
 
     const saleId = insertSale.run(
       sale.cashier, sale.branch_id || null, sale.total, sale.cash_tendered, sale.change_given,
@@ -274,14 +335,22 @@ function completeHeldSale(saleId, paymentData, shiftId) {
     else if (usdAmt > 0) method = 'USD'
     else method = 'Cash'
   }
+  // Same rule as addSale: the drawer this lands on is the server's decision, not
+  // the till's. Resolved BEFORE the UPDATE so a refusal leaves the sale held and
+  // the cashier can re-tender the same recalled hold once they open a new shift.
+  const existing = getSaleById(saleId)
+  const resolvedShiftId = resolveSaleShift(
+    db, existing?.cashier, shiftId || existing?.shift_id || null, eventNowSql(), isReplayEvent()
+  )
+
   db.prepare(
     `UPDATE sales SET status = 'completed', cash_tendered = ?, change_given = ?, payment_method = ?, cash_amount = ?, usd_amount = ?, shift_id = COALESCE(?, shift_id), sync_updated_at = datetime('now')
      WHERE id = ? AND (status = 'pending' OR status = 'held')`
-  ).run(paymentData?.cash_tendered || 0, paymentData?.change_given || 0, method, cashAmt, usdAmt, shiftId || null, saleId)
-  if (shiftId) {
+  ).run(paymentData?.cash_tendered || 0, paymentData?.change_given || 0, method, cashAmt, usdAmt, resolvedShiftId, saleId)
+  if (resolvedShiftId) {
     const sale = getSaleById(saleId)
     if (sale) db.prepare(`UPDATE shifts SET total_sales_count = total_sales_count + 1, total_sales_value = total_sales_value + ? WHERE id = ?`)
-      .run(sale.total, shiftId)
+      .run(sale.total, resolvedShiftId)
   }
   try { logAuditAction('system', 'COMPLETE_HELD_SALE', 'SALE', String(saleId), `Held sale ${saleId} completed`) } catch (_) {}
   return saleId

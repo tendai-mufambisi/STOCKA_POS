@@ -4,6 +4,7 @@ const { logAuditAction } = require('./audit')
 const { eventNowIso, isReplay } = require('../eventClock')
 const { getRequestTill, isRemoteRequest, getLocalTillCode, getTillPresence } = require('../tillPresence')
 const { drawerCashSql, nonDrawerSql, splitSql, cashExpenseSql } = require('../../analytics/sql/paymentClassifier')
+const { localDayStr } = require('../../analytics/kernel/time')
 
 
 // Closed shifts whose figures were never confirmed against a physical count:
@@ -26,7 +27,12 @@ function actingTillCode() {
   return getLocalTillCode() || null
 }
 
-function startShift(userData, openingFloat, branchId = null) {
+// `opts` exists for the midnight rollover, which needs to open a drawer at a
+// specific instant on a specific trading day rather than "now". Everything else
+// calls this with three arguments and behaves exactly as before. Kept as one
+// function on purpose: this is the only place that knows to point
+// users.current_shift_id at the new drawer and write the SHIFT_OPENED audit line.
+function startShift(userData, openingFloat, branchId = null, opts = {}) {
   const db = getDb()
   const openingCash = typeof openingFloat === 'object'
     ? (openingFloat.opening_cash ?? 0)
@@ -34,18 +40,26 @@ function startShift(userData, openingFloat, branchId = null) {
 
   // eventNowIso() = the true shift-open time when this was queued offline and
   // replayed later; Main's own clock for a live open.
-  const startedAt = eventNowIso()
+  const startedAt = opts.startedAt || eventNowIso()
+  // The trading day this drawer belongs to. Derived from startedAt in LOCAL time,
+  // never via toISOString(), which would file anything opened before 02:00 in
+  // Zimbabwe under the previous day.
+  const businessDate = opts.businessDate || localDayStr(new Date(startedAt))
   // Which physical till holds this drawer's cash. Recorded at open because that's
   // the only moment we reliably know it — closeShift then uses it to refuse to
   // cash up a drawer whose till Main can't currently see.
-  const tillCode = actingTillCode()
+  const tillCode = opts.tillCode !== undefined ? opts.tillCode : actingTillCode()
   const { lastInsertRowid: shiftId } = db.prepare(
-    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at, till_code)
-     VALUES (?, ?, ?, 'open', ?, 0, ?, ?)`
-  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt, tillCode)
+    `INSERT INTO shifts (cashier_username, cashier_display_name, branch_id, status, opening_cash, opening_usd, started_at, business_date, till_code, carried_from_shift_id, notes)
+     VALUES (?, ?, ?, 'open', ?, 0, ?, ?, ?, ?, ?)`
+  ).run(userData.username, userData.name || userData.username, branchId, openingCash, startedAt,
+        businessDate, tillCode, opts.carriedFromShiftId || null, opts.note || null)
 
   if (!shiftId) throw new Error('Failed to get shift ID after insert')
-  db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
+  // userData.id is absent when the rollover opens a drawer on a cashier's behalf;
+  // match on username there so current_shift_id still follows them.
+  if (userData.id) db.prepare('UPDATE users SET current_shift_id = ? WHERE id = ?').run(shiftId, userData.id)
+  else db.prepare('UPDATE users SET current_shift_id = ? WHERE username = ?').run(shiftId, userData.username)
   try { logAuditAction(userData.username, 'SHIFT_OPENED', 'SHIFT', String(shiftId), `Shift opened — Opening float: $${openingCash.toFixed(2)}`) } catch (_) {}
   return getShiftById(shiftId)
 }
@@ -66,7 +80,7 @@ function queryCashExpenses(db, shiftId) {
   ).get(shiftId)?.total || 0
 }
 
-// Drawer math shared by closeShift and closeStaleShifts.
+// Drawer math shared by closeShift and the day rollover.
 // Business rule: expected cash = opening float + cash sales + cash portion of splits − cash expenses.
 function computeDrawerTotals(db, shift) {
   const salesTotal = db.prepare(
@@ -493,50 +507,178 @@ function reopenShift(shiftId) {
   return getShiftById(shiftId)
 }
 
-// Auto-close shifts left open from a previous day. A shift that survives midnight
-// otherwise keeps accumulating duration forever (the 35h/300h "runaway shift" bug)
-// and silently drops off the End of Day page, which only lists today's shifts.
-// Runs on the authoritative DB only (standalone or LAN-server mode) — satellites
-// mirror shifts from Main, so they receive these closures via delta sync.
-function closeStaleShifts() {
+// Local 23:59:59 of a 'YYYY-MM-DD', as the UTC instant to store.
+function endOfLocalDay(day) {
+  const [y, m, d] = day.split('-').map(Number)
+  return new Date(y, m - 1, d, 23, 59, 59).toISOString()
+}
+
+// Local 00:00:00 of a 'YYYY-MM-DD', as the UTC instant to store.
+function startOfLocalDay(day) {
+  const [y, m, d] = day.split('-').map(Number)
+  return new Date(y, m - 1, d, 0, 0, 0).toISOString()
+}
+
+function nextLocalDay(day) {
+  const [y, m, d] = day.split('-').map(Number)
+  return localDayStr(new Date(y, m - 1, d + 1))
+}
+
+// Recompute a shift's cached counters from the sales actually attached to it.
+// Same subqueries closeShift and reconcileOrphanedSales use, so the totals stay
+// derived one way everywhere.
+function recountShift(db, shiftId) {
+  db.prepare(
+    `UPDATE shifts SET
+       total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
+       total_sales_value = (SELECT COALESCE(SUM(total), 0) FROM sales WHERE shift_id = ? AND status = 'completed'),
+       sync_updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(shiftId, shiftId, shiftId)
+}
+
+// Closes a drawer for a day that is already over, without a physical count.
+// 'unreconciled', never 'balanced': nobody counted this money, so the variance is
+// 0 only because there was nothing to compare against.
+function closeUnreconciled(db, shift, day, note) {
+  const { salesTotal, expectedCash } = computeDrawerTotals(db, shift)
+  db.prepare(
+    `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = 0, usd_variance = 0,
+     reconciliation_status = 'unreconciled', notes = TRIM(COALESCE(notes || char(10), '') || ?),
+     closed_at = ?, status = 'closed', total_sales_value = ?,
+     total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
+     sync_updated_at = datetime('now')
+     WHERE id = ? AND status = 'open'`
+  ).run(expectedCash, note, endOfLocalDay(day), salesTotal, shift.id, shift.id)
+  db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+  return expectedCash
+}
+
+// Rolls every drawer left open from a previous day onto the current one.
+//
+// This is the fix for days going missing. Before it, a shift that survived
+// midnight simply kept running: the shifts list showed one row spanning two or
+// three dates (a real 47h 38m row exists in production), the days it swallowed had
+// no row of their own, and every report filed their takings under the date the
+// drawer opened. Auto-closing alone was not enough either — the cashier was left
+// with no drawer at all, so the next morning's sales had nowhere correct to go.
+//
+// So: close what is stale, give any day it swallowed a drawer of its own, and open
+// a continuation for today carrying the same cash forward. Trading is never
+// interrupted and no day is ever skipped.
+//
+// Idempotent. Once it has run, no open shift has a business_date before today and
+// no closed shift holds sales dated after its own day, so a second pass finds
+// nothing to do.
+function rollOverOpenShifts() {
   const db = getDb()
+  const today = localDayStr()
   const stale = db.prepare(
-    `SELECT * FROM shifts WHERE status = 'open' AND date(started_at, 'localtime') < date('now', 'localtime')`
-  ).all()
+    `SELECT * FROM shifts WHERE status = 'open'
+       AND COALESCE(business_date, date(started_at, 'localtime')) < ?`
+  ).all(today)
 
   const results = []
   for (const shift of stale) {
     try {
-      const { salesTotal, expectedCash } = computeDrawerTotals(db, shift)
-      // End the shift at 23:59:59 LOCAL of the day it started so recorded durations stay sane
-      const start = new Date(shift.started_at)
-      const closedAt = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59).toISOString()
-      // closed_at is backdated, so the delta query's closed_at check won't pick this
-      // row up — sync_updated_at = now is what propagates it to satellites.
-      //
-      // Status is 'unreconciled', NOT 'balanced': nobody counted this drawer. The
-      // recorded cash is the expected figure, so the variance is 0 by construction —
-      // calling that "balanced" made a forgotten till look like a verified one, and
-      // every report that sums variance treated it as clean.
+      const startDay = shift.business_date || localDayStr(new Date(shift.started_at))
+
+      // Days this drawer actually took money on, after the day it belongs to.
+      // Driven by the sales themselves rather than by the calendar: inventing a
+      // drawer for a day the shop never traded would be as dishonest as the
+      // merged row we are replacing.
+      const spilledDays = db.prepare(
+        `SELECT DISTINCT date(created_at, 'localtime') AS d
+           FROM sales
+          WHERE shift_id = ? AND status = 'completed'
+            AND date(created_at, 'localtime') > ?
+          ORDER BY d`
+      ).all(shift.id, startDay).map(r => r.d)
+
+      const opened = []
       db.transaction(() => {
+        // Detach everything that happened AFTER this drawer's own day before
+        // closing it. Order matters: computeDrawerTotals sums whatever is still
+        // attached, so closing first would bake the next day's takings into this
+        // day's expected cash — the exact figure the shop reconciles against.
+        // Parked to NULL for the rest of this transaction, then reattached below
+        // to the drawer for the day each sale really belongs to.
+        if (spilledDays.length > 0) {
+          db.prepare(
+            `UPDATE sales SET shift_id = NULL, sync_updated_at = datetime('now')
+              WHERE shift_id = ? AND status = 'completed'
+                AND date(created_at, 'localtime') > ?`
+          ).run(shift.id, startDay)
+        }
+
+        let carriedCash = closeUnreconciled(
+          db, shift, startDay,
+          'Auto-closed — left open overnight. Drawer was never counted, so these figures are the expected amounts, not a verified count.'
+        )
+        let previousId = shift.id
+
+        // A drawer of its own for each day the old shift swallowed, so that day
+        // stops being invisible. Past days are opened and immediately closed
+        // unreconciled — nobody counted them at the time and pretending otherwise
+        // would be worse than saying so.
+        for (const day of spilledDays.filter(d => d < today)) {
+          const cont = startShift(
+            { username: shift.cashier_username, name: shift.cashier_display_name },
+            carriedCash, shift.branch_id,
+            {
+              startedAt: startOfLocalDay(day), businessDate: day,
+              tillCode: shift.till_code, carriedFromShiftId: previousId,
+              note: `Carried over from shift #${previousId}, which was left open across midnight. Opening float is the previous drawer's expected cash, not a counted one.`,
+            }
+          )
+          // Move that day's takings onto the drawer that actually represents it.
+          db.prepare(
+            `UPDATE sales SET shift_id = ?, sync_updated_at = datetime('now')
+              WHERE shift_id IS NULL AND status = 'completed' AND cashier = ?
+                AND date(created_at, 'localtime') = ?`
+          ).run(cont.id, shift.cashier_username, day)
+
+          const reread = getShiftById(cont.id)
+          carriedCash = closeUnreconciled(
+            db, reread, day,
+            'Auto-closed — this day was traded on a drawer left open from an earlier day, and was never counted separately.'
+          )
+          previousId = cont.id
+          opened.push({ shiftId: cont.id, businessDate: day, closed: true })
+        }
+
+        // The live continuation: same cashier, same till, cash carried forward, so
+        // they can keep serving without re-counting a float mid-queue.
+        const current = startShift(
+          { username: shift.cashier_username, name: shift.cashier_display_name },
+          carriedCash, shift.branch_id,
+          {
+            startedAt: startOfLocalDay(today), businessDate: today,
+            tillCode: shift.till_code, carriedFromShiftId: previousId,
+            note: `Carried over from shift #${previousId} at midnight. Opening float is the previous drawer's expected cash and has not been physically counted — verify it at the till.`,
+          }
+        )
+        // Sales already rung up today against the old shift belong here.
         db.prepare(
-          `UPDATE shifts SET closing_cash = ?, closing_usd = 0, variance = 0, usd_variance = 0,
-           reconciliation_status = 'unreconciled', notes = ?, closed_at = ?, status = 'closed',
-           total_sales_value = ?, total_sales_count = (SELECT COUNT(*) FROM sales WHERE shift_id = ? AND status = 'completed'),
-           sync_updated_at = datetime('now')
-           WHERE id = ? AND status = 'open'`
-        ).run(expectedCash, 'Auto-closed — left open overnight. Drawer was never counted, so these figures are the expected amounts, not a verified count.', closedAt, salesTotal, shift.id, shift.id)
-        db.prepare('UPDATE users SET current_shift_id = NULL WHERE username = ?').run(shift.cashier_username)
+          `UPDATE sales SET shift_id = ?, sync_updated_at = datetime('now')
+            WHERE shift_id IS NULL AND status = 'completed' AND cashier = ?
+              AND date(created_at, 'localtime') = ?`
+        ).run(current.id, shift.cashier_username, today)
+        recountShift(db, current.id)
+        opened.push({ shiftId: current.id, businessDate: today, closed: false })
       })()
+
       try {
-        logAuditAction('system', 'SHIFT_AUTO_CLOSED', 'SHIFT', String(shift.id),
-          `Shift for ${shift.cashier_username} auto-closed (left open overnight). Recorded cash: $${expectedCash.toFixed(2)}`)
+        logAuditAction('system', 'SHIFT_ROLLED_OVER', 'SHIFT', String(shift.id),
+          `Shift for ${shift.cashier_username} was open across midnight. Closed for ${startDay} and continued as ` +
+          opened.map(o => `#${o.shiftId} (${o.businessDate})`).join(', '))
         createNotification({
           type: 'SHIFT_AUTO_CLOSED',
-          message: `⏱️ ${shift.cashier_username}'s shift from ${String(shift.started_at).slice(0, 10)} was left open overnight and has been auto-closed. Please review it in Shift Management.`,
+          message: `⏱️ ${shift.cashier_username}'s shift from ${startDay} ran past midnight. It has been closed and a new shift opened for today with the cash carried over — please count the drawer and confirm.`,
         })
       } catch (_) {}
-      results.push({ shiftId: shift.id, cashier: shift.cashier_username, success: true })
+
+      results.push({ shiftId: shift.id, cashier: shift.cashier_username, success: true, opened })
     } catch (err) {
       results.push({ shiftId: shift.id, cashier: shift.cashier_username, success: false, error: err.message })
     }
@@ -622,7 +764,7 @@ function previewOrphanedSales(shiftId) {
 }
 
 // Backfills shift_id on the matched sales and recomputes this shift's cached
-// counters — same COUNT/SUM subquery pattern closeShift/closeStaleShifts already
+// counters — same COUNT/SUM subquery pattern closeShift/rollOverOpenShifts already
 // use, so the fix is consistent with how those totals are derived everywhere else.
 // Idempotent: once a sale is relinked it no longer matches the "orphaned" query,
 // so running this again finds nothing further to do.
@@ -658,6 +800,6 @@ function reconcileOrphanedSales(shiftId) {
 module.exports = {
   startShift, updateShiftSalesForPaymentMethod, closeShift, getShiftById,
   getCurrentShift, getExistingOpenShift, getShiftsByCashier, getAllShifts,
-  getActiveShifts, getShiftSummary, closeAllOpenShifts, closeStaleShifts, reopenShift,
+  getActiveShifts, getShiftSummary, closeAllOpenShifts, rollOverOpenShifts, reopenShift,
   previewOrphanedSales, reconcileOrphanedSales,
 }

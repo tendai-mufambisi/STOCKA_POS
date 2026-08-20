@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { addExpense, getExpenses, updateExpense, deleteExpense } from '../database/db'
 import ConfirmModal from '../components/ConfirmModal'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
-import { formatDbDate } from '../utils/salesDay'
+import { formatDbDate, localDateStr } from '../utils/salesDay'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
 import { FiPlus, FiX, FiEdit2, FiTrash2, FiDollarSign, FiCalendar, FiTag, FiBriefcase } from 'react-icons/fi'
@@ -23,7 +23,7 @@ function Expenses() {
     description: '',
     amount: '',
     category: 'Other',
-    date: new Date().toISOString().split('T')[0],
+    date: localDateStr(),
     payment_method: 'Cash',
     notes: ''
   })
@@ -94,7 +94,7 @@ function Expenses() {
         description: '',
         amount: '',
         category: 'Other',
-        date: new Date().toISOString().split('T')[0],
+        date: localDateStr(),
         payment_method: 'Cash',
         notes: ''
       })
@@ -126,7 +126,7 @@ function Expenses() {
     }
   }
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = localDateStr()
   const getStats = (timeframe) => {
     let start, end = new Date()
     switch (timeframe) {
@@ -183,7 +183,7 @@ function Expenses() {
               description: '',
               amount: '',
               category: 'Other',
-              date: new Date().toISOString().split('T')[0],
+              date: localDateStr(),
               payment_method: 'Cash',
               notes: ''
             })

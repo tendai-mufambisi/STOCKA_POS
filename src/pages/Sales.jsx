@@ -55,7 +55,7 @@ function FlyParticle({ startX, startY, endX, endY, onDone }) {
 
 function Sales({ onRequestStartShift, onRequestCloseShift }) {
   const { user }         = useAuthStore()
-  const { currentShift } = useShiftStore()
+  const { currentShift, clearShift } = useShiftStore()
   const { setSaleInProgress, pendingForceClose } = useSaleStore()
 
   // ── Product & Cart state ─────────────────────────
@@ -580,6 +580,21 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     }
   }
 
+  // Main refuses a sale whose shift has already been closed (the overnight rollover,
+  // or an admin's End of Day) rather than filing it against a dead drawer — that
+  // silent mis-filing is what used to move a whole morning's takings onto the
+  // previous day. Drop the stale shift and put the cashier one keystroke from
+  // trading again; the cart, the tendered amount and any recalled hold all survive.
+  const handleSaleError = (err) => {
+    if (err?.code === 'SHIFT_NOT_OPEN') {
+      clearShift()
+      onRequestStartShift?.()
+      flash('Your shift was closed. Enter an opening float to continue — the sale is still in the cart.', 'error', 6000)
+      return
+    }
+    flash('Failed to complete sale')
+  }
+
   // Cash payment — validates tendered amount
   const handleCompleteCheckout = async () => {
     const validation = validateCurrency(checkoutCashTendered, 'Cash amount')
@@ -589,7 +604,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     setIsProcessing(true)
     try {
       await finaliseSale('Cash', tendered, Math.max(0, tendered - cartTotal))
-    } catch { flash('Failed to complete sale') }
+    } catch (err) { handleSaleError(err) }
     finally { setIsProcessing(false) }
   }
 
@@ -598,7 +613,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     setIsProcessing(true)
     try {
       await finaliseSale(method, cartTotal, 0)
-    } catch { flash('Failed to complete sale') }
+    } catch (err) { handleSaleError(err) }
     finally { setIsProcessing(false) }
   }
 
@@ -607,7 +622,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     setIsProcessing(true)
     try {
       await finaliseSale('Cash', cartTotal, 0)
-    } catch { flash('Failed to complete sale') }
+    } catch (err) { handleSaleError(err) }
     finally { setIsProcessing(false) }
   }
 
@@ -620,7 +635,7 @@ function Sales({ onRequestStartShift, onRequestCloseShift }) {
     setIsProcessing(true)
     try {
       await finaliseSale('Split', cash, 0, cash, transfer)
-    } catch { flash('Failed to complete sale') }
+    } catch (err) { handleSaleError(err) }
     finally { setIsProcessing(false) }
   }
 

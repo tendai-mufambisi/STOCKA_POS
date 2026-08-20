@@ -103,6 +103,18 @@ describe('analytics layering', () => {
     expect(src).not.toMatch(/COALESCE\(\s*\w*\.?cost_per_unit\s*,\s*0\s*\)/i)
   })
 
+  it('buckets a shift by its stamped business day, without abandoning legacy rows', () => {
+    // shiftDayExpr reads shifts.business_date, which is stamped at open. The
+    // COALESCE fallback is load-bearing: rows written before that column existed
+    // have it NULL, and simplifying this to a bare column would silently drop
+    // every one of them out of every period query.
+    const src = codeOf(path.join(ANALYTICS, 'kernel', 'time.js'))
+    const fn = src.slice(src.indexOf('function shiftDayExpr')).split('\n}')[0]
+    expect(fn).toMatch(/business_date/)
+    expect(fn).toMatch(/COALESCE/i)
+    expect(fn).toMatch(/'localtime'/)
+  })
+
   it('states the period predicate with both clauses', () => {
     // The raw comparison is what makes the index usable; the localtime
     // comparison is what makes the answer correct. Dropping either is a bug —

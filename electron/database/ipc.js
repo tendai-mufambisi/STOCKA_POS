@@ -22,6 +22,25 @@ function updateMakeHandler(mh) {
   _makeHandler = mh
 }
 
+// Push a shift event to every renderer window on this machine.
+//
+// Two channels use this, and they are deliberately NOT the same one:
+//   shift:force-closed — an admin closed your drawer; the cashier gets a modal and
+//                        is signed out.
+//   shift:changed      — the drawer moved underneath you (the midnight rollover
+//                        closed one and opened its continuation). Nobody is logged
+//                        out; the renderer just re-reads which shift is current.
+// Sending a rollover down the force-close channel would log the whole shop out at
+// midnight.
+function broadcastShiftEvent(channel, payload) {
+  try {
+    const { BrowserWindow } = require('electron')
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    })
+  } catch (_) {}
+}
+
 function wrap(fn) {
   return (event, ...args) => {
     try { return fn(...args) }
@@ -154,12 +173,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:shifts:closeAll', (event, ...args) => {
     try {
       const result = shifts.closeAllOpenShifts(...args)
-      try {
-        const { BrowserWindow } = require('electron')
-        BrowserWindow.getAllWindows().forEach(win => {
-          if (!win.isDestroyed()) win.webContents.send('shift:force-closed', { timestamp: Date.now() })
-        })
-      } catch (_) {}
+      broadcastShiftEvent('shift:force-closed', { timestamp: Date.now() })
       return result
     } catch (err) {
       return { __error: err.message }
@@ -198,6 +212,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:eod:add',       h('domain:eod:add',       eod.addEndOfDay))
   ipcMain.handle('domain:eod:getAll',    h('domain:eod:getAll',    eod.getEndOfDayRecords))
   ipcMain.handle('domain:eod:getByDate', h('domain:eod:getByDate', eod.getEndOfDayByDate))
+  ipcMain.handle('domain:eod:getUnclosed', h('domain:eod:getUnclosed', eod.getUnclosedBusinessDays))
 
   // ── BRANCHES ──
   ipcMain.handle('domain:branches:getAll',  h('domain:branches:getAll',  branches.getBranches))
@@ -232,4 +247,4 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   }
 }
 
-module.exports = { registerAll, updateMakeHandler }
+module.exports = { registerAll, updateMakeHandler, broadcastShiftEvent }

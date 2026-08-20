@@ -11,6 +11,7 @@ import {
 } from 'react-icons/fi'
 import ReceiptModal from '../components/ReceiptModal'
 import { isUnverified, shiftStatusShort, shiftStatusHint } from '../utils/shiftStatus'
+import { parseDbDate, localDateStr, formatDbTime, formatDbDate } from '../utils/salesDay'
 
 function ShiftDashboard() {
   const { user } = useAuthStore()
@@ -218,11 +219,33 @@ function ShiftDashboard() {
     }
   }
 
+  // parseDbDate, not new Date(): a row whose started_at came from the schema
+  // default is space-separated UTC, which new Date() reads as local and shifts by
+  // the timezone offset.
   const fmt = {
-    time: (d) => d ? new Date(d).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }) : '—',
-    date: (d) => d ? new Date(d).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—',
+    time: (d) => formatDbTime(d),
+    date: (d) => formatDbDate(d, { day: 'numeric', month: 'short', year: 'numeric' }),
+    // The day the drawer belongs to, as stamped at open. Falls back to started_at
+    // for rows written before that column existed.
+    day:  (shift) => shift.business_date
+      ? formatDbDate(shift.business_date, { day: 'numeric', month: 'short', year: 'numeric' })
+      : formatDbDate(shift.start_time, { day: 'numeric', month: 'short', year: 'numeric' }),
+    // A shift that ends on a later date used to render as "17:11 — 13:58", which
+    // reads as if it ran backwards. Qualify the end with its date when it differs.
+    range: (start, end) => {
+      const a = parseDbDate(start), b = parseDbDate(end)
+      if (!a || isNaN(a)) return '—'
+      if (!b || isNaN(b)) return formatDbTime(start)
+      const sameDay = localDateStr(a) === localDateStr(b)
+      return sameDay
+        ? `${formatDbTime(start)} — ${formatDbTime(end)}`
+        : `${formatDbTime(start)} → ${formatDbDate(end, { day: 'numeric', month: 'short' })} ${formatDbTime(end)}`
+    },
     dur:  (start, end) => {
-      const mins = Math.round((new Date(end || Date.now()) - new Date(start)) / 60000)
+      const a = parseDbDate(start)
+      const b = end ? parseDbDate(end) : new Date()
+      if (!a || isNaN(a) || !b || isNaN(b)) return '—'
+      const mins = Math.round((b - a) / 60000)
       if (mins < 0) return '—'
       const h = Math.floor(mins / 60), m = mins % 60
       return h === 0 ? `${m}m` : `${h}h ${m}m`
@@ -337,11 +360,8 @@ function ShiftDashboard() {
                     <div className="sd-avatar">{fmt.initials(shift.cashier_name)}</div>
                     <span className="sd-cashier-name">{shift.cashier_name}</span>
                   </div>
-                  <div className="sd-td c-date">{fmt.date(shift.start_time)}</div>
-                  <div className="sd-td c-time">
-                    {fmt.time(shift.start_time)}
-                    {shift.end_time && <> — {fmt.time(shift.end_time)}</>}
-                  </div>
+                  <div className="sd-td c-date">{fmt.day(shift)}</div>
+                  <div className="sd-td c-time">{fmt.range(shift.start_time, shift.end_time)}</div>
                   <div className="sd-td c-dur">{fmt.dur(shift.start_time, shift.end_time)}</div>
                   <div className="sd-td c-txn">{shift.total_sales_count || 0}</div>
                   <div className="sd-td c-sales">

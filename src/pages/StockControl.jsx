@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { getProducts, getSuppliers, addProduct, addSupplier, addStockReceiving, recordDirectPurchase, getAllPurchaseHistory, importStockReceivings, getLatestProductPrice, updateProduct, correctStockReceiving } from '../database/db'
 import { useAuthStore } from '../store/useAuthStore'
+// stock_receivings.date_received is a LOCAL calendar day — same reasoning as
+// expenses.date. See analytics/kernel/time.js receivingDayExpr.
+import { localDateStr } from '../utils/salesDay'
 import { useLanSync } from '../hooks/useLanSync'
 import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3, FiClock, FiWifiOff } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
@@ -119,7 +122,7 @@ function StockControl() {
   const emptyForm = {
     product_id: '',
     supplier_id: '',
-    date_received: new Date().toISOString().split('T')[0],
+    date_received: localDateStr(),
     expiry_date: '',
     cartons: '',
     units_per_carton: '',
@@ -560,10 +563,10 @@ function StockControl() {
     if (v === '' || v == null) return ''
     if (typeof v === 'number') {
       const d = new Date(Math.round((v - 25569) * 86400 * 1000))
-      return isNaN(d) ? '' : d.toISOString().split('T')[0]
+      return isNaN(d) ? '' : localDateStr(d)
     }
     const d = new Date(String(v).trim())
-    return isNaN(d) ? '' : d.toISOString().split('T')[0]
+    return isNaN(d) ? '' : localDateStr(d)
   }
 
   const downloadImportTemplate = () => {
@@ -618,7 +621,7 @@ function StockControl() {
             product_name:  name,
             purchase_type: type,
             supplier_name: String(row.supplier_name ?? '').trim(),
-            date_received: String(row.date_received ?? '').trim() || new Date().toISOString().split('T')[0],
+            date_received: String(row.date_received ?? '').trim() || localDateStr(),
             quantity:      qty,
             cost_per_unit: parseFloat(row.cost_per_unit) || 0,
             expiry_date:   toISODate(row.expiry_date),

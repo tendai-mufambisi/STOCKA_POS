@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { freshDb, disposeDb, electronModule } from './helpers/db.js'
 
-const { CURRENT_DB_VERSION, ensureIndexes } = electronModule('database/schema.js')
+const { CURRENT_DB_VERSION, ensureIndexes, runMigrations } = electronModule('database/schema.js')
 
 afterAll(disposeDb)
 
@@ -53,6 +53,33 @@ describe('schema v5+', () => {
     // Stamps a line whose cost was entered after the sale, so a report can say
     // the figure was corrected rather than presenting it as original.
     expect(cols(db, 'sale_items')).toContain('cost_backfilled_at')
+  })
+
+  it('stamps every shift with the trading day it belongs to', () => {
+    const db = freshDb()
+    expect(cols(db, 'shifts')).toEqual(
+      expect.arrayContaining(['business_date', 'carried_from_shift_id'])
+    )
+
+    // A row from before the column existed, inserted the way the old code did.
+    db.prepare(
+      `INSERT INTO shifts (cashier_username, cashier_display_name, status, opening_cash, started_at)
+       VALUES ('jane', 'Jane', 'closed', 50, '2026-08-14T06:38:00.000Z')`
+    ).run()
+    db.prepare('UPDATE shifts SET business_date = NULL').run()
+
+    runMigrations(db)
+
+    // Backfilled to the day every existing reader already filed it under, so no
+    // historical figure moves.
+    const row = db.prepare('SELECT business_date, started_at FROM shifts').get()
+    const expected = db.prepare("SELECT date(?, 'localtime')").pluck().get(row.started_at)
+    expect(row.business_date).toBe(expected)
+
+    // Idempotent: a second pass must not overwrite a stamped value.
+    db.prepare("UPDATE shifts SET business_date = '2099-01-01'").run()
+    runMigrations(db)
+    expect(db.prepare('SELECT business_date FROM shifts').pluck().get()).toBe('2099-01-01')
   })
 
   it('leaves the existing schema intact', () => {

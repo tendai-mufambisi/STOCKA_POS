@@ -214,9 +214,14 @@ function Dashboard() {
 
   // Prompt for an opening float when entering Sales without an open shift.
   // Cancelling leaves Sales in a browse-only "shift not started" state.
+  //
+  // Depends on currentShift too, so a shift that disappears while the cashier is
+  // already standing on this page (overnight rollover, an admin's End of Day)
+  // raises the prompt straight away instead of waiting for them to navigate away
+  // and back.
   useEffect(() => {
     if (activePage === 'sales' && !currentShift) setShowOpeningFloatModal(true)
-  }, [activePage])
+  }, [activePage, currentShift])
 
   // Refetch on page change too, so toggling a setting (e.g. admin sales) applies
   // as soon as the user navigates back — not only after an app restart.
@@ -329,6 +334,11 @@ function Dashboard() {
       // Someone else closed this shift first (End of Day, or the overnight sweep).
       // The count is recorded as a note for an admin, not applied — say so.
       if (result?.__alreadyClosed && !result?.__duplicate) {
+        // Drop the shift from local state even though the close "failed". It IS
+        // closed — the failure is only that the count could not be applied to it.
+        // Holding on to it was the bug that let a whole day of sales be stamped
+        // with a dead shift id, so the next day got no shift row of its own.
+        clearShift()
         setCloseShiftError(
           'This shift had already been closed by an administrator, so your count could not be applied to it. ' +
           'It has been recorded against the shift for review — tell your supervisor.'
