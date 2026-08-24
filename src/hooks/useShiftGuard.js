@@ -48,11 +48,16 @@ export function useShiftGuard() {
     try {
       const active = await getCurrentShift(user.username)
       if (!active) {
+        // "Your shift was CLOSED" only makes sense if there was one to close.
+        // Without this, a cashier who simply has not started a shift yet is told
+        // the manager ended the day and is forced to log out — then logs back in
+        // to the same modal, forever, unable to open a shift at all.
+        const hadShift = !!(shiftRef.current || shiftIdRef.current)
         if (shiftRef.current) clearShift()
-        // Only a cashier gets the "your shift was closed" logout modal; an admin
-        // just quietly loses the stale shift and is prompted for a float next time
-        // they open Sales.
-        if (user.role === 'Cashier' && !pendingRef.current) triggerForceClose()
+        shiftIdRef.current = null
+        // Only a cashier gets the logout modal; an admin just quietly loses the
+        // stale shift and is prompted for a float next time they open Sales.
+        if (hadShift && user.role === 'Cashier' && !pendingRef.current) triggerForceClose()
       } else {
         shiftIdRef.current = active.id
         // A DIFFERENT shift is open now — the overnight rollover opened a

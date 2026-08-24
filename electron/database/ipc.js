@@ -173,7 +173,12 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:shifts:closeAll', (event, ...args) => {
     try {
       const result = shifts.closeAllOpenShifts(...args)
-      broadcastShiftEvent('shift:force-closed', { timestamp: Date.now() })
+      // Only when a drawer was actually closed. Broadcasting unconditionally
+      // logged every cashier out even when End of Day closed nothing — e.g. an
+      // admin reconciling a PAST day, which by definition touches no live drawer.
+      if ((result || []).some(r => r.success)) {
+        broadcastShiftEvent('shift:force-closed', { timestamp: Date.now() })
+      }
       return result
     } catch (err) {
       return { __error: err.message }
