@@ -190,6 +190,18 @@ contextBridge.exposeInMainWorld('stocka', {
     delete: (id)     => invoke('domain:expenses:delete', id),
   },
 
+  // ── CASH MOVEMENTS ────────────────────────────────────────
+  // Money that moves for reasons no other table records — owner drawings,
+  // capital put in, cash taken to buy stock, banking the takings. Sales and
+  // expenses are not duplicated here; `position` sums them and adds this on top.
+  cash: {
+    add:      (m)          => invoke('domain:cash:add', m),
+    getAll:   (filters)    => invoke('domain:cash:getAll', filters),
+    delete:   (id, by)     => invoke('domain:cash:delete', id, by),
+    position: (range)      => invoke('domain:cash:position', range),
+    types:    ()           => invoke('domain:cash:types'),
+  },
+
   // ── USERS ─────────────────────────────────────────────────
   users: {
     getAll:        ()          => invoke('domain:users:getAll'),

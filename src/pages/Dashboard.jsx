@@ -13,6 +13,7 @@ import InventoryReconciliation from './InventoryReconciliation'
 import Suppliers from './Suppliers'
 import Sales from './Sales'
 import Expenses from './Expenses'
+import Money from './Money'
 import EndOfDay from './EndOfDay'
 import Reports from './Reports'
 import Settings from './Settings'
@@ -54,6 +55,7 @@ import {
   LuPackageMinus,
   LuCalendarClock,
   LuWallet,
+  LuBanknote,
   LuChartColumn,
   LuFileText,
   LuSunset,
@@ -97,6 +99,7 @@ const NAV_SECTIONS = [
   ]},
   { id: 'finance', label: 'Finance', items: [
     { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
+    { id: 'money',            icon: LuBanknote,       label: 'Money' },
     { id: 'business-reports', icon: LuFileText,       label: 'Business Reports' },
     { id: 'reports',          icon: LuChartColumn,    label: 'Classic Reports' },
     { id: 'endofday',         icon: LuSunset,         label: 'End of Day' },
@@ -622,6 +625,8 @@ function Dashboard() {
                />
       case 'expenses':
         return <Expenses />
+      case 'money':
+        return <Money />
       case 'reports':
         return <Reports />
       case 'cashier-sessions':

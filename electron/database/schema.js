@@ -262,6 +262,42 @@ function createTables(db) {
       created_at TEXT DEFAULT (datetime('now')),
       PRIMARY KEY (date, product_id)
     );
+
+    -- Money that moves for reasons no other table records: the owner taking
+    -- cash out or putting it in, cash taken to go and buy stock, paying a
+    -- supplier from the drawer, banking the takings.
+    --
+    -- Sales and expenses are deliberately NOT copied in here. The cash position
+    -- sums those tables and adds this ledger on top, so the two can never
+    -- disagree and no backfill is needed. See domains/cashMovements.js.
+    --
+    -- None of these affect profit: an owner drawing is profit already earned
+    -- being taken out, and cash spent on stock becomes a cost only when that
+    -- stock sells (sale_items.cost_price already carries it). The expenses table stays
+    -- the only thing deducted from profit.
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- capital_in | owner_draw | stock_purchase | supplier_payment
+      -- bank_deposit | bank_withdrawal | adjustment
+      type TEXT NOT NULL,
+      -- 'in' | 'out'. Carries the sign; amount is always positive. Stored
+      -- rather than derived so a type added later cannot flip the sign of rows
+      -- already written.
+      direction TEXT NOT NULL,
+      amount REAL NOT NULL,
+      -- Only 'Cash' moves the drawer. A drawing paid out by transfer is real
+      -- money leaving but never touches cash in hand.
+      payment_method TEXT NOT NULL DEFAULT 'Cash',
+      date TEXT NOT NULL,
+      note TEXT,
+      counterparty TEXT,
+      recorded_by TEXT NOT NULL,
+      shift_id INTEGER,
+      -- Soft delete: a hard DELETE can never reach the server, so a removed
+      -- movement would come straight back on the next pull.
+      deleted_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `)
 }
 
@@ -535,7 +571,7 @@ function runMigrations(db) {
     addColIfMissing('sale_items', 'cost_backfilled_at', 'TEXT')
 
     // Sync columns (future LAN/cloud tier)
-    const SYNC_TABLES = ['products', 'sales', 'sale_items', 'stock_movements', 'expenses', 'shifts', 'suppliers', 'users']
+    const SYNC_TABLES = ['products', 'sales', 'sale_items', 'stock_movements', 'expenses', 'shifts', 'suppliers', 'users', 'cash_movements']
     for (const table of SYNC_TABLES) {
       addColIfMissing(table, 'external_id', 'TEXT')
       addColIfMissing(table, 'sync_dirty', 'INTEGER DEFAULT 0')
@@ -614,6 +650,11 @@ const INDEXES = [
   // expenses / shifts / end_of_day / products
   `CREATE INDEX IF NOT EXISTS idx_expenses_date         ON expenses(date)`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_shift        ON expenses(shift_id)`,
+
+  // cash_movements — every cash position query filters on date, and the
+  // opening balance scans everything before a cutoff.
+  `CREATE INDEX IF NOT EXISTS idx_cash_movements_date   ON cash_movements(date)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_movements_shift  ON cash_movements(shift_id)`,
   `CREATE INDEX IF NOT EXISTS idx_shifts_started_status ON shifts(started_at, status)`,
   `CREATE INDEX IF NOT EXISTS idx_shifts_cashier        ON shifts(cashier_username, started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_shifts_business_date  ON shifts(business_date)`,

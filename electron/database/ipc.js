@@ -4,6 +4,7 @@ const suppliers    = require('./domains/suppliers')
 const stock        = require('./domains/stock')
 const sales        = require('./domains/sales')
 const expenses     = require('./domains/expenses')
+const cashMovements = require('./domains/cashMovements')
 const users        = require('./domains/users')
 const shifts       = require('./domains/shifts')
 const notifications = require('./domains/notifications')
@@ -142,6 +143,13 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:expenses:getById',h('domain:expenses:getById',expenses.getExpenseById))
   ipcMain.handle('domain:expenses:update', h('domain:expenses:update', expenses.updateExpense))
   ipcMain.handle('domain:expenses:delete', h('domain:expenses:delete', expenses.deleteExpense))
+
+  // ── CASH MOVEMENTS ──
+  ipcMain.handle('domain:cash:add',       h('domain:cash:add',       cashMovements.addCashMovement))
+  ipcMain.handle('domain:cash:getAll',    h('domain:cash:getAll',    cashMovements.getCashMovements))
+  ipcMain.handle('domain:cash:delete',    h('domain:cash:delete',    cashMovements.deleteCashMovement))
+  ipcMain.handle('domain:cash:position',  h('domain:cash:position',  cashMovements.getCashPosition))
+  ipcMain.handle('domain:cash:types',     h('domain:cash:types',     cashMovements.getMovementTypes))
 
   // ── USERS ──
   ipcMain.handle('domain:users:getAll',           h('domain:users:getAll',           users.getUsers))

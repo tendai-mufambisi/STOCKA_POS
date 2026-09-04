@@ -32,6 +32,11 @@ export const NAV_PRIVILEGES = [
   { id: 'cost-prices',      label: 'Cost Prices',       group: 'Inventory',  roles: ['Admin', 'Manager'] },
   { id: 'my-transactions',  label: 'Transactions',      group: 'Sales',      roles: ['Admin', 'Manager', 'Cashier'] },
   { id: 'expenses',         label: 'Expenses',          group: 'Finance',    roles: ['Admin', 'Manager'] },
+  // Admin-only by default, unlike the rest of Finance: this page shows what the
+  // owner has taken out of the business and lets it be recorded. That is the
+  // owner's own business, not a manager's, so it starts closed and the shop
+  // widens it deliberately rather than discovering it was open.
+  { id: 'money',            label: 'Money',             group: 'Finance',    roles: ['Admin'] },
   { id: 'business-reports', label: 'Business Reports',  group: 'Finance',    roles: ['Admin', 'Manager'] },
   { id: 'reports',          label: 'Classic Reports',   group: 'Finance',    roles: ['Admin', 'Manager'] },
   { id: 'endofday',         label: 'End of Day',        group: 'Finance',    roles: ['Admin', 'Manager'] },
