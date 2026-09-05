@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld('stocka', {
     delete:   (id, by)     => invoke('domain:cash:delete', id, by),
     position: (range)      => invoke('domain:cash:position', range),
     types:    ()           => invoke('domain:cash:types'),
+    tenders:  ()           => invoke('domain:cash:tenders'),
   },
 
   // ── USERS ─────────────────────────────────────────────────

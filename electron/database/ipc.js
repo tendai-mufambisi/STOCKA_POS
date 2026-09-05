@@ -150,6 +150,7 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   ipcMain.handle('domain:cash:delete',    h('domain:cash:delete',    cashMovements.deleteCashMovement))
   ipcMain.handle('domain:cash:position',  h('domain:cash:position',  cashMovements.getCashPosition))
   ipcMain.handle('domain:cash:types',     h('domain:cash:types',     cashMovements.getMovementTypes))
+  ipcMain.handle('domain:cash:tenders',   h('domain:cash:tenders',   cashMovements.getTenders))
 
   // ── USERS ──
   ipcMain.handle('domain:users:getAll',           h('domain:users:getAll',           users.getUsers))

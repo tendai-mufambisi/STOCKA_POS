@@ -72,6 +72,33 @@
   margin-top: 14px;
 }
 
+/* ── where the money is held ── */
+.pockets {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.pockets-title {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  opacity: 0.8;
+  margin-bottom: 8px;
+}
+
+.pocket-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+
+.pocket-row span { opacity: 0.9; }
+.pocket-row strong { white-space: nowrap; }
+.pocket-counted { font-size: 10px; opacity: 0.7; }
+
 .cash-statement {
   background: white;
   border: 1px solid #e2e8f0;

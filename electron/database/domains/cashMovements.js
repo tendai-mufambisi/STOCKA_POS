@@ -27,10 +27,46 @@
 
 const { getDb } = require('../index')
 const { logAuditAction } = require('./audit')
-const {
-  drawerAmountExpr,
-  cashExpenseSql,
-} = require('../../analytics/sql/paymentClassifier')
+const { SPLIT_METHOD } = require('../../analytics/sql/paymentClassifier')
+
+// ── Tenders: the pockets money sits in ──────────────────────────────────────
+//
+// An earlier version of this reported only the cash drawer and treated
+// everything else as a footnote. On real data that means showing a small
+// fraction of the money — EcoCash takings dwarf cash takings — so money the
+// business genuinely holds was recorded and then left out of every headline.
+// The unit is now a tender, every pocket carries a balance, and cash in hand
+// is simply the drawer's row.
+//
+// 'ZAR Cash' is its own pocket rather than part of cash in hand: it is
+// physically cash but a different currency, and adding rand to a dollar total
+// produces a meaningless number. Unrecognised values fall to 'other' so a new
+// tender appears as its own line instead of inflating the drawer.
+
+const DRAWER_METHODS = ['Cash', 'USD Cash']
+
+const TENDERS = [
+  { id: 'cash',     label: 'Cash in hand',  drawer: true,  methods: DRAWER_METHODS, matchesBlank: true },
+  { id: 'ecocash',  label: 'EcoCash',       drawer: false, methods: ['EcoCash'] },
+  { id: 'transfer', label: 'Bank transfer', drawer: false, methods: ['Transfer'] },
+  { id: 'swipe',    label: 'Card / swipe',  drawer: false, methods: ['Swipe'] },
+  { id: 'usd',      label: 'USD',           drawer: false, methods: ['USD'] },
+  { id: 'zar',      label: 'ZAR cash',      drawer: false, methods: ['ZAR Cash'] },
+  { id: 'other',    label: 'Other',         drawer: false, methods: [] },
+]
+
+const quoted = (list) => list.map(m => `'${m}'`).join(', ')
+
+/** SQL CASE mapping a payment_method column to a tender id. */
+function tenderBucketExpr(column) {
+  const branches = TENDERS.filter(t => t.methods.length).map(t => {
+    const blank = t.matchesBlank ? `${column} IS NULL OR ${column} = '' OR ` : ''
+    return `WHEN ${blank}${column} IN (${quoted(t.methods)}) THEN '${t.id}'`
+  })
+  return `CASE ${branches.join(' ')} ELSE 'other' END`
+}
+
+const emptyTenderMap = () => Object.fromEntries(TENDERS.map(t => [t.id, 0]))
 
 // `direction` is stored on each row rather than looked up here at query time,
 // so a type added later cannot retroactively flip the sign of existing rows.
@@ -39,42 +75,39 @@ const MOVEMENT_TYPES = {
   capital_in: {
     direction: 'in',
     label: 'Money put into the business',
-    hint: 'Cash the owner or an investor added to the business.',
+    hint: 'Money the owner or an investor added to the business.',
   },
   bank_withdrawal: {
     direction: 'in',
     label: 'Drawn from the bank',
-    hint: 'Cash brought from the bank or mobile money into the till.',
+    hint: 'Money moved from a bank or mobile money account into the till.',
   },
   owner_draw: {
     direction: 'out',
     label: 'Money taken by the owner',
-    hint: 'Cash the owner took out for personal use. Not an expense — it does not reduce profit.',
+    hint: 'Money the owner took out for personal use. Not an expense — it does not reduce profit.',
   },
   stock_purchase: {
     direction: 'out',
-    label: 'Cash taken to buy stock',
+    label: 'Money taken to buy stock',
     hint: 'Money taken from the business to go and order goods.',
   },
   supplier_payment: {
     direction: 'out',
     label: 'Paid a supplier',
-    hint: 'Paying a supplier directly out of the drawer.',
+    hint: 'Paying a supplier directly, out of the till or from an account.',
   },
   bank_deposit: {
     direction: 'out',
     label: 'Banked / sent out',
-    hint: 'Cash moved out of the till into a bank or mobile money account.',
+    hint: 'Money moved out of the till into a bank or mobile money account.',
   },
   adjustment: {
     direction: null,   // a correction can go either way, so the caller states it
     label: 'Correction',
-    hint: 'A correction to make the recorded cash match what is actually in the drawer.',
+    hint: 'A correction to make the recorded money match what is actually there.',
   },
 }
-
-/** Only 'Cash' movements touch the physical drawer. NULL/'' means cash. */
-const CASH_MOVEMENT_SQL = `(m.payment_method = 'Cash' OR m.payment_method IS NULL OR m.payment_method = '')`
 
 /**
  * Resolve a movement's direction, or null when the type is unknown or a
@@ -183,9 +216,8 @@ function deleteCashMovement(id, deletedBy) {
 
   return true
 }
-
 /**
- * The components of the cash position over one window.
+ * Balances per tender over one window, plus the movement that produced them.
  *
  * `from` may be null, meaning "everything up to `to`" — that is how the opening
  * balance is taken.
@@ -194,6 +226,10 @@ function deleteCashMovement(id, deletedBy) {
  * because that is what each table means by "when the money moved". Sales use
  * date(created_at,'localtime') to match the rest of the reporting engine: a
  * sale at 9pm belongs to that shop's day, not to UTC's.
+ *
+ * There is deliberately no refunds term: unlike the server, this database has
+ * no refunds table — a refund voids the sale, which drops it out of the status
+ * filter, so the money is already accounted for.
  */
 function cashComponents(db, from, to) {
   const saleWindow = from
@@ -204,98 +240,161 @@ function cashComponents(db, from, to) {
     : `${alias}.date <= ?`
   const params = from ? [from, to] : [to]
 
-  const sales = db.prepare(`
-    SELECT COALESCE(SUM(${drawerAmountExpr('s')}), 0) AS cash_sales,
-           COALESCE(SUM(s.total), 0)                  AS all_sales
+  // Non-split sales bucket straight off payment_method. A Split sale is handled
+  // separately below because it lands in two pockets at once, and summing its
+  // `total` into either one would double-count half the sale.
+  const sales = emptyTenderMap()
+  for (const r of db.prepare(`
+    SELECT ${tenderBucketExpr('s.payment_method')} AS tender,
+           COALESCE(SUM(s.total), 0) AS amount
     FROM sales s
-    WHERE s.status IN ('completed', 'refunded') AND ${saleWindow}
-  `).get(...params)
+    WHERE s.status IN ('completed', 'refunded')
+      AND (s.payment_method IS NULL OR s.payment_method != '${SPLIT_METHOD}')
+      AND ${saleWindow}
+    GROUP BY 1
+  `).all(...params)) {
+    sales[r.tender] = (sales[r.tender] || 0) + r.amount
+  }
 
-  const expenses = db.prepare(`
-    SELECT COALESCE(SUM(CASE WHEN ${cashExpenseSql('e')} THEN e.amount ELSE 0 END), 0) AS cash_expenses,
-           COALESCE(SUM(e.amount), 0)                                                  AS all_expenses
+  const split = db.prepare(`
+    SELECT COALESCE(SUM(s.cash_amount), 0) AS cash,
+           COALESCE(SUM(s.usd_amount), 0)  AS usd
+    FROM sales s
+    WHERE s.status IN ('completed', 'refunded')
+      AND s.payment_method = '${SPLIT_METHOD}'
+      AND ${saleWindow}
+  `).get(...params)
+  sales.cash += split.cash
+  sales.usd  += split.usd
+
+  const expenses = emptyTenderMap()
+  for (const r of db.prepare(`
+    SELECT ${tenderBucketExpr('e.payment_method')} AS tender,
+           COALESCE(SUM(e.amount), 0) AS amount
     FROM expenses e
     WHERE ${dateWindow('e')}
-  `).get(...params)
+    GROUP BY 1
+  `).all(...params)) {
+    expenses[r.tender] = (expenses[r.tender] || 0) + r.amount
+  }
 
-  const byType = db.prepare(`
+  const moveRows = db.prepare(`
     SELECT m.type,
            m.direction,
+           ${tenderBucketExpr('m.payment_method')} AS tender,
            COUNT(*)                   AS count,
-           COALESCE(SUM(m.amount), 0) AS total,
-           COALESCE(SUM(CASE WHEN ${CASH_MOVEMENT_SQL} THEN m.amount ELSE 0 END), 0) AS cash_total
+           COALESCE(SUM(m.amount), 0) AS amount
     FROM cash_movements m
     WHERE m.deleted_at IS NULL AND ${dateWindow('m')}
-    GROUP BY m.type, m.direction
-  `).all(...params).map(r => ({
-    ...r,
-    label: (MOVEMENT_TYPES[r.type] || {}).label || r.type,
-  }))
+    GROUP BY 1, 2, 3
+  `).all(...params)
 
-  const sumCash = (dir) => byType
-    .filter(t => t.direction === dir)
-    .reduce((n, t) => n + t.cash_total, 0)
+  const moneyIn  = emptyTenderMap()
+  const moneyOut = emptyTenderMap()
+  for (const r of moveRows) {
+    const target = r.direction === 'in' ? moneyIn : moneyOut
+    target[r.tender] = (target[r.tender] || 0) + r.amount
+  }
 
-  const moneyIn  = sumCash('in')
-  const moneyOut = sumCash('out')
+  // One balance per pocket. A pocket with no activity still reports 0 rather
+  // than going missing, so the breakdown always adds up to the total.
+  const balances = emptyTenderMap()
+  for (const id of Object.keys(balances)) {
+    balances[id] = (sales[id] || 0) - (expenses[id] || 0) + (moneyIn[id] || 0) - (moneyOut[id] || 0)
+  }
+
+  const sum = (m) => Object.values(m).reduce((n, v) => n + v, 0)
+
+  // Movements grouped by reason across all pockets — what the money went on,
+  // independent of which pocket it left.
+  const byTypeMap = new Map()
+  for (const r of moveRows) {
+    const key = `${r.type}|${r.direction}`
+    const hit = byTypeMap.get(key) || {
+      type: r.type,
+      direction: r.direction,
+      label: (MOVEMENT_TYPES[r.type] || {}).label || r.type,
+      count: 0,
+      total: 0,
+    }
+    hit.count += r.count
+    hit.total += r.amount
+    byTypeMap.set(key, hit)
+  }
 
   return {
-    cash_sales:    sales.cash_sales,
-    cash_expenses: expenses.cash_expenses,
-    money_in:      moneyIn,
-    money_out:     moneyOut,
-    net:           sales.cash_sales - expenses.cash_expenses + moneyIn - moneyOut,
-    all_sales:     sales.all_sales,
-    all_expenses:  expenses.all_expenses,
-    by_type:       byType,
+    sales, expenses, money_in: moneyIn, money_out: moneyOut, balances,
+    totals: {
+      sales:     sum(sales),
+      expenses:  sum(expenses),
+      money_in:  sum(moneyIn),
+      money_out: sum(moneyOut),
+      net:       sum(balances),
+    },
+    by_type: [...byTypeMap.values()],
   }
 }
 
 /**
- * Cash in hand, plus the movement over `from`..`to` that explains it.
+ * What the business holds, which pocket it is in, and the movement over
+ * `from`..`to` that explains it.
  *
- *   cash in hand = cash sales − cash expenses + movements in − movements out
+ *   balance = sales - expenses + movements in - movements out
  *
- * summed over all time up to `to`. Everything before `from` is folded into an
- * opening balance so the window reads as a statement the owner can follow top
- * to bottom: opened with X, took in Y, paid out Z, therefore holding W.
- *
- * Note there is no refunds term. Unlike the server, the desktop database has no
- * refunds table — a refund here voids the sale, which drops it out of the
- * status filter above, so the money is already accounted for.
+ * summed over all time up to `to`, per pocket. Everything before `from` folds
+ * into an opening balance so the window reads as a statement the owner can
+ * follow top to bottom: opened with X, took in Y, paid out Z, holding W.
  */
 function getCashPosition({ from, to } = {}) {
   const db = getDb()
   const end   = to   || new Date().toISOString().slice(0, 10)
   const start = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
-
   const dayBefore = new Date(new Date(start).getTime() - 86400000).toISOString().slice(0, 10)
 
   const opening = cashComponents(db, null, dayBefore)
   const period  = cashComponents(db, start, end)
 
+  const byTender = TENDERS.map(t => ({
+    id: t.id,
+    label: t.label,
+    drawer: !!t.drawer,
+    opening:   opening.balances[t.id] || 0,
+    sales:     period.sales[t.id] || 0,
+    expenses:  period.expenses[t.id] || 0,
+    money_in:  period.money_in[t.id] || 0,
+    money_out: period.money_out[t.id] || 0,
+    balance:   (opening.balances[t.id] || 0) + (period.balances[t.id] || 0),
+  }))
+
+  const drawer = byTender.find(t => t.drawer)
+
   return {
     period: { from: start, to: end },
-    opening_balance: opening.net,
-    cash_in_hand: opening.net + period.net,
+    opening_balance: opening.totals.net,
+    total_money: byTender.reduce((n, t) => n + t.balance, 0),
+    // The drawer's own balance, kept as its own field because it is the one
+    // figure that gets physically counted and signed off every evening.
+    cash_in_hand: drawer ? drawer.balance : 0,
     movement: {
-      cash_sales:    period.cash_sales,
-      cash_expenses: period.cash_expenses,
-      money_in:      period.money_in,
-      money_out:     period.money_out,
-      net:           period.net,
+      sales:     period.totals.sales,
+      expenses:  period.totals.expenses,
+      money_in:  period.totals.money_in,
+      money_out: period.totals.money_out,
+      net:       period.totals.net,
     },
+    by_tender: byTender,
     by_type: period.by_type,
-    // Context for the owner: trade that never touched the drawer, so a low cash
-    // figure next to strong sales reads as "it went to EcoCash" rather than
-    // "money is missing".
-    non_cash_sales:    period.all_sales - period.cash_sales,
-    non_cash_expenses: period.all_expenses - period.cash_expenses,
   }
+}
+
+function getTenders() {
+  return TENDERS.map(t => ({ id: t.id, label: t.label, drawer: !!t.drawer }))
 }
 
 module.exports = {
   MOVEMENT_TYPES,
+  TENDERS,
+  getTenders,
   getMovementTypes,
   resolveDirection,
   addCashMovement,

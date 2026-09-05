@@ -72,10 +72,25 @@ describe('cash position', () => {
 
   afterAll(() => disposeDb())
 
-  it('starts a shop with no cash rather than an undefined balance', () => {
+  it('starts a shop with no money rather than an undefined balance', () => {
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
+    expect(pos.total_money).toBe(0)
     expect(pos.cash_in_hand).toBe(0)
     expect(pos.opening_balance).toBe(0)
+  })
+
+  // The parts must always add up to the headline. If a pocket is dropped or
+  // double counted the owner is shown a total that nothing explains.
+  it('always has its pockets sum exactly to the total', () => {
+    const pid = stockedProduct()
+    sellOn(dayOffset(-1), pid, 100, 'Cash')
+    sellOn(dayOffset(-1), pid, 250, 'EcoCash')
+    record('owner_draw', 40, dayOffset(-1), { payment_method: 'EcoCash' })
+    record('capital_in', 60, dayOffset(-1), { payment_method: 'Transfer' })
+
+    const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
+    const summed = pos.by_tender.reduce((n, t) => n + t.balance, 0)
+    expect(summed).toBeCloseTo(pos.total_money, 6)
   })
 
   it('adds cash sales and subtracts cash expenses', () => {
@@ -87,8 +102,9 @@ describe('cash position', () => {
     })
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
-    expect(pos.movement.cash_sales).toBe(100)
-    expect(pos.movement.cash_expenses).toBe(30)
+    expect(pos.movement.sales).toBe(100)
+    expect(pos.movement.expenses).toBe(30)
+    expect(pos.total_money).toBe(70)
     expect(pos.cash_in_hand).toBe(70)
   })
 
@@ -102,6 +118,7 @@ describe('cash position', () => {
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
     expect(pos.movement.money_out).toBe(50)
     expect(pos.movement.money_in).toBe(20)
+    expect(pos.total_money).toBe(170)
     expect(pos.cash_in_hand).toBe(170)
   })
 
@@ -111,38 +128,60 @@ describe('cash position', () => {
     record('stock_purchase', 120, dayOffset(-1), { counterparty: 'Mai Rudo Wholesalers' })
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
-    expect(pos.cash_in_hand).toBe(180)
+    expect(pos.total_money).toBe(180)
 
     const byType = pos.by_type.find(t => t.type === 'stock_purchase')
     expect(byType.direction).toBe('out')
     expect(byType.total).toBe(120)
   })
 
-  it('records a non-cash movement without moving cash in hand', () => {
+  // The defect this model was rebuilt to fix. Money taken out by EcoCash left
+  // the business, so it must reduce what the business has. The earlier version
+  // counted only the drawer, so this drawing vanished from every headline.
+  it('counts money taken out by EcoCash against the EcoCash pocket', () => {
     const pid = stockedProduct()
-    sellOn(dayOffset(-1), pid, 100)
+    sellOn(dayOffset(-1), pid, 100, 'Cash')
+    sellOn(dayOffset(-1), pid, 300, 'EcoCash')
 
-    // A drawing paid out by bank transfer is real money leaving the business
-    // but it never passes through the till, so cash in hand must not move.
-    record('owner_draw', 40, dayOffset(-1), { payment_method: 'Transfer' })
+    record('owner_draw', 40, dayOffset(-1), { payment_method: 'EcoCash' })
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
-    expect(pos.cash_in_hand).toBe(100)
-    expect(pos.movement.money_out).toBe(0)
-    // Still on the record, just not in the drawer total.
-    expect(pos.by_type.find(t => t.type === 'owner_draw').total).toBe(40)
+    const byId = Object.fromEntries(pos.by_tender.map(t => [t.id, t]))
+
+    // It comes off EcoCash, not the drawer...
+    expect(byId.ecocash.balance).toBe(260)
+    expect(byId.cash.balance).toBe(100)
+    // ...and it genuinely reduces the business's money.
+    expect(pos.total_money).toBe(360)
+    expect(pos.movement.money_out).toBe(40)
   })
 
-  it('leaves electronic sales out of cash in hand and says so', () => {
+  it('keeps electronic takings in the total, in their own pocket', () => {
     const pid = stockedProduct()
     sellOn(dayOffset(-1), pid, 80, 'Cash')
     sellOn(dayOffset(-1), pid, 150, 'EcoCash')
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
+    const byId = Object.fromEntries(pos.by_tender.map(t => [t.id, t]))
+
     expect(pos.cash_in_hand).toBe(80)
-    // The owner needs to see that the missing 150 went to EcoCash rather than
-    // wonder where it went.
-    expect(pos.non_cash_sales).toBe(150)
+    expect(byId.ecocash.balance).toBe(150)
+    // The whole 230 is the business's money — none of it is a footnote.
+    expect(pos.total_money).toBe(230)
+  })
+
+  it('keeps foreign-currency cash out of the drawer total', () => {
+    const pid = stockedProduct()
+    sellOn(dayOffset(-1), pid, 50, 'Cash')
+    sellOn(dayOffset(-1), pid, 20, 'ZAR Cash')
+
+    const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
+    const byId = Object.fromEntries(pos.by_tender.map(t => [t.id, t]))
+
+    // Rand is physically cash but not dollars; folding it into cash in hand
+    // would report a drawer figure the shop could never count to.
+    expect(pos.cash_in_hand).toBe(50)
+    expect(byId.zar.balance).toBe(20)
   })
 
   it('carries everything before the window into the opening balance', () => {
@@ -153,8 +192,8 @@ describe('cash position', () => {
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
     expect(pos.opening_balance).toBe(400)
-    expect(pos.movement.cash_sales).toBe(60)
-    expect(pos.cash_in_hand).toBe(460)
+    expect(pos.movement.sales).toBe(60)
+    expect(pos.total_money).toBe(460)
   })
 
   it('reports a negative position rather than hiding an overdrawn till', () => {
@@ -163,7 +202,7 @@ describe('cash position', () => {
     record('owner_draw', 200, dayOffset(-1))
 
     const pos = cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) })
-    expect(pos.cash_in_hand).toBe(-150)
+    expect(pos.total_money).toBe(-150)
   })
 
   it('drops a deleted movement out of the position but keeps the row', () => {
@@ -171,11 +210,11 @@ describe('cash position', () => {
     sellOn(dayOffset(-1), pid, 100)
     const { id } = record('owner_draw', 40, dayOffset(-1))
 
-    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).cash_in_hand).toBe(60)
+    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).total_money).toBe(60)
 
     cash.deleteCashMovement(id, 'owner')
 
-    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).cash_in_hand).toBe(100)
+    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).total_money).toBe(100)
     expect(cash.getCashMovements({})).toHaveLength(0)
     // Soft delete: the row survives so the removal can reach other devices.
     expect(db.prepare('SELECT COUNT(*) FROM cash_movements').pluck().get()).toBe(1)
@@ -227,8 +266,8 @@ describe('the ledger never touches profit', () => {
     record('owner_draw', 200, dayOffset(-1))
     record('stock_purchase', 150, dayOffset(-1))
 
-    // Cash reflects all of it...
-    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).cash_in_hand).toBe(50)
+    // The money position reflects all of it...
+    expect(cash.getCashPosition({ from: dayOffset(-7), to: dayOffset(0) }).total_money).toBe(50)
 
     // ...but the expense ledger — the only thing that reduces profit — sees
     // only the rent.

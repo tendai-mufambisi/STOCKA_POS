@@ -12,7 +12,7 @@ import './Money.css'
 
 const money = (n) => `$${(Number(n) || 0).toFixed(2)}`
 
-const PAYMENT_METHODS = ['Cash', 'Transfer', 'EcoCash', 'Swipe', 'USD']
+const PAYMENT_METHODS = ['Cash', 'EcoCash', 'Transfer', 'Swipe', 'USD']
 
 function monthStart() {
   const d = new Date()
@@ -113,6 +113,11 @@ function Money() {
   }
 
   const mv = position?.movement
+  // Pockets worth showing: anything holding money, anything that moved this
+  // period, and the drawer always — an owner expects cash in hand even at zero.
+  const pockets = (position?.by_tender || []).filter(t =>
+    t.drawer || t.balance !== 0 || t.sales || t.expenses || t.money_in || t.money_out
+  )
   const inTypes    = types.filter(t => t.direction === 'in')
   const outTypes   = types.filter(t => t.direction === 'out')
   const otherTypes = types.filter(t => !t.direction)
@@ -125,14 +130,25 @@ function Money() {
 
       <div className="money-top">
         <div className="cash-hero">
-          <div className="cash-hero-label">Cash in hand</div>
-          <div className={`cash-hero-value ${position?.cash_in_hand < 0 ? 'negative' : ''}`}>
-            {position ? money(position.cash_in_hand) : '—'}
+          <div className="cash-hero-label">Total money</div>
+          <div className={`cash-hero-value ${position?.total_money < 0 ? 'negative' : ''}`}>
+            {position ? money(position.total_money) : '—'}
           </div>
           <div className="cash-hero-sub">as at {formatDbDate(to)}</div>
-          <div className="cash-hero-note">
-            Physical cash only. Money taken by transfer, swipe or EcoCash is
-            counted separately.
+
+          {/* Every pocket, including empty ones, so the parts always add up to
+              the figure above and no money the business holds is left out. */}
+          <div className="pockets">
+            <div className="pockets-title">WHERE IT IS HELD</div>
+            {pockets.map(t => (
+              <div key={t.id} className="pocket-row">
+                <span>
+                  {t.label}
+                  {t.drawer && <span className="pocket-counted"> · counted</span>}
+                </span>
+                <strong>{money(t.balance)}</strong>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -144,21 +160,13 @@ function Money() {
             <>
               <StatementRow label="Opening balance" hint="Everything before this period"
                 amount={position.opening_balance} muted />
-              <StatementRow label="Cash sales"      sign="+" amount={mv.cash_sales} />
-              <StatementRow label="Cash expenses"   sign="−" amount={mv.cash_expenses} />
+              <StatementRow label="Sales"           sign="+" amount={mv.sales} />
+              <StatementRow label="Expenses"        sign="−" amount={mv.expenses} />
               <StatementRow label="Money brought in" sign="+" amount={mv.money_in}
-                hint="Capital added, cash drawn from the bank" />
+                hint="Capital added, money drawn from the bank" />
               <StatementRow label="Money taken out"  sign="−" amount={mv.money_out}
                 hint="Owner drawings, stock buying, suppliers, banking" />
-              <StatementRow label="Cash in hand" amount={position.cash_in_hand} strong />
-
-              {(position.non_cash_sales > 0 || position.non_cash_expenses > 0) && (
-                <div className="cash-noncash">
-                  Not part of cash in hand: <strong>{money(position.non_cash_sales)}</strong> of sales
-                  {position.non_cash_expenses > 0 && <> and <strong>{money(position.non_cash_expenses)}</strong> of expenses</>}
-                  {' '}went through transfer, swipe or EcoCash rather than the drawer.
-                </div>
-              )}
+              <StatementRow label="Total money" amount={position.total_money} strong />
             </>
           )}
         </div>
@@ -237,7 +245,10 @@ function Money() {
                 onChange={e => setFormData(f => ({ ...f, payment_method: e.target.value }))}>
                 {PAYMENT_METHODS.map(p => <option key={p}>{p}</option>)}
               </select>
-              <div className="field-hint">Only Cash changes your cash in hand.</div>
+              <div className="field-hint">
+                Which pocket the money moves from. It counts either way — this
+                only decides whether it comes off your cash, EcoCash or bank.
+              </div>
             </div>
 
             <div className="form-group">
@@ -321,7 +332,7 @@ function Money() {
       {confirmDelete && (
         <ConfirmModal
           message="Delete this movement?"
-          detail={`${confirmDelete.label} of ${money(confirmDelete.amount)} will be removed from your cash position.`}
+          detail={`${confirmDelete.label} of ${money(confirmDelete.amount)} will be removed from your money position.`}
           confirmLabel="Delete"
           danger
           onConfirm={handleConfirmDelete}
