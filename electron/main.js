@@ -43,6 +43,8 @@ let mainWindow = null
 function createWindow() {
   logger.info('📦 Creating BrowserWindow')
   
+  // Only the restore size — what the window returns to if somebody un-maximizes it.
+  // The window itself always opens maximized (see ready-to-show below).
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 750,
@@ -91,6 +93,7 @@ function createWindow() {
   // Show window when ready to avoid white flash
   mainWindow.once('ready-to-show', () => {
     logger.info('✅ Window ready to show.....')
+    mainWindow.maximize()
     mainWindow.show()
 
   })
