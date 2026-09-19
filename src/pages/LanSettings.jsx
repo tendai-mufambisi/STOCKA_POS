@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import './LanSettings.css'
+import { toast } from '../store/useToastStore'
+import { FiEdit2, FiServer, FiMonitor, FiWifi } from 'react-icons/fi'
 
 const MODES = {
   standalone: { label: 'Standalone', desc: 'Single computer, no network sharing (default).' },
@@ -20,12 +22,17 @@ export default function LanSettings() {
   const [config, setConfig]       = useState(null)
   const [status, setStatus]       = useState(null)
   const [mode, setMode]           = useState('standalone')
+  // The role this computer actually has, as saved. `mode` is the working copy
+  // that only changes while "Change role" is open — so a stray click on a radio
+  // button can no longer look like the computer changed role.
+  const [savedMode, setSavedMode]         = useState('standalone')
+  const [savedPort, setSavedPort]         = useState('7821')
+  const [roleEditing, setRoleEditing]     = useState(false)
   const [serverIp, setServerIp]   = useState('')
   const [serverPort, setServerPort] = useState(7821)
   const [discovering, setDiscover] = useState(false)
   const [discovered, setDiscovered] = useState([])
   const [saving, setSaving]       = useState(false)
-  const [msg, setMsg]             = useState(null) // { type: 'ok'|'err', text }
   const [failureLog, setFailureLog] = useState([])
   const [clockSkew, setClockSkew]   = useState(null) // { skewMs, serverTime } | null
   const [clearingQueue, setClearingQueue] = useState(false)
@@ -53,6 +60,8 @@ export default function LanSettings() {
       setConfig(cfg)
       setStatus(st)
       setMode(cfg.mode || 'standalone')
+      setSavedMode(cfg.mode || 'standalone')
+      if (cfg.serverPort) setSavedPort(String(cfg.serverPort))
       setServerIp(cfg.serverIp || '')
       setServerPort(cfg.serverPort || 7821)
     } catch (_) {}
@@ -88,12 +97,12 @@ export default function LanSettings() {
       const res = await window.stocka.till.setLabel(tillLabelInput.trim())
       if (res?.success) {
         setTillIdentity(res.identity)
-        setMsg({ type: 'ok', text: 'Till name saved.' })
+        toast.success('Till name saved.')
       } else {
-        setMsg({ type: 'err', text: res?.error || 'Failed to save till name.' })
+        toast.error(res?.error || 'Failed to save till name.')
       }
     } catch (e) {
-      setMsg({ type: 'err', text: e.message || 'Failed to save till name.' })
+      toast.error(e.message || 'Failed to save till name.')
     } finally {
       setSavingLabel(false)
     }
@@ -113,16 +122,20 @@ export default function LanSettings() {
   const handleSave = async () => {
     if (!lan) return
     setSaving(true)
-    setMsg(null)
     try {
       const res = await lan.saveConfig({ mode, serverIp: serverIp.trim() || null, serverPort: parseInt(serverPort) || 7821 })
       if (res?.ok) {
         setStatus(res.status)
-        setMsg({ type: 'ok', text: mode === 'server' ? 'Server starting — other computers can now connect.'
-          : 'Switched to standalone mode.' })
+        setSavedMode(mode)
+        setSavedPort(String(serverPort))
+        setRoleEditing(false)
+        toast.success(mode === 'server' ? 'This is now the Main computer' : 'This computer now works on its own',
+          { detail: mode === 'server' ? 'Other computers in the shop can connect to it.' : 'It no longer shares data with other tills.' })
+      } else {
+        toast.error(res?.error || 'The change was not applied')
       }
     } catch (e) {
-      setMsg({ type: 'err', text: e.message || 'Failed to save settings.' })
+      toast.error(e.message || 'Failed to save settings.')
     } finally {
       setSaving(false)
     }
@@ -135,9 +148,9 @@ export default function LanSettings() {
     try {
       const res = await lan.discover()
       setDiscovered(res?.servers || [])
-      if (!res?.servers?.length) setMsg({ type: 'err', text: 'No Main computers found on the network. Make sure the Main computer is running in Server mode.' })
+      if (!res?.servers?.length) toast.error('No Main computers found on the network. Make sure the Main computer is running in Server mode.')
     } catch (e) {
-      setMsg({ type: 'err', text: 'Discovery failed: ' + e.message })
+      toast.error('Discovery failed: ' + e.message)
     } finally {
       setDiscover(false)
     }
@@ -147,9 +160,9 @@ export default function LanSettings() {
     if (!lan) return
     try {
       await lan.syncNow()
-      setMsg({ type: 'ok', text: 'Sync complete.' })
+      toast.success('Sync complete.')
     } catch (e) {
-      setMsg({ type: 'err', text: 'Sync failed: ' + e.message })
+      toast.error('Sync failed: ' + e.message)
     }
   }
 
@@ -163,10 +176,9 @@ export default function LanSettings() {
 
   const handlePairAndConnect = async () => {
     if (!lan) return
-    if (!serverIp.trim()) { setMsg({ type: 'err', text: "Enter the Main computer's IP address." }); return }
-    if (pairCode.trim().length !== 6) { setMsg({ type: 'err', text: 'Enter the 6-digit pairing code shown on the Main computer.' }); return }
+    if (!serverIp.trim()) { toast.error("Enter the Main computer's IP address."); return }
+    if (pairCode.trim().length !== 6) { toast.error('Enter the 6-digit pairing code shown on the Main computer.'); return }
     setPairing(true)
-    setMsg(null)
     try {
       const res = await lan.pairAndConnect({
         serverIp: serverIp.trim(),
@@ -177,12 +189,14 @@ export default function LanSettings() {
         setStatus(res.status)
         setPairCode('')
         await loadStatus()
-        setMsg({ type: 'ok', text: `Paired with "${res.shopName}". All data has been mirrored to this computer.` })
+        setSavedMode('client')
+        setRoleEditing(false)
+        toast.success(`Paired with "${res.shopName}". All data has been mirrored to this computer.`)
       } else {
-        setMsg({ type: 'err', text: res?.error || 'Pairing failed.' })
+        toast.error(res?.error || 'Pairing failed.')
       }
     } catch (e) {
-      setMsg({ type: 'err', text: e.message || 'Pairing failed.' })
+      toast.error(e.message || 'Pairing failed.')
     } finally {
       setPairing(false)
     }
@@ -195,9 +209,9 @@ export default function LanSettings() {
     try {
       await lan.clearQueue()
       await loadStatus()
-      setMsg({ type: 'ok', text: 'Offline queue cleared.' })
+      toast.success('Offline queue cleared.')
     } catch (e) {
-      setMsg({ type: 'err', text: 'Failed to clear queue: ' + e.message })
+      toast.error('Failed to clear queue: ' + e.message)
     } finally {
       setClearingQueue(false)
     }
@@ -206,17 +220,16 @@ export default function LanSettings() {
   const handleForceResync = async () => {
     if (!lan) return
     setResyncing(true)
-    setMsg(null)
     try {
       const res = await lan.forceResync()
       if (res?.ok) {
         setStatus(res.status)
-        setMsg({ type: 'ok', text: 'Full resync complete — local data now mirrors the Main computer exactly.' })
+        toast.success('Full resync complete — local data now mirrors the Main computer exactly.')
       } else {
-        setMsg({ type: 'err', text: res?.error || 'Resync failed.' })
+        toast.error(res?.error || 'Resync failed.')
       }
     } catch (e) {
-      setMsg({ type: 'err', text: e.message || 'Resync failed.' })
+      toast.error(e.message || 'Resync failed.')
     } finally {
       setResyncing(false)
     }
@@ -259,7 +272,6 @@ export default function LanSettings() {
         </div>
       )}
 
-      {msg && <div className={`lan-msg ${msg.type}`}>{msg.text}</div>}
 
       {clockSkew && (
         <div className="lan-msg err">
@@ -270,27 +282,50 @@ export default function LanSettings() {
         </div>
       )}
 
-      {/* Mode selector */}
+      {/* Computer role — shown as what it is, changed only on purpose. */}
       <div className="lan-section">
         <label className="lan-section-label">Computer Role</label>
-        <div className="lan-modes">
-          {Object.entries(MODES).map(([key, { label, desc }]) => (
-            <label key={key} className={`lan-mode-item${mode === key ? ' active' : ''}`}>
-              <input
-                type="radio"
-                name="lan-mode"
-                value={key}
-                checked={mode === key}
-                onChange={() => setMode(key)}
-                className="lan-mode-radio"
-              />
-              <div>
-                <div className="lan-mode-title">{label}</div>
-                <div className="lan-mode-desc">{desc}</div>
-              </div>
-            </label>
-          ))}
-        </div>
+
+        {!roleEditing ? (
+          <div className="lan-role-card">
+            <span className="lan-role-icon">
+              {savedMode === 'server' ? <FiServer size={18} /> : savedMode === 'client' ? <FiWifi size={18} /> : <FiMonitor size={18} />}
+            </span>
+            <div className="lan-role-words">
+              <div className="lan-role-title">{MODES[savedMode]?.label}</div>
+              <div className="lan-role-desc">{MODES[savedMode]?.desc}</div>
+            </div>
+            <button type="button" className="ss-edit-btn" onClick={() => setRoleEditing(true)}>
+              <FiEdit2 size={13} /> Change role
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="lan-modes">
+              {Object.entries(MODES).map(([key, { label, desc }]) => (
+                <label key={key} className={`lan-mode-item${mode === key ? ' active' : ''}`}>
+                  <input
+                    type="radio"
+                    name="lan-mode"
+                    value={key}
+                    checked={mode === key}
+                    onChange={() => setMode(key)}
+                    className="lan-mode-radio"
+                  />
+                  <div>
+                    <div className="lan-mode-title">{label}</div>
+                    <div className="lan-mode-desc">{desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            {mode === 'client' && savedMode !== 'client' && (
+              <p className="lan-role-note">
+                To make this a satellite till, pair it with the Main computer below — pairing is what saves the change.
+              </p>
+            )}
+          </>
+        )}
       </div>
 
       {/* SERVER mode details */}
@@ -349,6 +384,7 @@ export default function LanSettings() {
               min={1024}
               max={65535}
               className="lan-port-input"
+              disabled={!roleEditing}
             />
           </div>
 
@@ -478,10 +514,22 @@ export default function LanSettings() {
         </div>
       )}
 
-      {mode !== 'client' && (
-        <button className="lan-save-btn" onClick={handleSave} disabled={saving}>
-          {saving ? 'Applying...' : 'Save & Apply'}
-        </button>
+      {roleEditing && (
+        <div className="lan-edit-actions">
+          <button
+            type="button"
+            className="smodal-btn"
+            onClick={() => { setMode(savedMode); setServerPort(savedPort); setRoleEditing(false) }}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          {mode !== 'client' && (
+            <button type="button" className="smodal-btn smodal-btn-primary" onClick={handleSave} disabled={saving}>
+              {saving ? 'Applying...' : 'Save & Apply'}
+            </button>
+          )}
+        </div>
       )}
 
       {failureLog.length > 0 && (

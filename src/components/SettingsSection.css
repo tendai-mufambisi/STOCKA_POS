@@ -1,0 +1,139 @@
+/* Read-only settings, with an Edit button. */
+
+.ss-card { transition: box-shadow 0.25s, border-color 0.25s; }
+
+/* While editing, the card makes itself obviously the live one. */
+.ss-card.is-editing {
+  border-color: #86efac;
+  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.08), 0 10px 28px -16px rgba(22, 101, 52, 0.35);
+}
+
+.ss-edit-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 15px;
+  border-radius: 9px;
+  border: 1.5px solid var(--slate-300);
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--slate-600);
+  cursor: pointer;
+  transition: border-color 0.14s, color 0.14s, transform 0.14s, box-shadow 0.14s;
+}
+
+.ss-edit-btn:hover:not(:disabled) {
+  border-color: #16a34a;
+  color: #15803d;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -8px rgba(22, 101, 52, 0.5);
+}
+
+.ss-edit-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ss-editing-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #15803d;
+  background: #dcfce7;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.ss-body { display: grid; gap: 14px; }
+
+/* The two states swap in place; a short fade reads as the same card changing mode
+   rather than the page jumping. */
+.ss-body { animation: ss-in 0.2s ease; }
+
+@keyframes ss-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Read-only rows ── */
+
+.ss-view { gap: 0; }
+
+.ss-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--slate-100);
+}
+
+.ss-row:last-child { border-bottom: none; }
+
+.ss-row-label { font-size: 13px; color: var(--slate-500); }
+
+.ss-row-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--slate-900);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ss-row-value.is-empty { color: var(--slate-400); font-weight: 500; font-style: italic; }
+
+.ss-row-hint { font-size: 12px; font-weight: 400; color: var(--slate-400); font-style: normal; }
+
+.ss-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--slate-100);
+}
+
+/* Chip list, for things like which pages a role can open. */
+.ss-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.ss-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+}
+
+.ss-chip.is-off {
+  background: var(--slate-50);
+  border-color: var(--slate-200);
+  color: var(--slate-400);
+  text-decoration: line-through;
+}
+
+@media (max-width: 620px) {
+  .ss-row { grid-template-columns: 1fr; gap: 3px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ss-body { animation: none; }
+  .ss-edit-btn:hover:not(:disabled) { transform: none; }
+}
+
+/* A narrower column for short forms like the PIN, which look lost at full width. */
+.ss-narrow { display: grid; gap: 14px; max-width: 420px; }
+
+/* An action that needs no Edit first, like printing a test receipt. */
+.ss-inline-action { padding-top: 14px; }
+
+/* The printer name box and its Find button, side by side. */
+.s-printer-input-row { display: flex; gap: 10px; align-items: flex-start; }
+.s-printer-input-row .s-printer-field { flex: 1 1 auto; }
+.s-printer-input-row > .smodal-btn { min-height: 52px; }

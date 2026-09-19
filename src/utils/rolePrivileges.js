@@ -14,36 +14,39 @@
 
 export const CONFIGURABLE_ROLES = ['Manager', 'Cashier']
 
+// Groups in the order the sidebar shows them.
+export const NAV_GROUPS = ['Main', 'Every day', 'Stock', 'Money & Reports']
+
 export const NAV_PRIVILEGES = [
-  { id: 'dashboard',        label: 'Dashboard',         group: 'Main',       roles: ['Admin', 'Manager', 'Cashier'], locked: true },
-  { id: 'products',         label: 'Products',          group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'inventory',        label: 'Current Inventory', group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'reconciliation',   label: 'Reconciliation',    group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'stock',            label: 'Receive Stock',     group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'suppliers',        label: 'Suppliers',         group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'restock',          label: 'Restock Needed',    group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'deadstock',        label: 'Dead Stock',        group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'expiry',           label: 'Expiry Tracking',   group: 'Inventory',  roles: ['Admin', 'Manager'] },
+  { id: 'dashboard',       label: 'Home',              group: 'Main',            roles: ['Admin', 'Manager', 'Cashier'], locked: true },
+  { id: 'stock',           label: 'Receive Stock',     group: 'Every day',       roles: ['Admin', 'Manager'] },
+  { id: 'expenses',        label: 'Expenses',          group: 'Every day',       roles: ['Admin', 'Manager'] },
+  { id: 'cashier-sessions', label: 'Cashiers & Shifts — on the till now', group: 'Every day',       roles: ['Admin', 'Manager'] },
+  { id: 'shifts',          label: 'Cashiers & Shifts — all shifts', group: 'Every day',       roles: ['Admin', 'Manager'] },
+  { id: 'endofday',        label: 'End of Day',        group: 'Every day',       roles: ['Admin', 'Manager'] },
+  { id: 'my-transactions', label: 'Sales History',     group: 'Every day',       roles: ['Admin', 'Manager', 'Cashier'] },
+  { id: 'products',        label: 'Products',          group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'inventory',       label: 'Stock Levels',      group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'suppliers',       label: 'Suppliers',         group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'cost-prices',     label: 'Cost Prices',       group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'restock',         label: 'Restock Needed',    group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'reconciliation',  label: 'Stock Count',       group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'expiry',          label: 'Expiry Dates',      group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'deadstock',       label: 'Dead Stock',        group: 'Stock',           roles: ['Admin', 'Manager'] },
   // Off for cashiers by default. Letting the person who broke something write it
   // off themselves gets breakages recorded honestly and promptly, and makes
   // breakage indistinguishable from theft — the shop's call, not ours, so it is
   // a tick box here rather than a fixed rule.
-  { id: 'losses',           label: 'Breakages & Losses', group: 'Inventory', roles: ['Admin', 'Manager'] },
-  { id: 'cost-prices',      label: 'Cost Prices',       group: 'Inventory',  roles: ['Admin', 'Manager'] },
-  { id: 'my-transactions',  label: 'Transactions',      group: 'Sales',      roles: ['Admin', 'Manager', 'Cashier'] },
-  { id: 'expenses',         label: 'Expenses',          group: 'Finance',    roles: ['Admin', 'Manager'] },
+  { id: 'losses',          label: 'Breakages & Losses', group: 'Stock',           roles: ['Admin', 'Manager'] },
+  { id: 'business-reports', label: 'Business Reports',  group: 'Money & Reports', roles: ['Admin', 'Manager'] },
+  { id: 'reports',         label: 'Classic Reports',   group: 'Money & Reports', roles: ['Admin', 'Manager'] },
   // Admin-only by default, unlike the rest of Finance: this page shows what the
   // owner has taken out of the business and lets it be recorded. That is the
   // owner's own business, not a manager's, so it starts closed and the shop
   // widens it deliberately rather than discovering it was open.
-  { id: 'money',            label: 'Money',             group: 'Finance',    roles: ['Admin'] },
-  { id: 'business-reports', label: 'Business Reports',  group: 'Finance',    roles: ['Admin', 'Manager'] },
-  { id: 'reports',          label: 'Classic Reports',   group: 'Finance',    roles: ['Admin', 'Manager'] },
-  { id: 'endofday',         label: 'End of Day',        group: 'Finance',    roles: ['Admin', 'Manager'] },
-  { id: 'shifts',           label: 'Shift Management',  group: 'Finance',    roles: ['Admin', 'Manager'] },
-  { id: 'cashier-sessions', label: 'Cashier Sessions',  group: 'Finance',    roles: ['Admin', 'Manager'] },
-  { id: 'activitylogs',     label: 'Activity Logs',     group: 'Operations', roles: ['Admin', 'Manager'] },
-  { id: 'settings',         label: 'Settings',          group: 'Operations', roles: ['Admin', 'Manager', 'Cashier'], locked: true },
+  { id: 'money',           label: 'Money',             group: 'Money & Reports', roles: ['Admin'] },
+  { id: 'activitylogs',    label: 'Activity Logs',     group: 'Money & Reports', roles: ['Admin', 'Manager'] },
+  { id: 'settings',        label: 'Settings',          group: 'Main',            roles: ['Admin', 'Manager', 'Cashier'], locked: true },
 ]
 
 const normalizeRole = (role) => {

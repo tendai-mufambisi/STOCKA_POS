@@ -31,50 +31,6 @@
   margin: 0;
 }
 
-/* ── Notifications ──────────────────────────────────── */
-.settings-alert {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 16px;
-  border-radius: 10px;
-  margin: 0 32px 12px;
-  font-size: 13.5px;
-  font-weight: 500;
-  flex-shrink: 0;
-  animation: s-fadein 0.22s ease;
-}
-
-.settings-alert.error {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #b91c1c;
-}
-
-.settings-alert.success {
-  background: #f0fdf4;
-  border: 1px solid #bbf7d0;
-  color: #15803d;
-}
-
-.settings-alert-close {
-  margin-left: auto;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: inherit;
-  opacity: 0.6;
-  padding: 2px;
-  display: flex;
-  border-radius: 4px;
-}
-.settings-alert-close:hover { opacity: 1; }
-
-@keyframes s-fadein {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
 /* ── Two-column layout ────────────────────────────── */
 .settings-body {
   display: flex;
@@ -753,7 +709,6 @@
 /* ── Utility modifiers ────────────────────────────── */
 .s-loading--page { margin-top: 80px; }
 
-.settings-alert span { flex: 1; }
 
 .s-table-date-cell { color: #94a3b8; font-size: 13px; }
 

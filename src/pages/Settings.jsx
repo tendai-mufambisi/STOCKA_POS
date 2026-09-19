@@ -1,24 +1,52 @@
 import { useState, useEffect } from 'react'
 import {
-  getShop, updateShop, getUsers, addUser, updateUser, deactivateUser,
-  getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile, getBackupState,
-  listBackupDrives, setBackupDrive, forgetBackupDrive, backupToDriveNow, onBackupDriveChange,
-  exportOffsiteBackup, recordOffsiteCopy, forgetOffsiteRecord, restoreFromBackupFile
+  getShop, updateShop, getUsers, addUser, updateUser, deactivateUser
 } from '../database/db'
 import { validatePin } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
 import { useAuthStore } from '../store/useAuthStore'
 import { useLanSync } from '../hooks/useLanSync'
-import { NAV_PRIVILEGES, CONFIGURABLE_ROLES, parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
+import { NAV_PRIVILEGES, NAV_GROUPS, CONFIGURABLE_ROLES, parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
 import LanSettings from './LanSettings'
+import { toast } from '../store/useToastStore'
+import BackupsPanel from '../components/BackupsPanel'
+import Modal from '../components/Modal'
+import ConfirmModal from '../components/ConfirmModal'
+import Field from '../components/Field'
+import { SettingsSection, InfoRow } from '../components/SettingsSection'
 import './Settings.css'
 import {
   FiShoppingBag, FiUsers, FiPrinter, FiShield, FiFileText,
   FiSliders, FiMonitor, FiHardDrive, FiWifi, FiSave, FiRefreshCw,
   FiZap, FiUserPlus, FiKey, FiUserX, FiDownload, FiUpload,
-  FiAlertCircle, FiCheckCircle, FiX, FiCheck, FiLock,
+  FiAlertCircle, FiX, FiCheck, FiLock,
   FiEye, FiEyeOff, FiCopy, FiAlertTriangle
 } from 'react-icons/fi'
+
+// Read-only views show these instead of raw stored values.
+const CURRENCY_NAMES = {
+  USD: 'US Dollar (USD)',
+  ZWL: 'Zimbabwe Dollar (ZWL)',
+  EUR: 'Euro (EUR)',
+  GBP: 'British Pound (GBP)',
+}
+
+const RECEIPT_WIDTHS = [
+  { value: 58, title: '58 mm', sub: 'Narrow roll · 32 characters wide' },
+  { value: 80, title: '80 mm', sub: 'Wide roll · 42 characters wide' },
+]
+
+const RECEIPT_NAME_SIZES = [
+  { value: 'large',  title: 'Large', sub: 'Double size, shrinks if the name is long' },
+  { value: 'medium', title: 'Medium', sub: 'Tall but normal width, always fits' },
+  { value: 'normal', title: 'Normal', sub: 'Same size as the rest, always one line' },
+]
+
+const ROLE_HINTS = {
+  Cashier: 'Sells and sees their own transactions.',
+  Manager: 'Runs the shop day to day: stock, money, reports.',
+  Admin: 'Everything, including staff and settings.',
+}
 
 // initialTab lets another screen send the user somewhere specific — the backup
 // health strip on the dashboard opens this straight on Backups, because landing
@@ -31,8 +59,6 @@ function Settings({ initialTab }) {
 
   const [activeTab, setActiveTab] = useState(initialTab || (isCashier ? 'password' : 'shop'))
   const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState('')
-  const [success, setSuccess]   = useState('')
 
   const [formData, setFormData] = useState({
     name: '', address: '', phone: '', email: '', currency: 'USD',
@@ -55,19 +81,7 @@ function Settings({ initialTab }) {
   const [availablePrinters, setAvailablePrinters] = useState([])
   const [scanningPrinters, setScanningPrinters]   = useState(false)
   const [testingPrinter, setTestingPrinter]       = useState(false)
-  const [printStatus, setPrintStatus]             = useState('')
 
-  const [backups, setBackups]           = useState([])
-  const [backupState, setBackupState]   = useState(null)
-  const [drives, setDrives]             = useState([])
-  const [loadingDrives, setLoadingDrives] = useState(false)
-  const [settingDrive, setSettingDrive] = useState(false)
-  const [externalBusy, setExternalBusy] = useState(false)
-  const [exporting, setExporting]       = useState(false)
-  const [lastExport, setLastExport]     = useState(null)   // { filename, path }
-  const [offsiteWhere, setOffsiteWhere] = useState('')
-  const [creatingBackup, setCreatingBackup]   = useState(false)
-  const [restoringBackup, setRestoringBackup] = useState(false)
 
   const [systemInfo, setSystemInfo]         = useState(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
@@ -78,6 +92,9 @@ function Settings({ initialTab }) {
   const [resetPin, setResetPin]                 = useState('')
   const [resetting, setResetting]               = useState(false)
   const [resetResult, setResetResult]           = useState(null) // { totalRemoved, backupFilename }
+  // Bumped after a reset so the Backups panel re-reads its list — the reset takes a
+  // pre-reset safety copy the owner is about to be told the name of.
+  const [backupsRefresh, setBackupsRefresh]     = useState(0)
 
   // License key reveal
   const [licenseReveal, setLicenseReveal]         = useState('hidden') // 'hidden' | 'pin' | 'revealed'
@@ -86,33 +103,38 @@ function Settings({ initialTab }) {
   const [licenseRevealError, setLicenseRevealError] = useState('')
   const [licenseCountdown, setLicenseCountdown]   = useState(30)
 
+  // ── Read-only / edit ──
+  // One section editable at a time. Shop details, receipt and business rules all
+  // save the same shop record, so letting two be half-edited at once would mean
+  // saving one silently saved the other's unfinished changes.
+  const [editing, setEditing]               = useState(null)
+  const [savedData, setSavedData]           = useState(null)   // what is actually saved
+  const [savedRolePrivs, setSavedRolePrivs] = useState({})
+  const [sectionSaving, setSectionSaving]   = useState(false)
+  const [secErrors, setSecErrors]           = useState({})
+  const [attempt, setAttempt]               = useState(0)
+  const [pendingTab, setPendingTab]         = useState(null)   // tab waiting on "discard changes?"
+  const [userErrors, setUserErrors]         = useState({})
+
   // Reload users whenever another LAN machine creates/updates an account
   useLanSync(() => { if (isAdmin) loadUsers() })
 
   // ── Load on mount ───────────────────────────────────
   useEffect(() => {
     loadSettings()
-    if (isAdmin) { loadUsers(); loadBackups() }
+    if (isAdmin) loadUsers()
   }, [isAdmin])
 
   useEffect(() => {
     if (activeTab === 'system') loadSystemInfo()
   }, [activeTab])
 
-  // Plugging the drive in is the whole interaction, so the screen has to answer to
-  // the drive rather than to a refresh button. The main process copies and verifies
-  // on its own; this only re-reads the result.
-  useEffect(() => {
-    if (!isAdmin) return
-    return onBackupDriveChange(() => loadBackups())
-  }, [isAdmin])
-
   // ── Loaders ──────────────────────────────────────────
   const loadSettings = async () => {
     try {
       const shop = await getShop()
       if (shop) {
-        setFormData({
+        const loaded = {
           id: shop.id || '',
           name: shop.name || '',
           address: shop.address || '',
@@ -131,20 +153,19 @@ function Settings({ initialTab }) {
           variance_tolerance: shop.variance_tolerance !== undefined ? shop.variance_tolerance : 0.01,
           allow_admin_sales: shop.allow_admin_sales ? 1 : 0,
           role_privileges: shop.role_privileges || null
-        })
-        setRolePrivs(parseRolePrivileges(shop.role_privileges))
+        }
+        const privs = parseRolePrivileges(shop.role_privileges)
+        setFormData(loaded)
+        setSavedData(loaded)
+        setRolePrivs(privs)
+        setSavedRolePrivs(privs)
       }
       setLoading(false)
-    } catch { setError('Failed to load settings'); setLoading(false) }
+    } catch { toast.error('Failed to load settings'); setLoading(false) }
   }
 
   const loadUsers = async () => {
     try { setUsers(await getUsers()) } catch { /* silent */ }
-  }
-
-  const loadBackups = async () => {
-    try { setBackups(await getBackupHistory()) } catch { /* silent */ }
-    try { setBackupState(await getBackupState()) } catch { /* silent */ }
   }
 
   const loadSystemInfo = async () => {
@@ -166,20 +187,74 @@ function Settings({ initialTab }) {
   }
 
   // ── Helpers ───────────────────────────────────────────
-  const flash = (type, msg) => {
-    if (type === 'success') { setSuccess(msg); setError('') }
-    else { setError(msg); setSuccess('') }
-    setTimeout(() => type === 'success' ? setSuccess('') : setError(''), 5000)
-  }
+  // Kept as a function with the same shape so every existing call site — and
+  // BackupsPanel, which takes it as a prop — needed no change. It used to push a
+  // banner into the top of the document, where a message triggered from the bottom
+  // of a scrolled page was simply never seen.
+  const flash = (type, msg) => (type === 'success' ? toast.success(msg) : toast.error(msg))
 
   // ── Handlers ─────────────────────────────────────────
-  const handleSaveShop = async (e) => {
+  const startEdit = (key) => {
+    setSecErrors({})
+    setEditing(key)
+  }
+
+  // Cancel puts everything back exactly as it was saved.
+  const cancelEdit = () => {
+    if (savedData) setFormData(savedData)
+    setRolePrivs(savedRolePrivs)
+    setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
+    setAvailablePrinters([])
+    setSecErrors({})
+    setEditing(null)
+  }
+
+  // Leaving a tab mid-edit asks first — otherwise the half-made changes would still
+  // be sitting in the form and the next section's Save would write them.
+  const goToTab = (tab) => {
+    if (editing && tab !== activeTab) { setPendingTab(tab); return }
+    setActiveTab(tab)
+  }
+
+  const failSection = (errs) => {
+    setSecErrors(errs)
+    setAttempt(n => n + 1)
+    requestAnimationFrame(() => document.querySelector('.ss-card.is-editing [aria-invalid="true"]')?.focus())
+  }
+
+  const SECTION_SAVED = {
+    shop: 'Shop details saved',
+    receipt: 'Receipt settings saved',
+    business: 'Business rules saved',
+  }
+
+  // Shop, receipt and business rules share one record, so one save for all three —
+  // each with its own confirmation, so it is clear which one just went through.
+  const saveSection = (key) => async (e) => {
     e.preventDefault()
-    if (!formData.name.trim()) { flash('error', 'Shop name is required'); return }
+    if (key === 'shop' && !formData.name.trim()) { failSection({ name: 'Your shop needs a name' }); return }
+    if (key === 'business') {
+      const errs = {}
+      const vat = Number(formData.vat_rate)
+      if (!Number.isFinite(vat) || vat < 0 || vat > 100) errs.vat_rate = 'Between 0 and 100'
+      if (!(Number(formData.default_reorder_level) >= 1)) errs.default_reorder_level = 'At least 1'
+      if (!(Number(formData.variance_tolerance) >= 0)) errs.variance_tolerance = '0 or more'
+      if (Object.keys(errs).length) { failSection(errs); return }
+    }
+    setSectionSaving(true)
     try {
-      await updateShop(formData.id, formData)
-      flash('success', 'Settings saved successfully')
-    } catch { flash('error', 'Failed to save settings') }
+      const next = { ...formData, name: formData.name.trim() }
+      await updateShop(next.id, next)
+      setFormData(next)
+      setSavedData(next)
+      setEditing(null)
+      setSecErrors({})
+      toast.success(SECTION_SAVED[key] || 'Saved')
+    } catch {
+      toast.error('Could not save — nothing was changed')
+    } finally {
+      setSectionSaving(false)
+    }
   }
 
   // Flip one tab's visibility for the role being edited. Stored as an
@@ -191,18 +266,28 @@ function Settings({ initialTab }) {
 
   const handleSavePrivileges = async (e) => {
     e.preventDefault()
+    setSectionSaving(true)
     try {
       const json = JSON.stringify(rolePrivs)
-      await updateShop(formData.id, { ...formData, role_privileges: json })
-      setFormData(f => ({ ...f, role_privileges: json }))
-      flash('success', 'Role privileges saved — applies when users next navigate or sign in')
-    } catch { flash('error', 'Failed to save role privileges') }
+      const next = { ...(savedData || formData), role_privileges: json }
+      await updateShop(formData.id, next)
+      setFormData(next)
+      setSavedData(next)
+      setSavedRolePrivs(rolePrivs)
+      setEditing(null)
+      toast.success('Role privileges saved', { detail: 'They apply the next time each person moves between pages or signs in.' })
+    } catch {
+      toast.error('Could not save role privileges')
+    } finally {
+      setSectionSaving(false)
+    }
   }
 
   // Printer settings are always saved locally — each machine has its own printer.
   // Uses domain:shop:updatePrinter which is never proxied to the LAN server.
   const handleSavePrinter = async (e) => {
     e.preventDefault()
+    setSectionSaving(true)
     try {
       await window.stocka.shop.updatePrinter({
         printer_name:    formData.printer_name,
@@ -211,8 +296,15 @@ function Settings({ initialTab }) {
         print_duplicate: formData.print_duplicate,
         receipt_width_mm: formData.receipt_width_mm,
       })
-      flash('success', 'Printer settings saved')
-    } catch { flash('error', 'Failed to save printer settings') }
+      setSavedData(formData)
+      setEditing(null)
+      setAvailablePrinters([])
+      toast.success('Printer settings saved', { detail: formData.printer_name ? `Printing to ${formData.printer_name}` : undefined })
+    } catch {
+      toast.error('Could not save printer settings')
+    } finally {
+      setSectionSaving(false)
+    }
   }
 
   // Danger zone: wipe transactional history, keep products/users/settings.
@@ -228,7 +320,7 @@ function Settings({ initialTab }) {
       setResetResult(res)
       setResetConfirmText('')
       setResetPin('')
-      loadBackups()
+      setBackupsRefresh((n) => n + 1)
       flash('success', `Reset complete — ${res.totalRemoved} record${res.totalRemoved !== 1 ? 's' : ''} removed. Backup saved first: ${res.backupFilename}`)
     } catch (e) {
       flash('error', 'Reset failed: ' + e.message)
@@ -239,44 +331,76 @@ function Settings({ initialTab }) {
 
   const handleChangePassword = async (e) => {
     e.preventDefault()
-    if (!passwordForm.currentPassword) { flash('error', 'Current PIN is required'); return }
+    const errs = {}
+    if (!passwordForm.currentPassword) errs.currentPassword = 'Enter the PIN you use now'
     const pv = validatePin(passwordForm.newPassword)
-    if (!pv.isValid) { flash('error', pv.message); return }
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) { flash('error', 'PINs do not match'); return }
+    if (!pv.isValid) errs.newPassword = pv.message
+    else if (passwordForm.newPassword !== passwordForm.confirmPassword) errs.confirmPassword = 'This does not match the new PIN'
+    if (Object.keys(errs).length) { failSection(errs); return }
+    setSectionSaving(true)
     try {
       await updateUser(user.id, { password: passwordForm.newPassword, currentPassword: passwordForm.currentPassword })
-      flash('success', 'PIN updated successfully')
       setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
-    } catch { flash('error', 'Failed to change PIN — check your current PIN') }
+      setEditing(null)
+      toast.success('Your PIN has been changed', { detail: 'Use the new one next time you sign in.' })
+    } catch {
+      // The one failure here that is really about a single box.
+      failSection({ currentPassword: 'That is not your current PIN' })
+    } finally {
+      setSectionSaving(false)
+    }
+  }
+
+  const failUser = (errs) => {
+    setUserErrors(errs)
+    setAttempt(n => n + 1)
+    requestAnimationFrame(() => document.querySelector('.smodal [aria-invalid="true"]')?.focus())
+  }
+
+  const openAddUser = () => {
+    setNewUserForm({ username: '', password: '', confirmPassword: '', role: 'Cashier' })
+    setUserErrors({})
+    setShowNewUserForm(true)
   }
 
   const handleAddUser = async (e) => {
     e.preventDefault()
-    if (!newUserForm.username.trim()) { flash('error', 'Username is required'); return }
+    const errs = {}
+    const name = newUserForm.username.trim()
+    if (!name) errs.username = 'Give them a name to sign in with'
+    else if (users.some(u => u.username.toLowerCase() === name.toLowerCase())) errs.username = 'Someone already uses that name'
     const pv = validatePin(newUserForm.password)
-    if (!pv.isValid) { flash('error', pv.message); return }
-    if (newUserForm.password !== newUserForm.confirmPassword) { flash('error', 'PINs do not match'); return }
+    if (!pv.isValid) errs.password = pv.message
+    else if (newUserForm.password !== newUserForm.confirmPassword) errs.confirmPassword = 'This does not match the PIN'
+    if (Object.keys(errs).length) { failUser(errs); return }
     try {
-      await addUser({ username: newUserForm.username, password: newUserForm.password, role: newUserForm.role, created_by: user.username })
-      flash('success', `User "${newUserForm.username}" created`)
+      await addUser({ username: name, password: newUserForm.password, role: newUserForm.role, created_by: user.username })
       setNewUserForm({ username: '', password: '', confirmPassword: '', role: 'Cashier' })
       setShowNewUserForm(false)
       loadUsers()
-    } catch { flash('error', 'Failed to add user — username may already exist') }
+      toast.success(`${name} can now sign in`, { detail: `Added as ${newUserForm.role}` })
+    } catch {
+      failUser({ username: 'Could not add them — that name may already be taken' })
+    }
   }
 
   const handleResetPassword = async (e) => {
     e.preventDefault()
+    const errs = {}
     const pv = validatePin(resetPasswordForm.newPassword)
-    if (!pv.isValid) { flash('error', pv.message); return }
-    if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) { flash('error', 'PINs do not match'); return }
+    if (!pv.isValid) errs.newPassword = pv.message
+    else if (resetPasswordForm.newPassword !== resetPasswordForm.confirmPassword) errs.confirmPassword = 'This does not match the new PIN'
+    if (Object.keys(errs).length) { failUser(errs); return }
+    const who = users.find(u => u.id === resetPasswordUserId)?.username || 'Their'
     try {
       await updateUser(resetPasswordUserId, { password: resetPasswordForm.newPassword })
-      flash('success', 'PIN reset successfully')
       setResetPasswordUserId(null)
       setResetPasswordForm({ newPassword: '', confirmPassword: '' })
       loadUsers()
-    } catch { flash('error', 'Failed to reset PIN') }
+      toast.success(`${who}'s PIN has been reset`, { detail: 'Tell them the new one in person.' })
+    } catch {
+      toast.error('Could not reset that PIN')
+    }
   }
 
   const handleDeactivateUser = async (userId) => {
@@ -295,13 +419,12 @@ function Settings({ initialTab }) {
   const handleScanPrinters = async () => {
     if (!canUseNativePrinter()) { flash('error', 'Printer scanning only available in desktop app'); return }
     setScanningPrinters(true)
-    setError(''); setPrintStatus('')
     try {
       const result = await window.stocka.printer.scan()
       if (result.success) {
         setAvailablePrinters(result.printers)
         if (result.printers.length === 0) flash('error', 'No printers found. Check that your printer is connected and powered on.')
-        else setPrintStatus(`Found ${result.printers.length} printer(s)`)
+        else toast.info(`Found ${result.printers.length} printer${result.printers.length === 1 ? '' : 's'}`, { detail: 'Pick yours from the list.' })
       } else flash('error', result.error || 'Failed to scan for printers')
     } catch (err) { flash('error', 'Printer scan failed: ' + err.message) }
     finally { setScanningPrinters(false) }
@@ -310,161 +433,13 @@ function Settings({ initialTab }) {
   const handleTestPrint = async () => {
     if (!canUseNativePrinter()) { flash('error', 'Printer test only available in desktop app'); return }
     if (!formData.printer_name?.trim()) { flash('error', 'Select a printer first'); return }
-    setTestingPrinter(true); setPrintStatus('')
+    setTestingPrinter(true)
     try {
       const result = await window.stocka.printer.testByName(formData.printer_name)
-      if (result.success) setPrintStatus(`✓ Test page sent to "${formData.printer_name}"`)
+      if (result.success) toast.success('Test receipt sent', { detail: `Check ${formData.printer_name} for a printed page.` })
       else flash('error', `Test print failed: ${result.error || 'Unknown error'}`)
     } catch (err) { flash('error', 'Test print failed: ' + err.message) }
     finally { setTestingPrinter(false) }
-  }
-
-  // Shorthand — the external and off-site sections read these on nearly every line.
-  const ext = backupState?.external
-  const offsite = backupState?.offsite
-
-  const loadDrives = async () => {
-    setLoadingDrives(true)
-    try { setDrives(await listBackupDrives()) }
-    catch (err) { flash('error', 'Could not list drives: ' + err.message) }
-    finally { setLoadingDrives(false) }
-  }
-
-  const handleSetDrive = async (drive) => {
-    setSettingDrive(true)
-    try {
-      const res = await setBackupDrive(drive.letter, `${drive.label} (${drive.letter})`)
-      if (!res?.success) { flash('error', res?.error || 'Could not set up this drive'); return }
-      // Setup runs a copy immediately, so say what actually happened rather than
-      // promising a backup that may not have worked.
-      if (res.backup?.success) flash('success', 'Backup drive set up. A checked copy is on the drive now.')
-      else flash('error', 'Drive set up, but the first copy failed: ' + (res.backup?.error || 'unknown error'))
-      loadBackups()
-    } catch (err) { flash('error', 'Could not set up this drive: ' + err.message) }
-    finally { setSettingDrive(false) }
-  }
-
-  const handleForgetDrive = async () => {
-    if (!confirm(
-      'Stop using this backup drive?\n\n' +
-      'The backups already on the drive are left exactly where they are. ' +
-      'Stocka simply stops copying to it.'
-    )) return
-    try {
-      await forgetBackupDrive()
-      setDrives([])
-      loadBackups()
-      flash('success', 'Stocka will no longer copy to that drive.')
-    } catch (err) { flash('error', 'Could not forget the drive: ' + err.message) }
-  }
-
-  const handleExternalNow = async () => {
-    setExternalBusy(true)
-    try {
-      const res = await backupToDriveNow()
-      if (res?.success) flash('success', 'Copy made to the drive and checked.')
-      else if (res?.skipped) flash('error', 'The backup drive is not connected.')
-      else flash('error', res?.error || 'Could not copy to the drive')
-      loadBackups()
-    } catch (err) { flash('error', 'Could not copy to the drive: ' + err.message) }
-    finally { setExternalBusy(false) }
-  }
-
-  // ── Off-site copy ──
-  // Stocka writes the file; a person takes it somewhere else. The two steps are
-  // deliberately separate, because only the first one is something Stocka can
-  // actually vouch for.
-  const handleExportOffsite = async () => {
-    setExporting(true)
-    try {
-      const res = await exportOffsiteBackup()
-      if (res?.canceled) return
-      if (res?.success) {
-        setLastExport({ filename: res.filename, path: res.path })
-        flash('success', `Copy saved and checked: ${res.filename}`)
-      } else {
-        flash('error', res?.error || 'Could not save the copy')
-      }
-    } catch (err) { flash('error', 'Could not save the copy: ' + err.message) }
-    finally { setExporting(false) }
-  }
-
-  const handleRecordOffsite = async () => {
-    try {
-      await recordOffsiteCopy({ where: offsiteWhere.trim() || null, filename: lastExport?.filename || null })
-      setOffsiteWhere('')
-      loadBackups()
-      flash('success', 'Noted. Stocka has recorded that you kept a copy outside the shop.')
-    } catch (err) { flash('error', 'Could not record that: ' + err.message) }
-  }
-
-  const handleForgetOffsite = async () => {
-    try { await forgetOffsiteRecord(); loadBackups() }
-    catch (err) { flash('error', err.message) }
-  }
-
-  const handleRestoreFromFile = async () => {
-    if (!confirm(
-      'Restore from a backup file?\n\n' +
-      'Your current records will be replaced by whatever is in the file you choose. ' +
-      'A copy of your current records is saved first, so this can be undone.'
-    )) return
-    setRestoringBackup(true)
-    try {
-      const res = await restoreFromBackupFile()
-      if (res?.canceled) return
-      if (res?.success) {
-        flash('success', `Records restored from ${res.restored}. Your previous records were saved as ${res.safetyCopy}. Reloading…`)
-        setTimeout(() => window.location.reload(), 3000)
-      } else {
-        flash('error', res?.error || 'Restore failed')
-      }
-    } catch (err) { flash('error', 'Restore failed: ' + err.message) }
-    finally { setRestoringBackup(false) }
-  }
-
-  const handleCreateBackup = async () => {
-    setCreatingBackup(true)
-    try {
-      const result = await createDatabaseBackup()
-      // "Created and checked" — the engine deletes any copy that fails its
-      // integrity check, so reaching success here means the file was read back.
-      if (result?.success) { flash('success', 'Backup created and checked.'); loadBackups() }
-      else flash('error', result?.error || 'Failed to create backup')
-    } catch (err) { flash('error', 'Backup failed: ' + err.message) }
-    finally { setCreatingBackup(false) }
-  }
-
-  const handleRestoreBackup = async (key) => {
-    if (!confirm(
-      'Restore this backup?\n\n' +
-      'Your current records will be replaced by the state saved in this backup. ' +
-      'Anything recorded since then — sales, stock, expenses — will no longer be in Stocka.\n\n' +
-      'A copy of your current records is saved first, so this can be undone.'
-    )) return
-    setRestoringBackup(true)
-    try {
-      const result = await restoreFromBackup(key)
-      if (result?.success) {
-        flash('success', `Records restored. Your previous records were saved as ${result.safetyCopy}. Reloading…`)
-        setTimeout(() => window.location.reload(), 3000)
-      } else {
-        flash('error', result?.error || 'Restore failed')
-        loadBackups()
-      }
-    } catch (err) { flash('error', 'Restore failed: ' + err.message) }
-    finally { setRestoringBackup(false) }
-  }
-
-  const handleExportBackup = async (key) => {
-    try {
-      const json = await exportBackupAsFile(key)
-      const a = document.createElement('a')
-      a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(json)
-      a.download = `stocka-backup-${key}.json`
-      document.body.appendChild(a); a.click(); document.body.removeChild(a)
-      flash('success', 'Backup exported')
-    } catch (err) { flash('error', 'Export failed: ' + err.message) }
   }
 
   const handleCheckUpdates = async () => {
@@ -534,21 +509,6 @@ function Settings({ initialTab }) {
         <p className="settings-header-sub">Manage your shop, team, and system preferences</p>
       </div>
 
-      {/* Notifications */}
-      {error && (
-        <div className="settings-alert error">
-          <FiAlertCircle size={15} />
-          <span>{error}</span>
-          <button className="settings-alert-close" onClick={() => setError('')}><FiX size={13} /></button>
-        </div>
-      )}
-      {success && (
-        <div className="settings-alert success">
-          <FiCheckCircle size={15} />
-          <span>{success}</span>
-        </div>
-      )}
-
       <div className="settings-body">
         {/* ── Left Nav ── */}
         <nav className="settings-nav">
@@ -563,7 +523,7 @@ function Settings({ initialTab }) {
               <button
                 key={item.id}
                 className={`settings-nav-item ${activeTab === item.id ? 'active' : ''}`}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => goToTab(item.id)}
               >
                 <span className="s-nav-icon"><item.Icon size={14} /></span>
                 {item.label}
@@ -578,54 +538,46 @@ function Settings({ initialTab }) {
 
           {/* ── SHOP ── */}
           {activeTab === 'shop' && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiShoppingBag size={17} /> Shop Details</h2>
-                  <p className="s-card-desc">Your business identity shown on receipts and reports</p>
-                </div>
-              </div>
-              <form onSubmit={handleSaveShop}>
-                <div className="s-grid-2">
-                  <div className="s-field">
-                    <label className="s-label">Shop Name <span className="s-req">*</span></label>
-                    <input className="s-input" type="text" value={formData.name}
-                      onChange={e => setFormData({ ...formData, name: e.target.value })}
-                      placeholder="e.g. Blessed Stores" required />
+            <SettingsSection
+              icon={<FiShoppingBag size={17} />}
+              title="Shop Details"
+              desc="Your business identity, printed on receipts and reports."
+              sectionKey="shop" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={saveSection('shop')} saving={sectionSaving}
+            >
+              {(isEditing) => isEditing ? (
+                <>
+                  <div className="fl-row">
+                    <Field label="Shop name" required autoFocus
+                      value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })}
+                      error={secErrors.name} shakeKey={attempt} placeholder="e.g. Blessed Stores" />
+                    <Field as="select" label="Currency"
+                      value={formData.currency} onChange={e => setFormData({ ...formData, currency: e.target.value })}>
+                      {Object.entries(CURRENCY_NAMES).map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                    </Field>
                   </div>
-                  <div className="s-field">
-                    <label className="s-label">Currency</label>
-                    <select className="s-select" value={formData.currency}
-                      onChange={e => setFormData({ ...formData, currency: e.target.value })}>
-                      <option>USD</option><option>ZWL</option><option>EUR</option><option>GBP</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="s-grid-2">
-                  <div className="s-field">
-                    <label className="s-label">Email Address</label>
-                    <input className="s-input" type="email" value={formData.email}
-                      onChange={e => setFormData({ ...formData, email: e.target.value })}
+                  <div className="fl-row">
+                    <Field label="Email" type="email"
+                      value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })}
                       placeholder="shop@example.com" />
-                  </div>
-                  <div className="s-field">
-                    <label className="s-label">Phone Number</label>
-                    <input className="s-input" type="tel" value={formData.phone}
-                      onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                    <Field label="Phone" type="tel"
+                      value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })}
                       placeholder="+263 77 123 4567" />
                   </div>
-                </div>
-                <div className="s-field">
-                  <label className="s-label">Physical Address</label>
-                  <textarea className="s-textarea" value={formData.address}
-                    onChange={e => setFormData({ ...formData, address: e.target.value })}
-                    rows="2" placeholder="Street address, city, country" />
-                </div>
-                <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Changes</button>
-                </div>
-              </form>
-            </div>
+                  <Field as="textarea" label="Address" rows={2}
+                    value={formData.address} onChange={e => setFormData({ ...formData, address: e.target.value })}
+                    placeholder="Street, city" />
+                </>
+              ) : (
+                <>
+                  <InfoRow label="Shop name" value={formData.name} />
+                  <InfoRow label="Currency" value={CURRENCY_NAMES[formData.currency] || formData.currency} />
+                  <InfoRow label="Email" value={formData.email} />
+                  <InfoRow label="Phone" value={formData.phone} />
+                  <InfoRow label="Address" value={formData.address} />
+                </>
+              )}
+            </SettingsSection>
           )}
 
           {/* ── USERS ── */}
@@ -634,55 +586,12 @@ function Settings({ initialTab }) {
               <div className="s-card-head">
                 <div>
                   <h2 className="s-card-title"><FiUsers size={17} /> Team & Users</h2>
-                  <p className="s-card-desc">Manage staff accounts and access levels</p>
+                  <p className="s-card-desc">The people who can sign in to Stocka, and what they can do.</p>
                 </div>
-                <button className="s-btn-primary s-btn-sm" onClick={() => setShowNewUserForm(!showNewUserForm)}>
-                  {showNewUserForm ? <><FiX size={12} /> Cancel</> : <><FiUserPlus size={12} /> Add User</>}
+                <button className="ss-edit-btn" onClick={openAddUser}>
+                  <FiUserPlus size={13} /> Add User
                 </button>
               </div>
-
-              {showNewUserForm && (
-                <div className="s-inline-form">
-                  <h4 className="s-inline-form-title"><FiUserPlus size={14} /> New Staff Account</h4>
-                  <form onSubmit={handleAddUser}>
-                    <div className="s-grid-2">
-                      <div className="s-field">
-                        <label className="s-label">Username</label>
-                        <input className="s-input" type="text" value={newUserForm.username}
-                          onChange={e => setNewUserForm({ ...newUserForm, username: e.target.value })}
-                          placeholder="e.g. john_cashier" required />
-                      </div>
-                      <div className="s-field">
-                        <label className="s-label">Role</label>
-                        <select className="s-select" value={newUserForm.role}
-                          onChange={e => setNewUserForm({ ...newUserForm, role: e.target.value })}>
-                          <option value="Admin">Admin</option>
-                          <option value="Manager">Manager</option>
-                          <option value="Cashier">Cashier</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div className="s-grid-2">
-                      <div className="s-field">
-                        <label className="s-label">PIN (4 digits)</label>
-                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
-                          value={newUserForm.password}
-                          onChange={e => setNewUserForm({ ...newUserForm, password: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
-                      </div>
-                      <div className="s-field">
-                        <label className="s-label">Confirm PIN</label>
-                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
-                          value={newUserForm.confirmPassword}
-                          onChange={e => setNewUserForm({ ...newUserForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
-                      </div>
-                    </div>
-                    <div className="s-form-footer">
-                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Create Account</button>
-                      <button type="button" className="s-btn-secondary s-btn-sm" onClick={() => setShowNewUserForm(false)}>Cancel</button>
-                    </div>
-                  </form>
-                </div>
-              )}
 
               <table className="s-table">
                 <thead>
@@ -705,7 +614,7 @@ function Settings({ initialTab }) {
                       <td>
                         <div className="s-btn-row">
                           <button className="s-btn-secondary s-btn-sm"
-                            onClick={() => { setResetPasswordUserId(u.id); setResetPasswordForm({ newPassword: '', confirmPassword: '' }) }}>
+                            onClick={() => { setUserErrors({}); setResetPasswordUserId(u.id); setResetPasswordForm({ newPassword: '', confirmPassword: '' }) }}>
                             <FiKey size={11} /> Reset PIN
                           </button>
                           {u.is_active && (
@@ -721,339 +630,385 @@ function Settings({ initialTab }) {
                   ))}
                 </tbody>
               </table>
-
-              {resetPasswordUserId && (
-                <div className="s-reset-panel">
-                  <h4 className="s-reset-panel-title">
-                    <FiKey size={13} /> Reset PIN — {users.find(u => u.id === resetPasswordUserId)?.username}
-                  </h4>
-                  <form onSubmit={handleResetPassword}>
-                    <div className="s-grid-2">
-                      <div className="s-field">
-                        <label className="s-label">New PIN (4 digits)</label>
-                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
-                          value={resetPasswordForm.newPassword}
-                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
-                      </div>
-                      <div className="s-field">
-                        <label className="s-label">Confirm PIN</label>
-                        <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
-                          value={resetPasswordForm.confirmPassword}
-                          onChange={e => setResetPasswordForm({ ...resetPasswordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })} required />
-                      </div>
-                    </div>
-                    <div className="s-form-footer">
-                      <button type="submit" className="s-btn-primary s-btn-sm"><FiCheck size={12} /> Save PIN</button>
-                      <button type="button" className="s-btn-secondary s-btn-sm" onClick={() => setResetPasswordUserId(null)}>Cancel</button>
-                    </div>
-                  </form>
-                </div>
-              )}
             </div>
           )}
 
+          {/* Add a person — a dialog, not a form that opens above the table. */}
+          <Modal
+            open={showNewUserForm}
+            size="medium"
+            title="Add a Staff Member"
+            subtitle="They sign in with this name and a 4-digit PIN. Tell them the PIN in person."
+            onClose={() => setShowNewUserForm(false)}
+            footer={
+              <>
+                <button type="button" className="smodal-btn-away" onClick={() => setShowNewUserForm(false)}>Cancel</button>
+                <button type="submit" form="add-user-form" className="smodal-btn-primary">
+                  <FiUserPlus size={14} /> Add Staff Member
+                </button>
+              </>
+            }
+          >
+            <form id="add-user-form" className="fl-stack" onSubmit={handleAddUser} noValidate>
+              <div className="fl-row">
+                <Field label="Name they sign in with" required autoFocus
+                  value={newUserForm.username}
+                  onChange={e => { setNewUserForm({ ...newUserForm, username: e.target.value }); setUserErrors(x => ({ ...x, username: null })) }}
+                  error={userErrors.username} shakeKey={attempt} placeholder="e.g. Tendai" />
+                <Field as="select" label="Role"
+                  value={newUserForm.role} onChange={e => setNewUserForm({ ...newUserForm, role: e.target.value })}
+                  hint={ROLE_HINTS[newUserForm.role]}>
+                  <option value="Cashier">Cashier</option>
+                  <option value="Manager">Manager</option>
+                  <option value="Admin">Admin</option>
+                </Field>
+              </div>
+              <div className="fl-row">
+                <Field label="PIN" required type="password" inputMode="numeric" maxLength={4} autoComplete="new-password"
+                  value={newUserForm.password}
+                  onChange={e => { setNewUserForm({ ...newUserForm, password: e.target.value.replace(/\D/g, '').slice(0, 4) }); setUserErrors(x => ({ ...x, password: null })) }}
+                  error={userErrors.password} shakeKey={attempt} hint="4 digits" />
+                <Field label="Type the PIN again" required type="password" inputMode="numeric" maxLength={4} autoComplete="new-password"
+                  value={newUserForm.confirmPassword}
+                  onChange={e => { setNewUserForm({ ...newUserForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setUserErrors(x => ({ ...x, confirmPassword: null })) }}
+                  error={userErrors.confirmPassword} shakeKey={attempt} />
+              </div>
+            </form>
+          </Modal>
+
+          {/* Reset a PIN — opens over the table, next to the person it is for, instead
+              of appearing under the whole table away from the row that asked. */}
+          <Modal
+            open={Boolean(resetPasswordUserId)}
+            size="small"
+            title={`Reset ${users.find(u => u.id === resetPasswordUserId)?.username || ''}'s PIN`}
+            subtitle="Choose a new 4-digit PIN and tell them in person."
+            onClose={() => setResetPasswordUserId(null)}
+            footer={
+              <>
+                <button type="button" className="smodal-btn-away" onClick={() => setResetPasswordUserId(null)}>Cancel</button>
+                <button type="submit" form="reset-pin-form" className="smodal-btn-primary">Save New PIN</button>
+              </>
+            }
+          >
+            <form id="reset-pin-form" className="fl-stack" onSubmit={handleResetPassword} noValidate>
+              <Field label="New PIN" required type="password" inputMode="numeric" maxLength={4} autoFocus autoComplete="new-password"
+                value={resetPasswordForm.newPassword}
+                onChange={e => { setResetPasswordForm({ ...resetPasswordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setUserErrors(x => ({ ...x, newPassword: null })) }}
+                error={userErrors.newPassword} shakeKey={attempt} hint="4 digits" />
+              <Field label="Type it again" required type="password" inputMode="numeric" maxLength={4} autoComplete="new-password"
+                value={resetPasswordForm.confirmPassword}
+                onChange={e => { setResetPasswordForm({ ...resetPasswordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setUserErrors(x => ({ ...x, confirmPassword: null })) }}
+                error={userErrors.confirmPassword} shakeKey={attempt} />
+            </form>
+          </Modal>
+
           {/* ── ROLE PRIVILEGES ── */}
           {activeTab === 'privileges' && isAdmin && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiKey size={17} /> Role Privileges</h2>
-                  <p className="s-card-desc">Choose which sidebar tabs each role can see. Admins always have full access.</p>
-                </div>
-              </div>
+            <SettingsSection
+              icon={<FiKey size={17} />}
+              title="Role Privileges"
+              desc="Which pages each role can open. Admins can always open everything."
+              sectionKey="privileges" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={handleSavePrivileges} saving={sectionSaving}
+              saveLabel="Save privileges"
+            >
+              {(isEditing) => (
+                <>
+                  <div className="s-role-pills">
+                    {CONFIGURABLE_ROLES.map(role => (
+                      <button key={role} type="button"
+                        className={`s-role-pill ${privRole === role ? 'active' : ''}`}
+                        onClick={() => setPrivRole(role)}>
+                        {role}
+                      </button>
+                    ))}
+                  </div>
 
-              <div className="s-role-pills">
-                {CONFIGURABLE_ROLES.map(role => (
-                  <button key={role} type="button"
-                    className={`s-role-pill ${privRole === role ? 'active' : ''}`}
-                    onClick={() => setPrivRole(role)}>
-                    {role}
-                  </button>
-                ))}
-              </div>
-
-              <form onSubmit={handleSavePrivileges}>
-                {['Main', 'Sales', 'Inventory', 'Finance', 'Operations'].map(group => {
-                  const items = NAV_PRIVILEGES.filter(n => n.group === group)
-                  if (items.length === 0) return null
-                  return (
-                    <div key={group}>
-                      <div className="s-priv-group">{group}</div>
-                      {items.map(item => {
-                        const visible = canRoleAccessNav(privRole, item.id, rolePrivs)
-                        return (
-                          <div key={item.id}
-                            className={`s-toggle-row s-priv-row ${item.locked ? 's-toggle-row--locked' : ''}`}
-                            onClick={() => !item.locked && togglePrivilege(item.id)}>
-                            <div className="s-toggle-info">
-                              <div className="s-toggle-label">{item.label}</div>
-                              {item.locked && <div className="s-toggle-sub">Always available to every role</div>}
+                  {NAV_GROUPS.map(group => {
+                    const items = NAV_PRIVILEGES.filter(n => n.group === group)
+                    if (items.length === 0) return null
+                    return (
+                      <div key={group}>
+                        <div className="s-priv-group">{group}</div>
+                        {isEditing ? items.map(item => {
+                          const visible = canRoleAccessNav(privRole, item.id, rolePrivs)
+                          return (
+                            <div key={item.id}
+                              className={`s-toggle-row s-priv-row ${item.locked ? 's-toggle-row--locked' : ''}`}
+                              onClick={() => !item.locked && togglePrivilege(item.id)}>
+                              <div className="s-toggle-info">
+                                <div className="s-toggle-label">{item.label}</div>
+                                {item.locked && <div className="s-toggle-sub">Always available to every role</div>}
+                              </div>
+                              <label className="s-switch" onClick={e => e.stopPropagation()}>
+                                <input type="checkbox" checked={visible} disabled={item.locked}
+                                  onChange={() => togglePrivilege(item.id)} />
+                                <span className="s-switch-track" />
+                              </label>
                             </div>
-                            <label className="s-switch" onClick={e => e.stopPropagation()}>
-                              <input type="checkbox" checked={visible} disabled={item.locked}
-                                onChange={() => togglePrivilege(item.id)} />
-                              <span className="s-switch-track" />
-                            </label>
+                          )
+                        }) : (
+                          <div className="ss-chips">
+                            {items.map(item => {
+                              const visible = canRoleAccessNav(privRole, item.id, rolePrivs)
+                              return (
+                                <span key={item.id} className={`ss-chip${visible ? '' : ' is-off'}`}
+                                  title={visible ? `${privRole} can open this` : `${privRole} cannot open this`}>
+                                  {item.label}
+                                </span>
+                              )
+                            })}
                           </div>
-                        )
-                      })}
-                    </div>
-                  )
-                })}
-                <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Privileges</button>
-                </div>
-              </form>
-            </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+            </SettingsSection>
           )}
 
           {/* ── PRINTER ── */}
           {activeTab === 'printer' && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiPrinter size={17} /> Thermal Printer</h2>
-                  <p className="s-card-desc">Configure your receipt printer connection</p>
-                </div>
-              </div>
+            <SettingsSection
+              icon={<FiPrinter size={17} />}
+              title="Receipt Printer"
+              desc="The printer on this computer. Each till keeps its own setting."
+              sectionKey="printer" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={handleSavePrinter} saving={sectionSaving}
+            >
+              {(isEditing) => isEditing ? (
+                <>
+                  <div className="s-printer-input-row">
+                    <Field label="Printer" className="s-printer-field"
+                      value={formData.printer_name || ''}
+                      onChange={e => setFormData({ ...formData, printer_name: e.target.value })}
+                      placeholder="Press Find Printers, or type its name" />
+                    <button type="button" className="smodal-btn" onClick={handleScanPrinters} disabled={scanningPrinters}>
+                      <FiRefreshCw size={13} className={scanningPrinters ? 'spin' : ''} />
+                      {scanningPrinters ? 'Looking...' : 'Find Printers'}
+                    </button>
+                  </div>
 
-              <div className="s-field">
-                <label className="s-label">Selected Printer</label>
-                <div className="s-printer-input-row">
-                  <input className="s-input" type="text"
-                    placeholder="Printer name — click Scan to detect"
-                    value={formData.printer_name || ''}
-                    onChange={e => setFormData({ ...formData, printer_name: e.target.value })} />
-                  <button type="button" className="s-btn-secondary" onClick={handleScanPrinters} disabled={scanningPrinters}>
-                    <FiRefreshCw size={13} className={scanningPrinters ? 'spin' : ''} />
-                    {scanningPrinters ? 'Scanning…' : 'Scan'}
-                  </button>
-                </div>
-              </div>
-
-              {availablePrinters.filter(p => !p.isVirtual).length > 0 && (
-                <div className="s-printer-list">
-                  {availablePrinters.filter(p => !p.isVirtual).map(printer => (
-                    <div key={printer.name}
-                      className={`s-printer-item ${formData.printer_name === printer.name ? 'chosen' : ''}`}
-                      onClick={() => setFormData({ ...formData, printer_name: printer.name })}>
-                      <div className="s-printer-icon"><FiPrinter size={15} /></div>
-                      <span className="s-printer-name">{printer.name}</span>
-                      {formData.printer_name === printer.name && <span className="s-printer-check"><FiCheck size={15} /></span>}
+                  {availablePrinters.filter(p => !p.isVirtual).length > 0 && (
+                    <div className="s-printer-list">
+                      {availablePrinters.filter(p => !p.isVirtual).map(printer => (
+                        <div key={printer.name}
+                          className={`s-printer-item ${formData.printer_name === printer.name ? 'chosen' : ''}`}
+                          onClick={() => setFormData({ ...formData, printer_name: printer.name })}>
+                          <div className="s-printer-icon"><FiPrinter size={15} /></div>
+                          <span className="s-printer-name">{printer.name}</span>
+                          {formData.printer_name === printer.name && <span className="s-printer-check"><FiCheck size={15} /></span>}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  )}
+
+                  <div className="s-toggle-row"
+                    onClick={() => setFormData({ ...formData, auto_print: formData.auto_print === 1 ? 0 : 1 })}>
+                    <div className="s-toggle-info">
+                      <div className="s-toggle-label">Print a receipt after every sale</div>
+                      <div className="s-toggle-sub">Otherwise the cashier prints one only when asked</div>
+                    </div>
+                    <label className="s-switch" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={formData.auto_print === 1}
+                        onChange={e => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })} />
+                      <span className="s-switch-track" />
+                    </label>
+                  </div>
+
+                  <div className="s-toggle-row"
+                    onClick={() => setFormData({ ...formData, print_duplicate: formData.print_duplicate === 1 ? 0 : 1 })}>
+                    <div className="s-toggle-info">
+                      <div className="s-toggle-label">Print a second copy</div>
+                      <div className="s-toggle-sub">One for the customer, one for your records</div>
+                    </div>
+                    <label className="s-switch" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={formData.print_duplicate === 1}
+                        onChange={e => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })} />
+                      <span className="s-switch-track" />
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <InfoRow label="Printer" value={formData.printer_name} placeholder="None chosen yet" />
+                  <InfoRow label="Print after every sale" value={formData.auto_print === 1 ? 'On' : 'Off'} />
+                  <InfoRow label="Second copy" value={formData.print_duplicate === 1 ? 'On' : 'Off'} />
+                  {/* Testing changes nothing, so it does not need Edit first. */}
+                  <div className="ss-inline-action">
+                    <button type="button" className="smodal-btn"
+                      onClick={handleTestPrint} disabled={testingPrinter || !formData.printer_name}>
+                      <FiZap size={13} /> {testingPrinter ? 'Printing...' : 'Print a Test Receipt'}
+                    </button>
+                  </div>
+                </>
               )}
-
-              {printStatus && <div className="s-print-status">{printStatus}</div>}
-
-              <div className="s-form-footer s-form-footer--mb">
-                <button type="button" className="s-btn-secondary"
-                  onClick={handleTestPrint} disabled={testingPrinter || !formData.printer_name}>
-                  <FiZap size={13} /> {testingPrinter ? 'Printing…' : 'Test Print'}
-                </button>
-              </div>
-
-              <hr className="s-divider" />
-
-              <form onSubmit={handleSavePrinter}>
-                <div className="s-toggle-row"
-                  onClick={() => setFormData({ ...formData, auto_print: formData.auto_print === 1 ? 0 : 1 })}>
-                  <div className="s-toggle-info">
-                    <div className="s-toggle-label">Auto-print receipts</div>
-                    <div className="s-toggle-sub">Automatically print after every completed sale</div>
-                  </div>
-                  <label className="s-switch" onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={formData.auto_print === 1}
-                      onChange={e => setFormData({ ...formData, auto_print: e.target.checked ? 1 : 0 })} />
-                    <span className="s-switch-track" />
-                  </label>
-                </div>
-
-                <div className="s-toggle-row"
-                  onClick={() => setFormData({ ...formData, print_duplicate: formData.print_duplicate === 1 ? 0 : 1 })}>
-                  <div className="s-toggle-info">
-                    <div className="s-toggle-label">Print duplicate receipts</div>
-                    <div className="s-toggle-sub">Print 2 copies — one for customer, one for your records</div>
-                  </div>
-                  <label className="s-switch" onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={formData.print_duplicate === 1}
-                      onChange={e => setFormData({ ...formData, print_duplicate: e.target.checked ? 1 : 0 })} />
-                    <span className="s-switch-track" />
-                  </label>
-                </div>
-
-                <div className="s-form-footer s-form-footer--mt">
-                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Printer Settings</button>
-                </div>
-              </form>
-            </div>
+            </SettingsSection>
           )}
 
           {/* ── RECEIPT ── */}
           {activeTab === 'receipt' && !isCashier && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiFileText size={17} /> Receipt Configuration</h2>
-                  <p className="s-card-desc">Customize what customers see on their printed receipts</p>
-                </div>
-              </div>
-              <form onSubmit={handleSaveShop}>
-                <div className="s-field">
-                  <label className="s-label">Paper Roll Width</label>
-                  <div className="s-radio-group s-radio-group--mt">
-                    {[
-                      { value: 58, title: '58mm', sub: 'Narrow roll · 32 chars wide' },
-                      { value: 80, title: '80mm', sub: 'Wide roll · 42 chars wide' },
-                    ].map(opt => (
-                      <label key={opt.value}
-                        className={`s-radio-option ${Number(formData.receipt_width_mm) === opt.value ? 'chosen' : ''}`}>
-                        <input type="radio" name="receipt_width_mm" value={opt.value}
-                          checked={Number(formData.receipt_width_mm) === opt.value}
-                          onChange={() => setFormData({ ...formData, receipt_width_mm: opt.value })} />
-                        <span>
-                          <div className="s-radio-title">{opt.title}</div>
-                          <div className="s-radio-sub">{opt.sub}</div>
-                        </span>
-                      </label>
-                    ))}
+            <SettingsSection
+              icon={<FiFileText size={17} />}
+              title="Receipt"
+              desc="What customers see on their printed receipt."
+              sectionKey="receipt" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={saveSection('receipt')} saving={sectionSaving}
+            >
+              {(isEditing) => isEditing ? (
+                <>
+                  <div className="s-field">
+                    <label className="s-label">Paper roll width</label>
+                    <div className="s-radio-group s-radio-group--mt">
+                      {RECEIPT_WIDTHS.map(opt => (
+                        <label key={opt.value}
+                          className={`s-radio-option ${Number(formData.receipt_width_mm) === opt.value ? 'chosen' : ''}`}>
+                          <input type="radio" name="receipt_width_mm" value={opt.value}
+                            checked={Number(formData.receipt_width_mm) === opt.value}
+                            onChange={() => setFormData({ ...formData, receipt_width_mm: opt.value })} />
+                          <span>
+                            <div className="s-radio-title">{opt.title}</div>
+                            <div className="s-radio-sub">{opt.sub}</div>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="s-hint">Match the roll in your printer, or lines split in half.</p>
                   </div>
-                  <p className="s-hint">Match this to the paper roll in your printer. Wrong setting causes split lines on receipts.</p>
-                </div>
 
-                <div className="s-field">
-                  <label className="s-label">Shop Name Font Size</label>
-                  <div className="s-radio-group s-radio-group--mt">
-                    {[
-                      { value: 'large',  title: 'Large (auto-fit)', sub: 'Double-size · shrinks if name is too long' },
-                      { value: 'medium', title: 'Medium',           sub: 'Double height, normal width · always fits' },
-                      { value: 'normal', title: 'Normal',           sub: 'Same size as body text · guaranteed single line' },
-                    ].map(opt => (
-                      <label key={opt.value}
-                        className={`s-radio-option ${formData.receipt_name_size === opt.value ? 'chosen' : ''}`}>
-                        <input type="radio" name="receipt_name_size" value={opt.value}
-                          checked={formData.receipt_name_size === opt.value}
-                          onChange={() => setFormData({ ...formData, receipt_name_size: opt.value })} />
-                        <span>
-                          <div className="s-radio-title">{opt.title}</div>
-                          <div className="s-radio-sub">{opt.sub}</div>
-                        </span>
-                      </label>
-                    ))}
+                  <div className="s-field">
+                    <label className="s-label">Shop name size</label>
+                    <div className="s-radio-group s-radio-group--mt">
+                      {RECEIPT_NAME_SIZES.map(opt => (
+                        <label key={opt.value}
+                          className={`s-radio-option ${formData.receipt_name_size === opt.value ? 'chosen' : ''}`}>
+                          <input type="radio" name="receipt_name_size" value={opt.value}
+                            checked={formData.receipt_name_size === opt.value}
+                            onChange={() => setFormData({ ...formData, receipt_name_size: opt.value })} />
+                          <span>
+                            <div className="s-radio-title">{opt.title}</div>
+                            <div className="s-radio-sub">{opt.sub}</div>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                  <p className="s-hint">If your shop name wraps to a second line on receipts, switch to Medium or Normal.</p>
-                </div>
 
-                <div className="s-field">
-                  <label className="s-label">Footer Message</label>
-                  <textarea className="s-textarea" rows="3"
+                  <Field as="textarea" label="Message at the bottom" rows={3}
                     value={formData.receipt_footer}
                     onChange={e => setFormData({ ...formData, receipt_footer: e.target.value })}
-                    placeholder="e.g. Thank you! WhatsApp: +263 77 123 4567" />
-                  <p className="s-hint">Printed at the bottom of every receipt — great for your contact or a thank-you note.</p>
-                </div>
-
-                <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Receipt Settings</button>
-                </div>
-              </form>
-            </div>
+                    placeholder="e.g. Thank you! WhatsApp: +263 77 123 4567"
+                    hint="A thank-you, your WhatsApp number, or your returns policy." />
+                </>
+              ) : (
+                <>
+                  <InfoRow label="Paper roll" value={RECEIPT_WIDTHS.find(o => o.value === Number(formData.receipt_width_mm))?.title} />
+                  <InfoRow label="Shop name size" value={RECEIPT_NAME_SIZES.find(o => o.value === formData.receipt_name_size)?.title} />
+                  <InfoRow label="Message at the bottom" value={formData.receipt_footer} placeholder="None" />
+                </>
+              )}
+            </SettingsSection>
           )}
 
           {/* ── SECURITY ── */}
+          {/* A PIN is a secret, so there is nothing to "view" — the section offers to
+              change it, and the form exists only while you are doing that. */}
           {activeTab === 'password' && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiShield size={17} /> Security</h2>
-                  <p className="s-card-desc">Change your login PIN</p>
-                </div>
-              </div>
-              <form onSubmit={handleChangePassword} className="s-password-form">
-                <div className="s-field">
-                  <label className="s-label">Current PIN</label>
-                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+            <SettingsSection
+              icon={<FiShield size={17} />}
+              title="Your PIN"
+              desc="The 4 digits you sign in with."
+              sectionKey="password" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={handleChangePassword} saving={sectionSaving}
+              editLabel="Change PIN" saveLabel="Change PIN"
+            >
+              {(isEditing) => isEditing ? (
+                <div className="ss-narrow">
+                  <Field label="Current PIN" required type="password" inputMode="numeric" maxLength={4} autoFocus autoComplete="current-password"
                     value={passwordForm.currentPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
-                    placeholder="Enter your current PIN" required />
-                </div>
-                <div className="s-field">
-                  <label className="s-label">New PIN</label>
-                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                    onChange={e => { setPasswordForm({ ...passwordForm, currentPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setSecErrors(x => ({ ...x, currentPassword: null })) }}
+                    error={secErrors.currentPassword} shakeKey={attempt} />
+                  <Field label="New PIN" required type="password" inputMode="numeric" maxLength={4} autoComplete="new-password"
                     value={passwordForm.newPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
-                    placeholder="4 digits" required />
-                </div>
-                <div className="s-field">
-                  <label className="s-label">Confirm New PIN</label>
-                  <input className="s-input" type="password" inputMode="numeric" pattern="\d{4}" maxLength={4}
+                    onChange={e => { setPasswordForm({ ...passwordForm, newPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setSecErrors(x => ({ ...x, newPassword: null })) }}
+                    error={secErrors.newPassword} shakeKey={attempt} hint="4 digits" />
+                  <Field label="Type the new PIN again" required type="password" inputMode="numeric" maxLength={4} autoComplete="new-password"
                     value={passwordForm.confirmPassword}
-                    onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) })}
-                    placeholder="Repeat new PIN" required />
+                    onChange={e => { setPasswordForm({ ...passwordForm, confirmPassword: e.target.value.replace(/\D/g, '').slice(0, 4) }); setSecErrors(x => ({ ...x, confirmPassword: null })) }}
+                    error={secErrors.confirmPassword} shakeKey={attempt} />
                 </div>
-                <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiShield size={13} /> Update PIN</button>
-                </div>
-              </form>
-            </div>
+              ) : (
+                <InfoRow label="Signed in as" value={user?.username} hint="Your PIN is never shown." />
+              )}
+            </SettingsSection>
           )}
 
           {/* ── BUSINESS RULES ── */}
           {activeTab === 'business' && isAdmin && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiSliders size={17} /> Business Rules</h2>
-                  <p className="s-card-desc">Tax rates, inventory thresholds, and cash handling policies</p>
-                </div>
-              </div>
-              <form onSubmit={handleSaveShop}>
-                <div className="s-grid-3">
-                  <div className="s-field">
-                    <label className="s-label">VAT / Tax Rate (%)</label>
-                    <input className="s-input" type="number" min="0" max="100" step="0.5"
+            <SettingsSection
+              icon={<FiSliders size={17} />}
+              title="Business Rules"
+              desc="Tax, low-stock warnings, and how much a till may be out before it is flagged."
+              sectionKey="business" editing={editing}
+              onEdit={startEdit} onCancel={cancelEdit} onSubmit={saveSection('business')} saving={sectionSaving}
+            >
+              {(isEditing) => isEditing ? (
+                <>
+                  <div className="fl-row-3">
+                    <Field label="VAT rate" suffix="%" type="number" min="0" max="100" step="0.5" autoFocus
                       value={formData.vat_rate}
-                      onChange={e => setFormData({ ...formData, vat_rate: parseFloat(e.target.value) || 0 })} />
-                    <p className="s-hint">Set to 0 to disable. Zimbabwe VAT is 15%. Shown as a separate line on receipts.</p>
-                  </div>
-                  <div className="s-field">
-                    <label className="s-label">Default Reorder Level</label>
-                    <input className="s-input" type="number" min="1" step="1"
+                      onChange={e => setFormData({ ...formData, vat_rate: e.target.value })}
+                      error={secErrors.vat_rate} shakeKey={attempt}
+                      hint="0 turns it off. Zimbabwe VAT is 15%." />
+                    <Field label="Default reorder level" type="number" min="1" step="1"
                       value={formData.default_reorder_level}
-                      onChange={e => setFormData({ ...formData, default_reorder_level: parseInt(e.target.value) || 5 })} />
-                    <p className="s-hint">Low-stock alert threshold applied to new products. Each product can override individually.</p>
-                  </div>
-                  <div className="s-field">
-                    <label className="s-label">Shift Variance Tolerance ($)</label>
-                    <input className="s-input" type="number" min="0" step="0.01"
+                      onChange={e => setFormData({ ...formData, default_reorder_level: e.target.value })}
+                      error={secErrors.default_reorder_level} shakeKey={attempt}
+                      hint="For new products. Each can be changed." />
+                    <Field label="Till allowed out by" prefix="$" type="number" min="0" step="0.01"
                       value={formData.variance_tolerance}
-                      onChange={e => setFormData({ ...formData, variance_tolerance: parseFloat(e.target.value) || 0.01 })} />
-                    <p className="s-hint">Maximum acceptable cash difference before a shift is flagged short or over.</p>
+                      onChange={e => setFormData({ ...formData, variance_tolerance: e.target.value })}
+                      error={secErrors.variance_tolerance} shakeKey={attempt}
+                      hint="More than this and the shift is flagged." />
                   </div>
-                </div>
 
-                <div className="s-toggle-row"
-                  onClick={() => setFormData({ ...formData, allow_admin_sales: formData.allow_admin_sales === 1 ? 0 : 1 })}>
-                  <div className="s-toggle-info">
-                    <div className="s-toggle-label">Allow admin to make sales</div>
-                    <div className="s-toggle-sub">
-                      Off by default — admins handle admin tasks while cashiers sell.
-                      Turn on to let admin accounts use the POS. Applies to every till.
+                  <div className="s-toggle-row"
+                    onClick={() => setFormData({ ...formData, allow_admin_sales: formData.allow_admin_sales === 1 ? 0 : 1 })}>
+                    <div className="s-toggle-info">
+                      <div className="s-toggle-label">Let admins make sales</div>
+                      <div className="s-toggle-sub">Off by default, so admins manage and cashiers sell. Applies on every till.</div>
                     </div>
+                    <label className="s-switch" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={formData.allow_admin_sales === 1}
+                        onChange={e => setFormData({ ...formData, allow_admin_sales: e.target.checked ? 1 : 0 })} />
+                      <span className="s-switch-track" />
+                    </label>
                   </div>
-                  <label className="s-switch" onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={formData.allow_admin_sales === 1}
-                      onChange={e => setFormData({ ...formData, allow_admin_sales: e.target.checked ? 1 : 0 })} />
-                    <span className="s-switch-track" />
-                  </label>
-                </div>
+                </>
+              ) : (
+                <>
+                  <InfoRow label="VAT rate" value={Number(formData.vat_rate) > 0 ? `${formData.vat_rate}%` : 'Off'} />
+                  <InfoRow label="Default reorder level" value={`${formData.default_reorder_level} units`} />
+                  <InfoRow label="Till allowed out by" value={`$${Number(formData.variance_tolerance || 0).toFixed(2)}`} />
+                  <InfoRow label="Admins can make sales" value={formData.allow_admin_sales === 1 ? 'Yes' : 'No'} />
+                </>
+              )}
+            </SettingsSection>
+          )}
 
-                <div className="s-form-footer">
-                  <button type="submit" className="s-btn-primary"><FiSave size={13} /> Save Business Rules</button>
-                </div>
-              </form>
-            </div>
+          {/* Leaving a tab while a section is open for editing. */}
+          {pendingTab && (
+            <ConfirmModal
+              message="Discard your changes?"
+              detail="You were part-way through editing. Leaving now puts everything back the way it was saved."
+              confirmLabel="Discard changes"
+              cancelLabel="Keep editing"
+              danger
+              onConfirm={() => { cancelEdit(); setActiveTab(pendingTab); setPendingTab(null) }}
+              onCancel={() => setPendingTab(null)}
+            />
           )}
 
           {/* ── SYSTEM ── */}
@@ -1172,294 +1127,10 @@ function Settings({ initialTab }) {
             </div>
           )}
 
-          {/* ── BACKUPS ── */}
-          {activeTab === 'backup' && isAdmin && (
-            <div className="s-card">
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiHardDrive size={17} /> Backups</h2>
-                  <p className="s-card-desc">
-                    Stocka backs itself up automatically — a short while after sales and stock are
-                    recorded, when the day is closed, and when Stocka is closed. Every backup is
-                    read back and checked before it counts.
-                  </p>
-                </div>
-                <div className="s-btn-row">
-                  <button className="s-btn-secondary" onClick={handleRestoreFromFile} disabled={restoringBackup}>
-                    <FiUpload size={13} /> Restore from a File…
-                  </button>
-                  <button className="s-btn-primary" onClick={handleCreateBackup} disabled={creatingBackup}>
-                    <FiDownload size={13} /> {creatingBackup ? 'Backing up…' : 'Back Up Now'}
-                  </button>
-                </div>
-              </div>
-
-              {/* What the owner actually came here to find out: is there a recent
-                  copy, and did the last attempt work? */}
-              {backupState?.isSatellite ? (
-                <div className="s-backup-status">
-                  <FiHardDrive size={15} />
-                  <span>This till mirrors the Main computer. Backups are taken on the Main computer.</span>
-                </div>
-              ) : backupState?.local?.lastError ? (
-                <div className="s-backup-status s-backup-status--error">
-                  <FiAlertTriangle size={15} />
-                  <span>
-                    The last backup did not finish: {backupState.local.lastError}
-                    {backupState.local.lastSuccessAt && (
-                      <> Your most recent checked backup is from{' '}
-                        {new Date(backupState.local.lastSuccessAt).toLocaleString()}.</>
-                    )}
-                  </span>
-                </div>
-              ) : backupState?.local?.lastVerifiedAt ? (
-                <div className="s-backup-status s-backup-status--ok">
-                  <FiCheckCircle size={15} />
-                  <span>Last checked backup: {new Date(backupState.local.lastVerifiedAt).toLocaleString()}</span>
-                </div>
-              ) : null}
-
-              {backups.length === 0 ? (
-                <div className="s-empty">
-                  <div className="s-empty-icon"><FiHardDrive size={30} /></div>
-                  <p>No backups yet. Create one now to protect your data.</p>
-                </div>
-              ) : (
-                backups.map(backup => (
-                  <div key={backup.filename} className="s-backup-row">
-                    <div className="s-backup-icon"><FiHardDrive size={15} /></div>
-                    <div className="s-backup-info">
-                      <div className="s-backup-date">
-                        {new Date(backup.createdAt).toLocaleDateString()} · {new Date(backup.createdAt).toLocaleTimeString()}
-                        {backup.kind === 'safety' && <span className="s-backup-tag">Safety copy</span>}
-                      </div>
-                      <div className="s-backup-size">
-                        {(backup.sizeBytes / 1024).toFixed(1)} KB
-                        {/* Backups written by older versions of Stocka were never
-                            checked. Saying "Checked" about them would be the same
-                            false assurance this replaced. */}
-                        {backup.verified
-                          ? <span className="s-backup-verified"><FiCheckCircle size={11} /> Checked</span>
-                          : <span className="s-backup-unverified">Not checked</span>}
-                      </div>
-                    </div>
-                    <div className="s-btn-row">
-                      <button className="s-btn-secondary s-btn-sm" onClick={() => handleExportBackup(backup.filename)}>
-                        <FiDownload size={11} /> Export
-                      </button>
-                      <button className="s-btn-danger s-btn-sm" onClick={() => handleRestoreBackup(backup.filename)} disabled={restoringBackup}>
-                        <FiUpload size={11} /> Restore
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {/* ── EXTERNAL BACKUP DRIVE ──
-              The copy that survives losing the computer. Everything above this
-              lives on the same machine as the ledger it is protecting. */}
-          {activeTab === 'backup' && isAdmin && !backupState?.isSatellite && (
-            <div className="s-card" style={{ marginTop: 16 }}>
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiSave size={17} /> Backup Drive</h2>
-                  <p className="s-card-desc">
-                    A backup on this computer cannot help if the computer is stolen or breaks.
-                    Set up a USB stick or external drive and Stocka copies your records to it
-                    automatically whenever you plug it in — then keep it somewhere away from the computer.
-                  </p>
-                </div>
-                {ext?.configured && (
-                  <button className="s-btn-primary" onClick={handleExternalNow} disabled={externalBusy || !ext?.connected}>
-                    <FiUpload size={13} /> {externalBusy ? 'Copying…' : 'Copy Now'}
-                  </button>
-                )}
-              </div>
-
-              {!ext?.configured ? (
-                <>
-                  <div className="s-backup-status">
-                    <FiAlertTriangle size={15} />
-                    <span>No backup drive set up. Your records exist only on this computer.</span>
-                  </div>
-                  {drives.length === 0 ? (
-                    <div className="s-empty">
-                      <div className="s-empty-icon"><FiSave size={30} /></div>
-                      <p>Plug in a USB stick or external drive, then choose it below.</p>
-                      <button className="s-btn-secondary" onClick={loadDrives} disabled={loadingDrives} style={{ marginTop: 12 }}>
-                        <FiRefreshCw size={12} /> {loadingDrives ? 'Looking…' : 'Look for drives'}
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      {drives.map(drive => (
-                        <div key={drive.letter} className="s-backup-row">
-                          <div className="s-backup-icon"><FiSave size={15} /></div>
-                          <div className="s-backup-info">
-                            <div className="s-backup-date">{drive.label} ({drive.letter})</div>
-                            <div className="s-backup-size">
-                              {(drive.freeBytes / 1073741824).toFixed(1)} GB free
-                              {drive.isBackupDrive && <span className="s-backup-tag">Already set up</span>}
-                            </div>
-                          </div>
-                          <div className="s-btn-row">
-                            <button
-                              className="s-btn-primary s-btn-sm"
-                              onClick={() => handleSetDrive(drive)}
-                              disabled={settingDrive}
-                            >
-                              {settingDrive ? 'Setting up…' : 'Use this drive'}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                      <button className="s-btn-secondary s-btn-sm" onClick={loadDrives} disabled={loadingDrives} style={{ marginTop: 10 }}>
-                        <FiRefreshCw size={11} /> {loadingDrives ? 'Looking…' : 'Refresh'}
-                      </button>
-                    </>
-                  )}
-                </>
-              ) : (
-                <>
-                  {/* Connected-or-not is the difference between "plug the drive in"
-                      and "the drive is here and something is wrong". */}
-                  {ext.lastError ? (
-                    <div className="s-backup-status s-backup-status--error">
-                      <FiAlertTriangle size={15} />
-                      <span>
-                        The last copy to the drive did not finish: {ext.lastError}
-                        {ext.lastSuccessAt && (
-                          <> The most recent checked copy on the drive is from{' '}
-                            {new Date(ext.lastSuccessAt).toLocaleString()}.</>
-                        )}
-                      </span>
-                    </div>
-                  ) : ext.lastVerifiedAt ? (
-                    <div className="s-backup-status s-backup-status--ok">
-                      <FiCheckCircle size={15} />
-                      <span>Last checked copy on the drive: {new Date(ext.lastVerifiedAt).toLocaleString()}</span>
-                    </div>
-                  ) : (
-                    <div className="s-backup-status">
-                      <FiSave size={15} />
-                      <span>No copy has been made to this drive yet.</span>
-                    </div>
-                  )}
-
-                  <div className="s-backup-row">
-                    <div className="s-backup-icon"><FiSave size={15} /></div>
-                    <div className="s-backup-info">
-                      <div className="s-backup-date">
-                        {ext.driveLabel || 'Backup drive'}
-                        {ext.connected
-                          ? <span className="s-backup-verified"><FiCheckCircle size={11} /> Connected{ext.letter ? ` (${ext.letter})` : ''}</span>
-                          : <span className="s-backup-unverified">Not connected</span>}
-                      </div>
-                      <div className="s-backup-size">
-                        {ext.connected
-                          ? 'Copies are made automatically while this drive is plugged in.'
-                          : 'Plug this drive in and Stocka will update it automatically.'}
-                      </div>
-                    </div>
-                    <div className="s-btn-row">
-                      <button className="s-btn-secondary s-btn-sm" onClick={handleForgetDrive}>
-                        Forget
-                      </button>
-                    </div>
-                  </div>
-
-                  <p className="s-card-desc" style={{ marginTop: 12 }}>
-                    Keep this drive somewhere separate from the computer. A drive left beside
-                    it is lost to the same fire, flood or theft.
-                  </p>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* ── OFF-SITE COPY ──
-              The copy that survives losing the shop itself. Everything above this
-              is in one building; this is the only tier that is not. */}
-          {activeTab === 'backup' && isAdmin && !backupState?.isSatellite && (
-            <div className="s-card" style={{ marginTop: 16 }}>
-              <div className="s-card-head">
-                <div>
-                  <h2 className="s-card-title"><FiUpload size={17} /> Copy Kept Outside the Shop</h2>
-                  <p className="s-card-desc">
-                    Your computer and your backup drive are both in this shop. A fire, a flood or a
-                    break-in takes them together. Save a copy and keep it somewhere else — your own
-                    Google Drive, your phone, or a stick you keep at home.
-                  </p>
-                </div>
-                <button className="s-btn-primary" onClick={handleExportOffsite} disabled={exporting}>
-                  <FiDownload size={13} /> {exporting ? 'Saving…' : 'Save a Copy'}
-                </button>
-              </div>
-
-              {/* Stocka does not upload anything. Said plainly, because the whole
-                  promise of an offline product rests on it. */}
-              <div className="s-backup-status">
-                <FiShield size={15} />
-                <span>
-                  Stocka never uploads your records anywhere. It writes a file and you decide
-                  where it goes.
-                </span>
-              </div>
-
-              {offsite?.recorded ? (
-                <div className="s-backup-row">
-                  <div className="s-backup-icon"><FiUpload size={15} /></div>
-                  <div className="s-backup-info">
-                    <div className="s-backup-date">
-                      {offsite.recordedWhere || 'Off-site copy'}
-                      <span className="s-backup-tag">Recorded, not checked</span>
-                    </div>
-                    <div className="s-backup-size">
-                      You recorded this on {new Date(offsite.recordedAt).toLocaleDateString()}
-                      {offsite.recordedFilename ? ` · ${offsite.recordedFilename}` : ''}
-                    </div>
-                  </div>
-                  <div className="s-btn-row">
-                    <button className="s-btn-secondary s-btn-sm" onClick={handleForgetOffsite}>Clear</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="s-backup-status">
-                  <FiAlertTriangle size={15} />
-                  <span>No copy outside the shop has been recorded.</span>
-                </div>
-              )}
-
-              {/* Recording is deliberately a second, separate step. Stocka cannot
-                  see the file once it is gone, so this is the owner's word — and
-                  the wording says exactly that rather than implying a check. */}
-              <div className="s-offsite-record">
-                <label className="s-offsite-label" htmlFor="offsite-where">
-                  Once you have put the file somewhere safe, note it here
-                </label>
-                <div className="s-offsite-row">
-                  <input
-                    id="offsite-where"
-                    className="s-input"
-                    type="text"
-                    value={offsiteWhere}
-                    onChange={(e) => setOffsiteWhere(e.target.value)}
-                    placeholder="Where did you put it? e.g. My Google Drive"
-                    maxLength={60}
-                  />
-                  <button className="s-btn-secondary" onClick={handleRecordOffsite}>
-                    <FiCheck size={13} /> I Saved a Copy
-                  </button>
-                </div>
-                <p className="s-offsite-note">
-                  This only records what you tell it. Stocka cannot open your Google Drive
-                  and has no way to confirm the copy is still there.
-                </p>
-              </div>
-            </div>
-          )}
+          {/* ── BACKUPS ──
+              Lives in its own component: it owns a fair amount of state, and
+              Settings was already long enough without it. */}
+          {activeTab === 'backup' && isAdmin && <BackupsPanel flash={flash} refreshToken={backupsRefresh} />}
 
           {/* ── DANGER ZONE: test-data reset (inside Backup tab) ── */}
           {activeTab === 'backup' && isAdmin && (
