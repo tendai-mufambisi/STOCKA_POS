@@ -161,3 +161,54 @@
 .modal-description { color: #666; margin-bottom: 20px; }
 
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Scroll containment — header, stock-value card and the column headings
+   (with their search boxes) stay put; only the products scroll. The search
+   boxes live inside the headings, so before this they scrolled away the
+   moment you went looking further down the list.
+   ════════════════════════════════════════════════════════════════════ */
+
+.current-inventory {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.current-inventory > * { flex: 0 0 auto; }
+
+/* The scrolling container becomes the card, so the rounded corners and border
+   frame the scroll area rather than a table sliding underneath them. */
+.current-inventory > .inventory-table-container {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.inventory-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.inventory-table thead { background: none; }
+
+.inventory-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+/* Row dividers onto the cells — a <tr> border only draws in `collapse` mode. */
+.inventory-table tbody tr { border-bottom: none; }
+.inventory-table tbody td { border-bottom: 1px solid #f1f5f9; }
+.inventory-table tbody tr:last-child td { border-bottom: none; }

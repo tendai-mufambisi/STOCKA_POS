@@ -317,3 +317,34 @@
 
 /* ── loading ── */
 .loading { text-align: center; padding: 40px; color: #94a3b8; font-size: 14px; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Scroll containment — the summary cards, sort controls and column headings
+   stay put; only the list of products scrolls.
+   ════════════════════════════════════════════════════════════════════ */
+
+.restock-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.restock-page > * { flex: 0 0 auto; }
+
+.restock-page > .restock-table {
+  flex: 0 1 auto;          /* its own size when short, scrolls when long */
+  min-height: 0;
+  overflow: auto;
+  margin-bottom: 0;
+}
+
+.restock-table table { border-collapse: separate; border-spacing: 0; }
+.restock-table thead tr { background: none; }
+
+.restock-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}

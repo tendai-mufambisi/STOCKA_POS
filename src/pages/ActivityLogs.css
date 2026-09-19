@@ -202,3 +202,36 @@
 .badge-teal   { background: #ccfbf1; color: #0f5132; }
 .badge-amber  { background: #fef3c7; color: #92400e; }
 .badge-gray   { background: #f1f5f9; color: #475569; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Scroll containment — the filters and column headings stay put, only the
+   entries scroll. Previously the whole page scrolled, taking the date range,
+   search box and column titles away with it.
+   ════════════════════════════════════════════════════════════════════ */
+
+.alog-page { height: 100%; min-height: 0; }
+
+.alog-toolbar,
+.alog-meta-row { flex: 0 0 auto; }
+
+/* Sized to its rows when there are few, and scrolls inside itself when there are
+   many — rather than a tall empty white box on a quiet day. */
+.alog-table-wrap { flex: 0 1 auto; min-height: 0; }
+
+/* Sticky headers need `separate`; `collapse` drops a stuck header's border. */
+.alog-table { border-collapse: separate; border-spacing: 0; }
+.alog-table thead tr { background: none; border-bottom: none; }
+
+.alog-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  box-shadow: inset 0 -1.5px 0 #e2e8f0;
+}
+
+/* Row dividers move from <tr> to the cells — a <tr> border only draws in
+   `collapse` mode, so without this the rows would lose their lines. */
+.alog-table tbody tr { border-bottom: none; }
+.alog-table tbody td { border-bottom: 1px solid #f1f5f9; }
+.alog-table tbody tr:last-child td { border-bottom: none; }

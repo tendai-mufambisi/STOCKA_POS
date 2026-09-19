@@ -59,3 +59,12 @@ body {
     width: 70%;
   }
 }
+/* The height chain.
+   Without these three, `height: 100%` resolves to `auto` everywhere below and the
+   whole document scrolls — which is why page headers, the Settings sidebar and
+   every table header used to scroll away. Settings.css was already written for
+   containment and simply never had a definite height to resolve against.
+   Deliberately no `overflow: hidden` on body: Login, ShopSetup and Activation sit
+   outside the dashboard and legitimately need the document to scroll on a short
+   screen. Containment starts at .dashboard-layout. */
+html, body, #root { height: 100%; }
