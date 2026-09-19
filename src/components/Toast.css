@@ -1,0 +1,110 @@
+/* Toasts — confirmation that floats above the app instead of shoving it.
+
+   The layer stacking order in this app, for reference:
+
+     1000   Modal.css overlays (OpeningFloat, ClosingFloat, Receipt, Modal default)
+     1200   BackupSignInWarning
+     2000   ConfirmModal
+     9000   SignOutModal
+     9999   EodClosed / ShiftForceClosed  (app-blocking states)
+    10050   this layer
+
+   Toasts sit above even the blocking modals on purpose: the off-site backup modal
+   has to be able to raise "Copy saved and checked" over itself. It is safe because
+   the layer never takes pointer events — only the individual toasts do. */
+
+.toast-layer {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 10050;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  background: #fff;
+  border: 1px solid var(--slate-200);
+  border-left: 4px solid var(--slate-400);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
+  font-size: 13.5px;
+  line-height: 1.45;
+  animation: toast-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* Meaning is carried by the icon and the words. The colour is a reinforcement,
+   never the only signal. */
+.toast-success { border-left-color: #16a34a; }
+.toast-error   { border-left-color: #dc2626; }
+.toast-info    { border-left-color: #2563eb; }
+
+.toast-icon { flex: 0 0 auto; display: flex; padding-top: 1px; }
+.toast-success .toast-icon { color: #16a34a; }
+.toast-error   .toast-icon { color: #dc2626; }
+.toast-info    .toast-icon { color: #2563eb; }
+
+.toast-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toast-message {
+  font-weight: 600;
+  color: var(--slate-900);
+  overflow-wrap: anywhere;
+}
+
+.toast-detail {
+  font-size: 12.5px;
+  color: var(--slate-500);
+  overflow-wrap: anywhere;
+}
+
+.toast-action {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--green-main);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.toast-action:hover { text-decoration: underline; }
+
+.toast-close {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--slate-400);
+  padding: 2px;
+  display: flex;
+  border-radius: 4px;
+}
+
+.toast-close:hover { color: var(--slate-600); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}

@@ -14,7 +14,17 @@
   padding: 28px 32px;
   max-width: 400px;
   width: 90%;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  animation: confirm-in 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes confirm-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-modal { animation: none; }
 }
 
 .confirm-modal-message {
@@ -40,25 +50,34 @@
 .confirm-btn-cancel {
   background: white;
   color: #374151;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 8px 18px;
-  font-size: 14px;
-  font-weight: 500;
+  border: 1.5px solid var(--slate-300);
+  border-radius: 9px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+  font-weight: 650;
   cursor: pointer;
+  transition: border-color 0.14s, color 0.14s;
 }
-.confirm-btn-cancel:hover { background: #f8fafc; }
+.confirm-btn-cancel:hover { border-color: var(--slate-400); color: #0f172a; }
+.confirm-btn-cancel:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .confirm-btn-ok {
-  background: #2e7d32;
+  background: var(--green-main);
   color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 8px 18px;
-  font-size: 14px;
-  font-weight: 600;
+  border: 1.5px solid var(--green-main);
+  border-radius: 9px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+  font-weight: 650;
   cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
 }
-.confirm-btn-ok:hover { background: #1b5e20; }
-.confirm-btn-ok.danger { background: #dc2626; }
-.confirm-btn-ok.danger:hover { background: #b91c1c; }
+.confirm-btn-ok:disabled { opacity: 0.5; cursor: not-allowed; }
+.confirm-btn-ok:hover:not(:disabled) { background: var(--green-dark); border-color: var(--green-dark); }
+.confirm-btn-ok.danger { background: #b91c1c; border-color: #b91c1c; }
+.confirm-btn-ok.danger:hover:not(:disabled) { background: #991b1b; border-color: #991b1b; }
+
+/* Keyboard focus in the app's own colours rather than the browser's orange. */
+.confirm-btn-cancel:focus-visible { outline: 3px solid rgba(100, 116, 139, 0.35); outline-offset: 2px; }
+.confirm-btn-ok:focus-visible { outline: 3px solid rgba(22, 163, 74, 0.35); outline-offset: 2px; }
+.confirm-btn-ok.danger:focus-visible { outline-color: rgba(185, 28, 28, 0.35); }

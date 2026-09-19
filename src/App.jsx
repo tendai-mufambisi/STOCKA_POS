@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import ShopSetup from './pages/ShopSetup'
 import Activation from './pages/Activation'
 import ErrorBoundary from './components/ErrorBoundary'
+import ToastHost from './components/ToastHost'
 import { getShop } from './database/db'
 import iconPng from './assets/icon.png'
 import { useAuthStore } from './store/useAuthStore'
@@ -124,6 +125,9 @@ function App() {
 
   return (
     <ErrorBoundary>
+      {/* Outside the router so a toast survives a route change — saving something
+          and navigating away should not swallow the confirmation. */}
+      <ToastHost />
       <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/" element={

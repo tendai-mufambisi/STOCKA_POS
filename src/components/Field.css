@@ -1,0 +1,282 @@
+/* Field — the shared input.
+   Floating label, a focus edge that draws itself from the point you clicked, and a
+   head-shake on a bad value. Everything below is namespaced `fl-*` so no page
+   stylesheet can reach in and restyle it — the same lesson as the modal, where a
+   global `.modal-footer button { border: none }` from another page erased buttons. */
+
+/* Registered so the sweep angle can be animated — an unregistered custom property
+   would jump straight from 0 to 360 instead of drawing. */
+@property --fl-sweep {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.fl { min-width: 0; }
+
+.fl-box {
+  --fl-accent: #16a34a;
+  --fl-accent-bright: #4ade80;
+  --fl-halo: rgba(22, 163, 74, 0.13);
+
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-height: 52px;
+  background: #fff;
+  border: 1.5px solid var(--slate-300);
+  border-radius: 11px;
+  transition: border-color 0.18s ease, box-shadow 0.25s ease, background 0.18s ease;
+}
+
+.fl-box:hover { border-color: var(--slate-400); }
+
+/* ── The control ─────────────────────────────────── */
+
+.fl-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 22px 13px 7px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--slate-900);
+  border-radius: 11px;
+}
+
+.fl-area .fl-control {
+  padding-top: 26px;
+  resize: vertical;
+  min-height: 84px;
+  line-height: 1.5;
+}
+
+select.fl-control {
+  cursor: pointer;
+  padding-right: 34px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+}
+
+/* The placeholder only appears once the label has moved out of its way. */
+.fl-control::placeholder { color: transparent; transition: color 0.15s; }
+.fl-control:focus::placeholder { color: var(--slate-400); }
+
+.fl-control:disabled { color: var(--slate-400); cursor: not-allowed; }
+.fl-box:has(.fl-control:disabled) { background: var(--slate-50); }
+
+/* ── Floating label ──────────────────────────────── */
+
+.fl-label {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: calc(100% - 28px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--slate-500);
+  pointer-events: none;
+  transform-origin: left center;
+  transition: top 0.2s cubic-bezier(0.2, 0.8, 0.3, 1),
+              transform 0.2s cubic-bezier(0.2, 0.8, 0.3, 1),
+              font-size 0.2s cubic-bezier(0.2, 0.8, 0.3, 1),
+              color 0.18s ease;
+}
+
+.fl-area .fl-label { top: 17px; transform: none; }
+
+/* Up and small: focused, filled, or a control that always shows a value. */
+.fl-control:focus ~ .fl-label,
+.fl-control:not(:placeholder-shown) ~ .fl-label,
+.fl-floated .fl-label {
+  top: 8px;
+  transform: none;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.fl-control:focus ~ .fl-label { color: var(--fl-accent); }
+
+.fl-req { color: #dc2626; }
+
+/* ── Prefix / suffix ($, %, kg) ──────────────────── */
+
+.fl-prefix,
+.fl-suffix {
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--slate-500);
+  flex: 0 0 auto;
+}
+
+.fl-prefix { padding-left: 14px; }
+.fl-suffix { padding-right: 14px; }
+.fl-has-prefix .fl-control { padding-left: 4px; }
+
+/* ── The edge that draws itself ──────────────────── */
+
+.fl-box::after {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 11px;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--fl-from, 0deg),
+    var(--fl-accent) 0deg,
+    var(--fl-accent-bright) var(--fl-sweep),
+    transparent var(--fl-sweep)
+  );
+  /* Paints only the ring, not the middle. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fl-box:focus-within {
+  border-color: transparent;
+  box-shadow: 0 0 0 4px var(--fl-halo), 0 6px 20px -8px rgba(22, 163, 74, 0.35);
+}
+
+.fl-box:focus-within::after {
+  opacity: 1;
+  animation: fl-draw 0.55s cubic-bezier(0.45, 0, 0.2, 1) forwards;
+}
+
+@keyframes fl-draw {
+  from { --fl-sweep: 0deg; }
+  to   { --fl-sweep: 360deg; }
+}
+
+/* ── Invalid ─────────────────────────────────────── */
+
+.fl-invalid {
+  --fl-accent: #dc2626;
+  --fl-accent-bright: #f87171;
+  --fl-halo: rgba(220, 38, 38, 0.13);
+  border-color: #dc2626;
+  background: #fffafa;
+}
+
+.fl-invalid .fl-label { color: #b91c1c; }
+.fl-invalid .fl-control:focus ~ .fl-label { color: #b91c1c; }
+
+.fl-invalid:focus-within {
+  box-shadow: 0 0 0 4px var(--fl-halo), 0 6px 20px -8px rgba(220, 38, 38, 0.35);
+}
+
+/* A quick shake of the head — no. */
+.fl-shake { animation: fl-shake 0.42s cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+
+@keyframes fl-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(3px); }
+  30%, 50%, 70% { transform: translateX(-6px); }
+  40%, 60% { transform: translateX(6px); }
+}
+
+/* ── Hint / error text ───────────────────────────── */
+
+.fl-msg {
+  margin: 6px 3px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--slate-500);
+}
+
+.fl-msg-err {
+  color: #b91c1c;
+  font-weight: 600;
+  animation: fl-msg-in 0.2s ease;
+}
+
+@keyframes fl-msg-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Layout helpers for forms built from Fields ──── */
+
+.fl-stack { display: grid; gap: 14px; }
+
+.fl-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.fl-row-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 620px) {
+  .fl-row, .fl-row-3 { grid-template-columns: 1fr; }
+}
+
+/* ── Motion off ──────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .fl-box, .fl-label, .fl-control::placeholder { transition: none; }
+  .fl-box:focus-within::after { animation: none; --fl-sweep: 360deg; }
+  .fl-shake, .fl-msg-err { animation: none; }
+}
+
+/* ── Picture / file tile ─────────────────────────── */
+/* A bare file input cannot be styled and only ever says "No file chosen". */
+
+.fl-upload {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1.5px dashed var(--slate-300);
+  border-radius: 11px;
+  background: var(--slate-50);
+}
+
+.fl-upload-thumb {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid var(--slate-200);
+  color: var(--slate-400);
+  overflow: hidden;
+}
+
+.fl-upload-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+.fl-upload-words { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.fl-upload-title { font-size: 13.5px; font-weight: 650; color: var(--slate-900); }
+.fl-upload-sub { font-size: 12px; color: var(--slate-500); }
+
+.fl-upload-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.fl-upload-actions label.smodal-btn { cursor: pointer; }
+
+.fl-upload-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+@media (max-width: 560px) {
+  .fl-upload { flex-wrap: wrap; }
+  .fl-upload-actions { width: 100%; }
+}

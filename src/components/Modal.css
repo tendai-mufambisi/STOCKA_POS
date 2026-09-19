@@ -22,6 +22,9 @@
 }
 
 .modal {
+  /* .modal-close is position:absolute and had nothing to anchor to, so it was
+     positioning against the viewport rather than against the dialog. */
+  position: relative;
   background: white;
   border-radius: 8px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.08);
@@ -30,6 +33,16 @@
   max-height: 90vh;
   overflow: hidden;
   animation: slideUp 0.3s ease-out;
+}
+
+/* The dialog takes focus on open so the keyboard starts inside it and screen
+   readers announce it. It should not paint a focus ring for that — the dialog is
+   self-evidently the thing in front of you. Controls inside it still show theirs. */
+[role="dialog"]:focus { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-overlay,
+  .modal { animation: none; }
 }
 
 .modal.modal-large {
@@ -139,4 +152,214 @@
 
 .modal-close:hover {
   color: #333;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Modal primitive (src/components/Modal.jsx)
+
+   Namespaced `smodal-*` on purpose. The generic `.modal-header` and
+   `.modal-footer` above are redefined by RestockNeeded.css and Dashboard.css as
+   plain global rules, and since every page stylesheet ends up in one bundle they
+   win by cascade order and specificity. That is how a dialog ended up with its
+   title and subtitle side by side (RestockNeeded's `display:flex` on
+   `.modal-header`) and with invisible white buttons (`.modal-footer button
+   { border: none }` beating `.s-btn-secondary`).
+
+   A dialog portalled to document.body cannot depend on which page happens to be
+   mounted, so it carries its own styling and its own buttons.
+   ════════════════════════════════════════════════════════════════════ */
+
+.smodal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.18s ease-out;
+}
+
+.smodal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(88vh, 760px);
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  overflow: hidden;
+  animation: slideUp 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.smodal-small  { max-width: 420px; }
+.smodal-medium { max-width: 560px; }
+.smodal-large  { max-width: 760px; }
+
+/* ── Head ── title above subtitle, always. */
+.smodal-head {
+  flex: 0 0 auto;
+  display: block;
+  padding: 22px 52px 16px 24px;
+  border-bottom: 1px solid var(--slate-200);
+}
+
+.smodal-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.2px;
+  color: var(--slate-900);
+  line-height: 1.3;
+}
+
+.smodal-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--slate-500);
+}
+
+.smodal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--slate-400);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+
+.smodal-close:hover { background: var(--slate-100); color: var(--slate-600); }
+
+.smodal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--slate-600);
+}
+
+.smodal-body::-webkit-scrollbar { width: 6px; }
+.smodal-body::-webkit-scrollbar-thumb { background: var(--slate-300); border-radius: 4px; }
+
+.smodal-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 24px;
+  border-top: 1px solid var(--slate-200);
+  background: var(--slate-50);
+}
+
+/* ── Buttons ──
+   Self-contained, so a modal never inherits a page's button rules. Every one of
+   them has a visible edge — a white button on a near-white footer with the border
+   stripped off was the thing that looked broken. */
+.smodal-foot button,
+.smodal-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 18px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  border: 1.5px solid var(--slate-300);
+  background: #fff;
+  color: var(--slate-600);
+}
+
+.smodal-foot button:hover:not(:disabled),
+.smodal-btn:hover:not(:disabled) {
+  border-color: var(--slate-400);
+  background: #fff;
+  color: var(--slate-900);
+}
+
+.smodal-foot button:disabled,
+.smodal-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.smodal-foot .smodal-btn-primary,
+.smodal-btn-primary {
+  background: var(--green-main);
+  border-color: var(--green-main);
+  color: #fff;
+}
+
+.smodal-foot .smodal-btn-primary:hover:not(:disabled),
+.smodal-btn-primary:hover:not(:disabled) {
+  background: var(--green-dark);
+  border-color: var(--green-dark);
+  color: #fff;
+}
+
+.smodal-foot .smodal-btn-danger,
+.smodal-btn-danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+.smodal-foot .smodal-btn-danger:hover:not(:disabled),
+.smodal-btn-danger:hover:not(:disabled) { background: #991b1b; border-color: #991b1b; }
+
+/* Pushes a button to the far left of the footer — "I'll do this later" belongs
+   away from the action that matters. */
+.smodal-btn-away { margin-right: auto; }
+
+@media (max-width: 560px) {
+  .smodal-foot { flex-direction: column-reverse; align-items: stretch; }
+  .smodal-foot button { width: 100%; }
+  .smodal-btn-away { margin-right: 0; }
+}
+
+/* Page empty-states are sized for a full page; inside a dialog they leave a hole. */
+.smodal-body .s-empty { padding: 26px 16px; }
+.smodal-body .s-empty-icon { margin-bottom: 8px; }
+
+/* Primary actions lift a touch under the pointer and settle when pressed — feedback
+   that the button is live, without the button ever moving out from under the aim. */
+.smodal-foot button,
+.smodal-btn { transition: background 0.14s, border-color 0.14s, color 0.14s, transform 0.14s, box-shadow 0.14s; }
+
+.smodal-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px -8px rgba(22, 101, 52, 0.6);
+}
+
+.smodal-btn-danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px -8px rgba(153, 27, 27, 0.6);
+}
+
+.smodal-foot button:active:not(:disabled),
+.smodal-btn:active:not(:disabled) { transform: translateY(0) scale(0.98); box-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .smodal-foot button, .smodal-btn { transition: none; }
+  .smodal-btn-primary:hover:not(:disabled),
+  .smodal-btn-danger:hover:not(:disabled),
+  .smodal-foot button:active:not(:disabled),
+  .smodal-btn:active:not(:disabled) { transform: none; }
 }
