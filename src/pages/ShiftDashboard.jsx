@@ -311,7 +311,9 @@ function ShiftDashboard() {
         </div>
       )}
 
-      {/* ── Tabs ── */}
+      {/* ── Tabs ── only once a shift is open for viewing; before that the list is
+          the only view, and "All shifts" is already the tab above this page. */}
+      {selectedShift && (
       <div className="sd-tabs">
         <button className={`sd-tab ${activeTab === 'list' ? 'active' : ''}`} onClick={() => setActiveTab('list')}>
           All Shifts
@@ -322,6 +324,7 @@ function ShiftDashboard() {
           </button>
         )}
       </div>
+      )}
 
       {/* ═══ LIST VIEW ═══ */}
       {activeTab === 'list' && (

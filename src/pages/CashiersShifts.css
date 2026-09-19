@@ -1,0 +1,34 @@
+.cs-page { display: flex; flex-direction: column; gap: 16px; min-height: 100%; }
+
+.cs-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 4px;
+  background: #e8efe9;
+  border-radius: 12px;
+}
+
+.cs-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 8px 18px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.cs-tab:hover { color: #0f172a; }
+.cs-tab:focus-visible { outline: 2px solid #16a34a; outline-offset: 1px; }
+.cs-tab.active { background: #fff; color: #15803d; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); }
+.cs-tab-label { font-size: 14px; font-weight: 700; }
+.cs-tab-hint { font-size: 11.5px; color: #94a3b8; }
+
+.cs-body { flex: 1 1 auto; min-height: 0; }

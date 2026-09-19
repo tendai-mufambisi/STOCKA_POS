@@ -1,0 +1,116 @@
+/* Inner menu for an area of the app — same idea as the Settings sidebar. The
+   menu stays put; only the page beside it scrolls. */
+
+.area-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 20px;
+}
+
+.area-nav {
+  flex: 0 0 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.area-nav-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 6px 10px;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.area-nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 10px;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.area-nav-title { margin: 0; font-size: 16px; font-weight: 750; color: #0f172a; }
+.area-nav-desc { margin: 2px 0 0; font-size: 12px; line-height: 1.45; color: #64748b; }
+
+.area-nav-group { display: flex; flex-direction: column; gap: 2px; }
+
+.area-nav-label {
+  padding: 0 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.area-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: #475569;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.area-nav-item svg { flex: 0 0 auto; }
+.area-nav-item:hover { background: #f1f5f9; color: #0f172a; }
+.area-nav-item:focus-visible { outline: 2px solid #16a34a; outline-offset: -2px; }
+
+.area-nav-item.active {
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.area-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22%;
+  height: 56%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #16a34a;
+}
+
+.area-nav-words { display: flex; flex-direction: column; min-width: 0; }
+.area-nav-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.area-nav-hint { font-size: 11px; line-height: 1.3; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.area-nav-item.active .area-nav-hint { color: #4d9a67; }
+
+/* The page itself. Pages that contain their own scrolling (sticky table
+   headers) size against this box; the rest simply scroll inside it. */
+.area-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.area-content > * { flex: 1 0 auto; }
+
+@media (max-width: 1000px) {
+  .area-nav { flex-basis: 200px; }
+  .area-nav-hint { display: none; }
+}

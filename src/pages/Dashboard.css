@@ -1,6 +1,9 @@
 .dashboard-layout {
   display: flex;
-  min-height: 100vh;
+  /* height, not min-height: a definite height here is what every `height: 100%`
+     below depends on. Containment stops at this element — see index.css. */
+  height: 100vh;
+  overflow: hidden;
   background: #f0f4f0;
 }
 
@@ -473,23 +476,51 @@
 /* ── Main content ────────────────────────────────────────── */
 .main-content {
   margin-left: var(--sidebar-w-collapsed);   /* always matches the collapsed sidebar strip */
-  flex: 1;
-  padding: 32px;
-  min-height: 100vh;
+  flex: 1 1 auto;
+  min-width: 0;            /* stops a wide table forcing the flex row open */
+  height: 100%;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  /* Safe only because the sole child that can overflow is .main-scroll, and that
+     scrolls rather than clips. */
+  overflow: hidden;
 }
 
 .main-content.fullscreen {
   padding: 0;
 }
 
+/* The single scroll container for whatever page is showing.
+   `overflow: auto` and never `hidden`: pages that have not yet been given their
+   own internal layout keep scrolling here, so nothing can become unreachable.
+   `min-height: 0` is load-bearing — without it a flex child refuses to shrink
+   below its content and the scrollbar never appears. */
+.main-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 32px 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* No header on this page, so the scroll region needs the top padding back. */
+.main-content:not(.fullscreen) > .main-scroll:first-child { padding-top: 32px; }
+
+/* Sales and Settings lay themselves out and own their own scrolling. */
+.main-content.fullscreen > .main-scroll {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* A flex sibling of the scroll region, so it is pinned by construction. */
 .main-header {
+  flex: 0 0 auto;
+  margin: 32px 32px 20px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
   padding: 13px 18px;
   background: var(--surface);
   border-radius: 14px;
@@ -1501,3 +1532,74 @@
   font-weight: 600;
   cursor: pointer;
 }
+
+/* ── Sidebar groups: "Every day" and "More" ──
+   Plain labels, not collapsible sections — there are few enough items now that
+   hiding any of them would only cost a click. On the icon strip the label
+   becomes a thin rule so the groups still read as groups. */
+.nav-group-label {
+  position: relative;
+  height: 30px;
+  margin: 10px 8px 2px;
+  padding: 0 14px;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-group-label span { opacity: 0; transition: opacity 0.15s ease; }
+.sidebar.expanded .nav-group-label span { opacity: 1; transition: opacity 0.2s ease 0.1s; }
+
+.nav-group-label::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  height: 1px;
+  background: rgba(255,255,255,0.16);
+  transition: opacity 0.15s ease;
+}
+.sidebar.expanded .nav-group-label::after { opacity: 0; }
+
+/* Arrow on an area (Stock, Money & Reports): it opens a section with its own menu. */
+.nav-trailing {
+  margin-left: auto;
+  margin-right: 12px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.sidebar.expanded .nav-trailing { opacity: 0.6; }
+.nav-item:hover .nav-trailing, .nav-item.active .nav-trailing { opacity: 1; }
+
+/* Settings sits at the bottom, just above the signed-in user, out of the list. */
+.sidebar-bottom-nav {
+  flex: 0 0 auto;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
+
+/* A page inside an area: the inner menu and the page share the height, and
+   only the page scrolls. */
+.main-scroll.has-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main-scroll.has-area > :not(.area-layout) { flex: 0 0 auto; }
+
+/* Fit the whole sidebar on a laptop screen without scrolling: slightly shorter
+   rows now that there are only nine of them. */
+.sidebar-nav { padding: 6px 0; }
+.sidebar-nav .nav-item,
+.sidebar-bottom-nav .nav-item { height: 40px; margin: 1px 8px; }
+.sidebar-nav .nav-icon,
+.sidebar-bottom-nav .nav-icon { height: 40px; }

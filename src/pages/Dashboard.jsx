@@ -17,8 +17,8 @@ import Money from './Money'
 import EndOfDay from './EndOfDay'
 import Reports from './Reports'
 import Settings from './Settings'
-import ShiftDashboard from './ShiftDashboard'
-import CashierSessions from './CashierSessions'
+import CashiersShifts from './CashiersShifts'
+import AreaLayout from '../components/AreaLayout'
 import RestockNeeded from './RestockNeeded'
 import DeadStock from './DeadStock'
 import ExpiryTracking from './ExpiryTracking'
@@ -44,7 +44,6 @@ import SignOutModal from '../components/SignOutModal'
 import { useShiftGuard } from '../hooks/useShiftGuard'
 
 import {
-  LuLayoutDashboard,
   LuScanBarcode,
   LuReceiptText,
   LuPackage,
@@ -61,12 +60,10 @@ import {
   LuChartColumn,
   LuFileText,
   LuSunset,
-  LuTimer,
   LuUsers,
   LuHistory,
   LuSettings,
   LuLogOut,
-  LuChevronDown,
   LuCircleDollarSign,
   LuTrendingUp,
   LuTrendingDown,
@@ -76,45 +73,88 @@ import {
   LuDownload,
   LuX,
   LuArrowRight,
-  LuClock
+  LuClock,
+  LuWarehouse,
+  LuChartPie,
+  LuChevronRight,
+  LuHouse
 } from 'react-icons/lu'
 
-// Standalone Dashboard item + collapsible sections. Section order and item
-// order here IS the sidebar order; role filtering happens at render time.
-const NAV_HOME = { id: 'dashboard', icon: LuLayoutDashboard, label: 'Dashboard' }
+// ── What the sidebar shows ──
+//
+// The sidebar used to list all twenty-two pages under four headings. Now it has
+// three layers:
+//   1. Home, then the jobs done every day — one click each, always on show.
+//   2. Two areas (Stock, Money & Reports). Each opens with its own inner menu,
+//      the way Settings does, holding everything used less often.
+//   3. Settings, at the bottom next to the signed-in user.
+// Page ids are unchanged, so role privileges and links from elsewhere
+// (notifications, dashboard shortcuts) keep working.
+const NAV_HOME = { id: 'dashboard', icon: LuHouse, label: 'Home' }
 
-const NAV_SECTIONS = [
-  { id: 'sales', label: 'Sales', items: [
-    { id: 'my-transactions',  icon: LuReceiptText,    label: 'Transactions' },
-  ]},
-  { id: 'inventory', label: 'Inventory', items: [
-    { id: 'products',         icon: LuPackage,        label: 'Products' },
-    { id: 'inventory',        icon: LuBoxes,          label: 'Current Inventory' },
-    { id: 'reconciliation',   icon: LuClipboardCheck, label: 'Reconciliation' },
-    { id: 'stock',            icon: LuPackagePlus,    label: 'Receive Stock' },
-    { id: 'suppliers',        icon: LuTruck,          label: 'Suppliers' },
-    { id: 'restock',          icon: LuPackageSearch,  label: 'Restock Needed' },
-    { id: 'deadstock',        icon: LuPackageX,       label: 'Dead Stock' },
-    { id: 'expiry',           icon: LuCalendarClock,  label: 'Expiry Tracking' },
-    { id: 'losses',           icon: LuPackageMinus,   label: 'Breakages & Losses' },
-    { id: 'cost-prices',      icon: LuCircleDollarSign, label: 'Cost Prices' },
-  ]},
-  { id: 'finance', label: 'Finance', items: [
-    { id: 'expenses',         icon: LuWallet,         label: 'Expenses' },
-    { id: 'money',            icon: LuBanknote,       label: 'Money' },
-    { id: 'business-reports', icon: LuFileText,       label: 'Business Reports' },
-    { id: 'reports',          icon: LuChartColumn,    label: 'Classic Reports' },
-    { id: 'endofday',         icon: LuSunset,         label: 'End of Day' },
-    { id: 'shifts',           icon: LuTimer,          label: 'Shift Management' },
-    { id: 'cashier-sessions', icon: LuUsers,          label: 'Cashier Sessions' },
-  ]},
-  { id: 'operations', label: 'Operations', items: [
-    { id: 'activitylogs',     icon: LuHistory,        label: 'Activity Logs' },
-    { id: 'settings',         icon: LuSettings,       label: 'Settings' },
-  ]},
+const NAV_DAILY = [
+  { id: 'stock',           icon: LuPackagePlus, label: 'Receive Stock' },
+  { id: 'expenses',        icon: LuWallet,      label: 'Expenses' },
+  // Cashier Sessions + Shift Management, now one page with a tab for each.
+  { id: 'cashiers',        icon: LuUsers,       label: 'Cashiers & Shifts', pages: ['cashier-sessions', 'shifts'] },
+  { id: 'endofday',        icon: LuSunset,      label: 'End of Day' },
+  { id: 'my-transactions', icon: LuReceiptText, label: 'Sales History' },
 ]
 
-const SIDEBAR_SECTIONS_KEY = 'stocka_sidebar_sections'
+const NAV_AREAS = [
+  {
+    id: 'area-stock', icon: LuWarehouse, label: 'Stock',
+    desc: 'Everything about what is on your shelves',
+    groups: [
+      { label: 'Your products', items: [
+        { id: 'products',       icon: LuPackage,          label: 'Products',        hint: 'Add and edit what you sell' },
+        { id: 'inventory',      icon: LuBoxes,            label: 'Stock Levels',    hint: 'How much of each item you have' },
+        { id: 'suppliers',      icon: LuTruck,            label: 'Suppliers',       hint: 'Who you buy from' },
+        { id: 'cost-prices',    icon: LuCircleDollarSign, label: 'Cost Prices',     hint: 'What each item costs you' },
+      ]},
+      { label: 'Stock checks', items: [
+        { id: 'restock',        icon: LuPackageSearch,    label: 'Restock Needed',  hint: 'Running low — order soon' },
+        { id: 'reconciliation', icon: LuClipboardCheck,   label: 'Stock Count',     hint: 'Count the shelf, fix the numbers' },
+        { id: 'expiry',         icon: LuCalendarClock,    label: 'Expiry Dates',    hint: 'What goes off soon' },
+        { id: 'deadstock',      icon: LuPackageX,         label: 'Dead Stock',      hint: 'Items that are not selling' },
+        { id: 'losses',         icon: LuPackageMinus,     label: 'Breakages & Losses', hint: 'Write off damaged or missing stock' },
+      ]},
+    ],
+  },
+  {
+    id: 'area-money', icon: LuChartPie, label: 'Money & Reports',
+    desc: 'How the business is doing',
+    groups: [
+      { label: 'Reports', items: [
+        { id: 'business-reports', icon: LuFileText,     label: 'Business Reports', hint: 'Profit, trends and best sellers' },
+        { id: 'reports',          icon: LuChartColumn,  label: 'Classic Reports',  hint: 'The original sales and stock reports' },
+      ]},
+      { label: 'Money', items: [
+        { id: 'money',            icon: LuBanknote,     label: 'Money',            hint: 'Cash taken out by the owner' },
+      ]},
+      { label: 'Records', items: [
+        { id: 'activitylogs',     icon: LuHistory,      label: 'Activity Logs',    hint: 'Who did what, and when' },
+      ]},
+    ],
+  },
+]
+
+const NAV_SETTINGS = { id: 'settings', icon: LuSettings, label: 'Settings' }
+
+const areaPageIds = (area) => area.groups.flatMap(g => g.items.map(i => i.id))
+const areaOf = (pageId) => NAV_AREAS.find(a => areaPageIds(a).includes(pageId))
+
+// Page titles for the header, taken from the same labels the sidebar uses.
+const PAGE_TITLES = {
+  ...Object.fromEntries(NAV_DAILY.filter(i => !i.pages).map(i => [i.id, i.label])),
+  ...Object.fromEntries(NAV_AREAS.flatMap(a => a.groups.flatMap(g => g.items.map(i => [i.id, i.label])))),
+  'cashier-sessions': 'Cashiers & Shifts',
+  shifts: 'Cashiers & Shifts',
+}
+
+// The page last opened inside each area, so going back to Stock returns you to
+// where you were in it.
+const AREA_LAST_KEY = 'stocka_area_last'
 
 function Dashboard() {
   const navigate = useNavigate()
@@ -127,9 +167,8 @@ function Dashboard() {
   const [metricsUnreachable, setMetricsUnreachable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [sidebarExpanded, setSidebarExpanded] = useState(false)
-  // Missing key = open, so every section shows on first run
-  const [expandedSections, setExpandedSections] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(SIDEBAR_SECTIONS_KEY)) || {} } catch { return {} }
+  const [areaLast, setAreaLast] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(AREA_LAST_KEY)) || {} } catch { return {} }
   })
   const [shopSettings, setShopSettings] = useState(null)
   const [activeCashiers, setActiveCashiers] = useState([])
@@ -435,12 +474,16 @@ function Dashboard() {
     }
   }, [navigate, user?.id])
 
+  // Refetch whenever Home comes back into view, not only at login. This shell
+  // stays mounted while the user works on other pages, so without it an End of
+  // Day run elsewhere left Home saying "2 shifts are still open" long after
+  // they had been closed — LAN sync events do not fire for local changes.
   useEffect(() => {
-    if (user?.id) {
+    if (user?.id && activePage === 'dashboard') {
       loadDashboardData()
       loadCurrentShift()
     }
-  }, [user?.id])
+  }, [user?.id, activePage])
 
   // Reload dashboard stats when any LAN machine changes data
   useLanSync(() => { if (user?.id) loadDashboardData() })
@@ -528,15 +571,49 @@ function Dashboard() {
   const userRole = user?.role || 'Cashier'
   const rolePrivileges = parseRolePrivileges(shopSettings?.role_privileges)
 
-  const isSectionOpen = (id) => expandedSections[id] !== false
+  const allowed = (id) => canRoleAccessNav(userRole, id, rolePrivileges)
+  const entryPages = (entry) => (entry.pages || [entry.id]).filter(allowed)
+  const currentArea = areaOf(activePage)
 
-  const toggleSection = (id) => {
-    setExpandedSections(prev => {
-      const next = { ...prev, [id]: !isSectionOpen(id) }
-      try { localStorage.setItem(SIDEBAR_SECTIONS_KEY, JSON.stringify(next)) } catch { /* non-fatal */ }
+  // Remember the last page opened inside each area.
+  useEffect(() => {
+    if (!currentArea) return
+    setAreaLast(prev => {
+      if (prev[currentArea.id] === activePage) return prev
+      const next = { ...prev, [currentArea.id]: activePage }
+      try { localStorage.setItem(AREA_LAST_KEY, JSON.stringify(next)) } catch { /* non-fatal */ }
       return next
     })
+  }, [activePage, currentArea])
+
+  const openArea = (area) => {
+    const pages = areaPageIds(area).filter(allowed)
+    const last = areaLast[area.id]
+    setActivePage(pages.includes(last) ? last : pages[0])
   }
+
+  // One sidebar button. `pages` are the page ids that light it up.
+  const navButton = (entry, { pages, onClick, trailing } = {}) => {
+    const on = (pages || [entry.id]).includes(activePage)
+    const Icon = entry.icon
+    return (
+      <button
+        key={entry.id}
+        className={`nav-item ${on ? 'active' : ''}`}
+        onClick={onClick || (() => setActivePage(entry.id))}
+        title={!sidebarExpanded ? entry.label : ''}
+        aria-current={on ? 'page' : undefined}
+      >
+        <span className="nav-icon"><Icon size={20} /></span>
+        <span className="nav-label">{entry.label}</span>
+        {trailing}
+        {on && <span className="nav-active-dot" />}
+      </button>
+    )
+  }
+
+  const dailyEntries = NAV_DAILY.filter(e => entryPages(e).length > 0)
+  const areaEntries = NAV_AREAS.filter(a => areaPageIds(a).some(allowed))
 
   const d = dashboardStats
   // A figure the engine could not compute renders as '—', never as $0.00.
@@ -635,11 +712,15 @@ function Dashboard() {
       case 'reports':
         return <Reports />
       case 'cashier-sessions':
-        return <CashierSessions />
+      case 'shifts':
+        return <CashiersShifts
+                 activePage={activePage}
+                 onNavigate={setActivePage}
+                 canLive={allowed('cashier-sessions')}
+                 canHistory={allowed('shifts')}
+               />
       case 'endofday':
         return <EndOfDay />
-      case 'shifts':
-        return <ShiftDashboard />
       case 'restock':
         return <RestockNeeded />
       case 'deadstock':
@@ -702,51 +783,29 @@ function Dashboard() {
 
         {/* Navigation */}
         <nav className="sidebar-nav">
-          <button
-            className={`nav-item ${activePage === NAV_HOME.id ? 'active' : ''}`}
-            onClick={() => setActivePage(NAV_HOME.id)}
-            title={!sidebarExpanded ? NAV_HOME.label : ''}
-          >
-            <span className="nav-icon"><NAV_HOME.icon size={20} /></span>
-            <span className="nav-label">{NAV_HOME.label}</span>
-            {activePage === NAV_HOME.id && <span className="nav-active-dot" />}
-          </button>
+          {navButton(NAV_HOME)}
 
-          {NAV_SECTIONS.map(section => {
-            const items = section.items.filter(item => canRoleAccessNav(userRole, item.id, rolePrivileges))
-            if (items.length === 0) return null
-            const open = isSectionOpen(section.id)
-            const containsActive = items.some(item => item.id === activePage)
-            return (
-              <div key={section.id} className={`nav-section${open ? ' open' : ''}`}>
-                <button
-                  className="nav-section-header"
-                  onClick={() => toggleSection(section.id)}
-                  aria-expanded={open}
-                  tabIndex={sidebarExpanded ? 0 : -1}
-                >
-                  <span className="nav-section-label">{section.label}</span>
-                  {!open && containsActive && <span className="nav-section-active-dot" />}
-                  <LuChevronDown size={15} className="nav-section-chevron" />
-                </button>
-                <div className="nav-section-items">
-                  {items.map(item => (
-                    <button
-                      key={item.id}
-                      className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-                      onClick={() => setActivePage(item.id)}
-                      title={!sidebarExpanded ? item.label : ''}
-                    >
-                      <span className="nav-icon"><item.icon size={20} /></span>
-                      <span className="nav-label">{item.label}</span>
-                      {activePage === item.id && <span className="nav-active-dot" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )
+          {dailyEntries.length > 0 && (
+            <div className="nav-group-label"><span>Every day</span></div>
+          )}
+          {dailyEntries.map(entry => {
+            const pages = entryPages(entry)
+            return navButton(entry, { pages: entry.pages, onClick: () => setActivePage(pages[0]) })
           })}
+
+          {areaEntries.length > 0 && (
+            <div className="nav-group-label"><span>More</span></div>
+          )}
+          {areaEntries.map(area => navButton(area, {
+            pages: areaPageIds(area),
+            onClick: () => openArea(area),
+            trailing: <LuChevronRight size={15} className="nav-trailing" />,
+          }))}
         </nav>
+
+        <div className="sidebar-bottom-nav">
+          {navButton(NAV_SETTINGS)}
+        </div>
 
         {/* Footer */}
         <div className="sidebar-footer">
@@ -778,25 +837,7 @@ function Dashboard() {
 
       <main className={`main-content${isFullScreenPage ? ' fullscreen' : ''}`}>
         {!isFullScreenPage && (() => {
-          const pageTitles = {
-            dashboard: null,
-            products: 'Products',
-            inventory: 'Current Inventory',
-            reconciliation: 'Reconciliation',
-            stock: 'Receive Stock',
-            suppliers: 'Suppliers',
-            restock: 'Restock Needed',
-            deadstock: 'Dead Stock',
-            expenses: 'Expenses',
-            reports: 'Reports',
-            endofday: 'End of Day',
-            shifts: 'Shift Management',
-            'cashier-sessions': 'Cashier Sessions',
-            expiry: 'Expiry Tracking',
-            losses: 'Breakages & Losses',
-            activitylogs: 'Activity Logs',
-          }
-          const title = pageTitles[activePage]
+          const title = PAGE_TITLES[activePage] || null
           return (
             <div className="main-header">
               <div className="header-left">
@@ -810,6 +851,9 @@ function Dashboard() {
             </div>
           )
         })()}
+
+        {/* The one scroll container for the page. The header above stays put. */}
+        <div className={`main-scroll${currentArea ? ' has-area' : ''}`}>
 
         {(updateInfo || updateDownloading || updateReady) && (
           <div className={`update-banner ${updateReady ? 'ready' : ''}`}>
@@ -858,7 +902,17 @@ function Dashboard() {
           </div>
         )}
 
-        {renderPage()}
+        {currentArea ? (
+          <AreaLayout
+            area={currentArea}
+            items={areaPageIds(currentArea).filter(allowed)}
+            activePage={activePage}
+            onNavigate={setActivePage}
+          >
+            {renderPage()}
+          </AreaLayout>
+        ) : renderPage()}
+        </div>
       </main>
 
       {showOpeningFloatModal && (
