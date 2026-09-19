@@ -56,6 +56,24 @@ contextBridge.exposeInMainWorld('stocka', {
   db: {
     backup:      ()         => ipcRenderer.invoke('db:backup'),
     listBackups: ()         => ipcRenderer.invoke('db:list-backups'),
+    backupState: ()         => ipcRenderer.invoke('db:backup-state'),
+    // External backup drive
+    listDrives:   ()               => ipcRenderer.invoke('backup:list-drives'),
+    setDrive:     (letter, label)  => ipcRenderer.invoke('backup:set-drive', letter, label),
+    forgetDrive:  ()               => ipcRenderer.invoke('backup:forget-drive'),
+    externalNow:  ()               => ipcRenderer.invoke('backup:external-now'),
+    // Off-site: Stocka writes a file, the shop decides where it goes.
+    exportOffsite:   ()        => ipcRenderer.invoke('backup:export-offsite'),
+    recordOffsite:   (details) => ipcRenderer.invoke('backup:record-offsite', details),
+    forgetOffsite:   ()        => ipcRenderer.invoke('backup:forget-offsite'),
+    restoreFromFile: ()        => ipcRenderer.invoke('backup:restore-from-file'),
+    // Fires when the backup drive is plugged in or removed, so the screen can
+    // react to the drive itself rather than waiting for somebody to refresh.
+    onExternalChange: (cb) => {
+      const handler = (_e, data) => cb(data)
+      ipcRenderer.on('backup:external-changed', handler)
+      return () => ipcRenderer.removeListener('backup:external-changed', handler)
+    },
     restore:     (filename) => ipcRenderer.invoke('db:restore', filename),
     getPaths:    ()         => ipcRenderer.invoke('db:get-paths'),
     exportFile:  (dest)     => ipcRenderer.invoke('db:export-file', dest),
@@ -318,6 +336,8 @@ contextBridge.exposeInMainWorld('stocka', {
 
   // ── LAN SYNC ─────────────────────────────────────────────
   lan: {
+    // Main's backup health, for a satellite that wants to warn its cashier.
+    getMainBackupHealth: () => ipcRenderer.invoke('lan:get-main-backup-health'),
     getStatus:      ()       => ipcRenderer.invoke('lan:get-status'),
     getConfig:      ()       => ipcRenderer.invoke('lan:get-config'),
     saveConfig:     (cfg)    => ipcRenderer.invoke('lan:save-config', cfg),

@@ -348,6 +348,14 @@ const ROUTES = [
         broadcastChange(channel)
         if (channel === 'domain:eod:add') broadcastEodClosed(args[0]?.date, args[0]?.cashier)
         if (_notifyMain) _notifyMain('lan:data-changed', { channel })
+        // A sale rung up on till 2 lands in Main's database here, not through the
+        // local IPC handlers — without this, a shop whose Main machine is only a
+        // server would back up nothing its satellites sold.
+        try {
+          const backupEngine = require('../database/backupEngine')
+          if (channel === 'domain:eod:add') backupEngine.runBackupNow(channel).catch(() => {})
+          else backupEngine.requestBackup(channel)
+        } catch (_) { /* backup must never break a satellite's write */ }
       }
     } catch (err) {
       audit.clearRequestMachine()
@@ -367,6 +375,31 @@ const ROUTES = [
         : err.code === 'SHIFT_NOT_OPEN' ? 409
         : err.message.includes('not found') ? 404 : 500
       send(res, status, { error: err.message, code: err.code || null })
+    }
+  }],
+
+  // BACKUP HEALTH
+  //
+  // A satellite has no backups of its own worth reporting — its database is a
+  // partial mirror. What it can usefully show its cashier is whether MAIN is
+  // protected, and that turns out to be the strongest nudge available: the owner
+  // opens this machine twice a week, the cashier stands at it all day and is the
+  // person who can actually plug the drive in.
+  ['GET',  '/lan/backup-health', async (req, res) => {
+    try {
+      const backupEngine = require('../database/backupEngine')
+      const externalBackup = require('../database/externalBackup')
+      const offsiteBackup = require('../database/offsiteBackup')
+      send(res, 200, {
+        ...backupEngine.getState(),
+        external: externalBackup.getExternalState(),
+        offsite: offsiteBackup.getOffsiteState(),
+        // Stamped so a satellite can tell the difference between "Main says it is
+        // protected" and "Main has not answered for two days".
+        reportedAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      send(res, 200, { unavailable: true, error: err.message })
     }
   }],
 

@@ -49,6 +49,36 @@ function wrap(fn) {
   }
 }
 
+// ── backup triggers ───────────────────────────────────────────────────────────
+//
+// Every write that lands in this machine's database asks the backup engine for a
+// copy. The engine coalesces them, so a counter working through a queue costs one
+// backup rather than one per sale, and it ignores the request outright on a
+// satellite — a satellite's writes go to Main, which takes its own backup there.
+//
+// Required lazily: lan/index pulls in both this module and lanServer, and resolving
+// them at load time here would order that badly.
+let _writeChannels = null
+function isWriteChannel(channel) {
+  if (!_writeChannels) {
+    try { _writeChannels = require('../lan/lanServer').WRITE_CHANNELS_SERVER }
+    catch (_) { return false }
+  }
+  return _writeChannels.has(channel)
+}
+
+// Closing the day is the single moment the shop most wants on disk, so it does not
+// wait out the debounce — and neither does a drawer being closed.
+const IMMEDIATE_BACKUP_CHANNELS = new Set(['domain:eod:add', 'domain:shifts:close', 'domain:shifts:closeAll'])
+
+function noteWrite(channel) {
+  try {
+    const backupEngine = require('./backupEngine')
+    if (IMMEDIATE_BACKUP_CHANNELS.has(channel)) backupEngine.runBackupNow(channel).catch(() => {})
+    else backupEngine.requestBackup(channel)
+  } catch (_) { /* backup must never break a sale */ }
+}
+
 function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   const path = require('path')
   const backupsDir = path.join(userDataPath, 'backups')
@@ -58,7 +88,17 @@ function registerAll(ipcMain, userDataPath, customMakeHandler = null) {
   // h resolves _makeHandler at call time so mid-session mode switches take effect immediately
   const h = (ch, fn) => (event, ...args) => {
     const mh = _makeHandler
-    return mh ? mh(ch, fn)(event, ...args) : wrap(fn)(event, ...args)
+    const result = mh ? mh(ch, fn)(event, ...args) : wrap(fn)(event, ...args)
+    // Only writes that actually succeeded locally are worth a backup. A satellite
+    // routes through makeHandler to Main and the engine no-ops there anyway.
+    if (isWriteChannel(ch) && !(result && result.__error)) {
+      if (result && typeof result.then === 'function') {
+        result.then(r => { if (!(r && r.__error)) noteWrite(ch) }).catch(() => {})
+      } else {
+        noteWrite(ch)
+      }
+    }
+    return result
   }
 
   // ── SHOP ──

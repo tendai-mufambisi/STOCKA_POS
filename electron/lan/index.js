@@ -197,6 +197,14 @@ function initLan(userDataPath, getMainWindow) {
 
     ['lan:get-status', () => getStatus()],
 
+    // A satellite asking Main how protected the shop's records are. Returns null
+    // when this machine is not a satellite, or when Main cannot be reached — the
+    // caller must be able to tell "no answer" from "all is well".
+    ['lan:get-main-backup-health', async () => {
+      if (!_clientMod) return null
+      return _clientMod.fetchMainBackupHealth()
+    }],
+
     ['lan:get-config', () => {
       const c = getLanConfig(_userDataPath)
       const { secret: _s, ...safe } = c

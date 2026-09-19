@@ -31,6 +31,8 @@ import Notifications from '../components/Notifications'
 import LanStatusBar from '../components/LanStatusBar'
 import { getSales, getProducts, getActiveShifts, closeShift, getCurrentShift, startShift, getShop, logAuditAction, getShiftSummary, getMetrics, isMainRequired } from '../database/db'
 import DataConfidenceBanner from '../components/DataConfidenceBanner'
+import BackupHealth from '../components/BackupHealth'
+import BackupSignInWarning from '../components/BackupSignInWarning'
 import { useLanSync } from '../hooks/useLanSync'
 import { todayCompletedSales, localDateStr, formatDbTime } from '../utils/salesDay'
 import { parseRolePrivileges, canRoleAccessNav } from '../utils/rolePrivileges'
@@ -133,6 +135,8 @@ function Dashboard() {
   const [activeCashiers, setActiveCashiers] = useState([])
   const [activeCashiersLoading, setActiveCashiersLoading] = useState(false)
   const [showSignOutModal, setShowSignOutModal] = useState(false)
+  // Which Settings tab to open when another screen sends the user there.
+  const [settingsTab, setSettingsTab] = useState(null)
 
   // App update state
   const [updateInfo, setUpdateInfo] = useState(null)   // { version, releaseCount }
@@ -607,6 +611,7 @@ function Dashboard() {
                   dataQuality={dataQuality}
                   metricsUnreachable={metricsUnreachable}
                   onRetryMetrics={loadDashboardData}
+                  onOpenBackupSettings={() => { setSettingsTab('backup'); setActivePage('settings') }}
                 />
       case 'products':
         return <Products />
@@ -652,7 +657,7 @@ function Dashboard() {
       case 'activitylogs':
         return <ActivityLogs />
       case 'settings':
-        return <Settings />
+        return <Settings initialTab={settingsTab} />
       default:
         return <ComingSoon page={activePage} />
     }
@@ -865,6 +870,14 @@ function Dashboard() {
         />
       )}
 
+      {/* Once per sign-in, and only when there is something to do about it. Shown
+          to every role — a cashier cannot set a drive up, but they are the person
+          standing at the counter who can plug one in. */}
+      <BackupSignInWarning
+        user={user}
+        onOpenBackups={() => { setSettingsTab('backup'); setActivePage('settings') }}
+      />
+
       {showSignOutModal && (
         <SignOutModal
           hasShift={!!currentShift}
@@ -1009,7 +1022,7 @@ function OnboardingPanel({ totalProducts, totalCompletedSales, setActivePage }) 
   )
 }
 
-function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales, dataQuality, metricsUnreachable, onRetryMetrics }) {
+function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings, lowStockItems, recentSales, activeCashiers, activeCashiersLoading, totalProducts, totalCompletedSales, dataQuality, metricsUnreachable, onRetryMetrics, onOpenBackupSettings }) {
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -1025,6 +1038,11 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
           <h1>{greeting}, {user.username}!</h1>
           <p>{today}{shopSettings?.name && <> · <span className="page-header-shop">{shopSettings.name}</span></>}</p>
         </div>
+
+        {/* Cashiers cannot set a drive up, but they are the ones at the counter
+            who can plug one in — so this appears for them only when something
+            actually needs doing. */}
+        <BackupHealth compact />
 
         <div className="cashier-home">
           <div className="cashier-greeting">
@@ -1069,6 +1087,11 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
         unreachable={metricsUnreachable}
         onRetry={onRetryMetrics}
       />
+
+      {/* Whether today's takings would survive losing this computer. Sits with the
+          other statements about how far the screen can be trusted, not in Settings
+          where nobody would look until it was too late to matter. */}
+      <BackupHealth onOpenBackups={onOpenBackupSettings} />
 
       <div className="stats-grid">
         {stats.map((stat, i) => (

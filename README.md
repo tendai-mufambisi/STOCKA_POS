@@ -25,6 +25,18 @@ Stocka is a hybrid desktop + web retail app:
 2. Set environment variables from `.env.example`.
 3. Vercel uses `vercel.json` and runs `npm run build:web`.
 
+## Backups
+
+Stocka backs itself up automatically and checks every copy before it counts. See
+[`docs/backup.md`](docs/backup.md) for how the system is built and which decisions
+are load-bearing — read it before changing anything under
+`electron/database/backupEngine.js`, `externalBackup.js` or `offsiteBackup.js`.
+
+- Local backups: `%APPDATA%/Stocka/backups`
+- External drive and off-site copy: Settings → Backups
+- Protection status: the strip on the Dashboard, and a sign-in warning when the
+  external copy goes stale
+
 ## Sync Workflow
 
 - Desktop users can open Settings -> Cloud Sync.

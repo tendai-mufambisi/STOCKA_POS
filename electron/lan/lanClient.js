@@ -701,6 +701,23 @@ function stopClient() {
   _cfg = null
 }
 
+// Main's backup health, fetched on demand. Deliberately not part of the delta
+// sync: it is a status a screen asks for when it opens, not a record to mirror.
+async function fetchMainBackupHealth() {
+  if (!_cfg) return null
+  try {
+    const { status, body } = await httpRequestTo(
+      _cfg.serverIp, _cfg.serverPort, _cfg.secret, 'GET', '/lan/backup-health', null, 8000
+    )
+    if (status !== 200) return null
+    return body
+  } catch (_) {
+    // Main unreachable. Saying nothing is right — a satellite that cannot ask
+    // must not invent an answer in either direction.
+    return null
+  }
+}
+
 function getClientStatus() {
   return {
     online: _online,
@@ -715,4 +732,4 @@ function getClientStatus() {
   }
 }
 
-module.exports = { startClient, stopClient, makeHandler, getClientStatus, lanRequest, syncFromServer, pair, applyFullSnapshot }
+module.exports = { startClient, stopClient, makeHandler, getClientStatus, lanRequest, syncFromServer, pair, applyFullSnapshot, fetchMainBackupHealth }

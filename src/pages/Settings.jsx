@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import {
   getShop, updateShop, getUsers, addUser, updateUser, deactivateUser,
-  getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile
+  getBackupHistory, createDatabaseBackup, restoreFromBackup, exportBackupAsFile, getBackupState,
+  listBackupDrives, setBackupDrive, forgetBackupDrive, backupToDriveNow, onBackupDriveChange,
+  exportOffsiteBackup, recordOffsiteCopy, forgetOffsiteRecord, restoreFromBackupFile
 } from '../database/db'
 import { validatePin } from '../utils/authUtils'
 import { canUseNativePrinter } from '../services/runtime'
@@ -15,15 +17,19 @@ import {
   FiSliders, FiMonitor, FiHardDrive, FiWifi, FiSave, FiRefreshCw,
   FiZap, FiUserPlus, FiKey, FiUserX, FiDownload, FiUpload,
   FiAlertCircle, FiCheckCircle, FiX, FiCheck, FiLock,
-  FiEye, FiEyeOff, FiCopy
+  FiEye, FiEyeOff, FiCopy, FiAlertTriangle
 } from 'react-icons/fi'
 
-function Settings() {
+// initialTab lets another screen send the user somewhere specific — the backup
+// health strip on the dashboard opens this straight on Backups, because landing
+// on the general settings page and asking them to find it defeats the point of
+// putting the warning in front of them.
+function Settings({ initialTab }) {
   const { user } = useAuthStore()
   const isCashier = user?.role === 'Cashier'
   const isAdmin   = user?.role === 'Admin'
 
-  const [activeTab, setActiveTab] = useState(isCashier ? 'password' : 'shop')
+  const [activeTab, setActiveTab] = useState(initialTab || (isCashier ? 'password' : 'shop'))
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState('')
   const [success, setSuccess]   = useState('')
@@ -52,6 +58,14 @@ function Settings() {
   const [printStatus, setPrintStatus]             = useState('')
 
   const [backups, setBackups]           = useState([])
+  const [backupState, setBackupState]   = useState(null)
+  const [drives, setDrives]             = useState([])
+  const [loadingDrives, setLoadingDrives] = useState(false)
+  const [settingDrive, setSettingDrive] = useState(false)
+  const [externalBusy, setExternalBusy] = useState(false)
+  const [exporting, setExporting]       = useState(false)
+  const [lastExport, setLastExport]     = useState(null)   // { filename, path }
+  const [offsiteWhere, setOffsiteWhere] = useState('')
   const [creatingBackup, setCreatingBackup]   = useState(false)
   const [restoringBackup, setRestoringBackup] = useState(false)
 
@@ -84,6 +98,14 @@ function Settings() {
   useEffect(() => {
     if (activeTab === 'system') loadSystemInfo()
   }, [activeTab])
+
+  // Plugging the drive in is the whole interaction, so the screen has to answer to
+  // the drive rather than to a refresh button. The main process copies and verifies
+  // on its own; this only re-reads the result.
+  useEffect(() => {
+    if (!isAdmin) return
+    return onBackupDriveChange(() => loadBackups())
+  }, [isAdmin])
 
   // ── Loaders ──────────────────────────────────────────
   const loadSettings = async () => {
@@ -122,6 +144,7 @@ function Settings() {
 
   const loadBackups = async () => {
     try { setBackups(await getBackupHistory()) } catch { /* silent */ }
+    try { setBackupState(await getBackupState()) } catch { /* silent */ }
   }
 
   const loadSystemInfo = async () => {
@@ -296,23 +319,139 @@ function Settings() {
     finally { setTestingPrinter(false) }
   }
 
+  // Shorthand — the external and off-site sections read these on nearly every line.
+  const ext = backupState?.external
+  const offsite = backupState?.offsite
+
+  const loadDrives = async () => {
+    setLoadingDrives(true)
+    try { setDrives(await listBackupDrives()) }
+    catch (err) { flash('error', 'Could not list drives: ' + err.message) }
+    finally { setLoadingDrives(false) }
+  }
+
+  const handleSetDrive = async (drive) => {
+    setSettingDrive(true)
+    try {
+      const res = await setBackupDrive(drive.letter, `${drive.label} (${drive.letter})`)
+      if (!res?.success) { flash('error', res?.error || 'Could not set up this drive'); return }
+      // Setup runs a copy immediately, so say what actually happened rather than
+      // promising a backup that may not have worked.
+      if (res.backup?.success) flash('success', 'Backup drive set up. A checked copy is on the drive now.')
+      else flash('error', 'Drive set up, but the first copy failed: ' + (res.backup?.error || 'unknown error'))
+      loadBackups()
+    } catch (err) { flash('error', 'Could not set up this drive: ' + err.message) }
+    finally { setSettingDrive(false) }
+  }
+
+  const handleForgetDrive = async () => {
+    if (!confirm(
+      'Stop using this backup drive?\n\n' +
+      'The backups already on the drive are left exactly where they are. ' +
+      'Stocka simply stops copying to it.'
+    )) return
+    try {
+      await forgetBackupDrive()
+      setDrives([])
+      loadBackups()
+      flash('success', 'Stocka will no longer copy to that drive.')
+    } catch (err) { flash('error', 'Could not forget the drive: ' + err.message) }
+  }
+
+  const handleExternalNow = async () => {
+    setExternalBusy(true)
+    try {
+      const res = await backupToDriveNow()
+      if (res?.success) flash('success', 'Copy made to the drive and checked.')
+      else if (res?.skipped) flash('error', 'The backup drive is not connected.')
+      else flash('error', res?.error || 'Could not copy to the drive')
+      loadBackups()
+    } catch (err) { flash('error', 'Could not copy to the drive: ' + err.message) }
+    finally { setExternalBusy(false) }
+  }
+
+  // ── Off-site copy ──
+  // Stocka writes the file; a person takes it somewhere else. The two steps are
+  // deliberately separate, because only the first one is something Stocka can
+  // actually vouch for.
+  const handleExportOffsite = async () => {
+    setExporting(true)
+    try {
+      const res = await exportOffsiteBackup()
+      if (res?.canceled) return
+      if (res?.success) {
+        setLastExport({ filename: res.filename, path: res.path })
+        flash('success', `Copy saved and checked: ${res.filename}`)
+      } else {
+        flash('error', res?.error || 'Could not save the copy')
+      }
+    } catch (err) { flash('error', 'Could not save the copy: ' + err.message) }
+    finally { setExporting(false) }
+  }
+
+  const handleRecordOffsite = async () => {
+    try {
+      await recordOffsiteCopy({ where: offsiteWhere.trim() || null, filename: lastExport?.filename || null })
+      setOffsiteWhere('')
+      loadBackups()
+      flash('success', 'Noted. Stocka has recorded that you kept a copy outside the shop.')
+    } catch (err) { flash('error', 'Could not record that: ' + err.message) }
+  }
+
+  const handleForgetOffsite = async () => {
+    try { await forgetOffsiteRecord(); loadBackups() }
+    catch (err) { flash('error', err.message) }
+  }
+
+  const handleRestoreFromFile = async () => {
+    if (!confirm(
+      'Restore from a backup file?\n\n' +
+      'Your current records will be replaced by whatever is in the file you choose. ' +
+      'A copy of your current records is saved first, so this can be undone.'
+    )) return
+    setRestoringBackup(true)
+    try {
+      const res = await restoreFromBackupFile()
+      if (res?.canceled) return
+      if (res?.success) {
+        flash('success', `Records restored from ${res.restored}. Your previous records were saved as ${res.safetyCopy}. Reloading…`)
+        setTimeout(() => window.location.reload(), 3000)
+      } else {
+        flash('error', res?.error || 'Restore failed')
+      }
+    } catch (err) { flash('error', 'Restore failed: ' + err.message) }
+    finally { setRestoringBackup(false) }
+  }
+
   const handleCreateBackup = async () => {
     setCreatingBackup(true)
     try {
       const result = await createDatabaseBackup()
-      if (result?.success) { flash('success', `Backup created: ${result.filename}`); loadBackups() }
+      // "Created and checked" — the engine deletes any copy that fails its
+      // integrity check, so reaching success here means the file was read back.
+      if (result?.success) { flash('success', 'Backup created and checked.'); loadBackups() }
       else flash('error', result?.error || 'Failed to create backup')
     } catch (err) { flash('error', 'Backup failed: ' + err.message) }
     finally { setCreatingBackup(false) }
   }
 
   const handleRestoreBackup = async (key) => {
-    if (!confirm('⚠️ This will overwrite your current database. Are you sure?')) return
+    if (!confirm(
+      'Restore this backup?\n\n' +
+      'Your current records will be replaced by the state saved in this backup. ' +
+      'Anything recorded since then — sales, stock, expenses — will no longer be in Stocka.\n\n' +
+      'A copy of your current records is saved first, so this can be undone.'
+    )) return
     setRestoringBackup(true)
     try {
       const result = await restoreFromBackup(key)
-      if (result?.success) { flash('success', 'Database restored. Reloading…'); setTimeout(() => window.location.reload(), 2000) }
-      else flash('error', result?.error || 'Restore failed')
+      if (result?.success) {
+        flash('success', `Records restored. Your previous records were saved as ${result.safetyCopy}. Reloading…`)
+        setTimeout(() => window.location.reload(), 3000)
+      } else {
+        flash('error', result?.error || 'Restore failed')
+        loadBackups()
+      }
     } catch (err) { flash('error', 'Restore failed: ' + err.message) }
     finally { setRestoringBackup(false) }
   }
@@ -1038,13 +1177,47 @@ function Settings() {
             <div className="s-card">
               <div className="s-card-head">
                 <div>
-                  <h2 className="s-card-title"><FiHardDrive size={17} /> Database Backups</h2>
-                  <p className="s-card-desc">Protect your data. Automatic backups run daily — create a manual one anytime.</p>
+                  <h2 className="s-card-title"><FiHardDrive size={17} /> Backups</h2>
+                  <p className="s-card-desc">
+                    Stocka backs itself up automatically — a short while after sales and stock are
+                    recorded, when the day is closed, and when Stocka is closed. Every backup is
+                    read back and checked before it counts.
+                  </p>
                 </div>
-                <button className="s-btn-primary" onClick={handleCreateBackup} disabled={creatingBackup}>
-                  <FiDownload size={13} /> {creatingBackup ? 'Creating…' : 'Create Backup'}
-                </button>
+                <div className="s-btn-row">
+                  <button className="s-btn-secondary" onClick={handleRestoreFromFile} disabled={restoringBackup}>
+                    <FiUpload size={13} /> Restore from a File…
+                  </button>
+                  <button className="s-btn-primary" onClick={handleCreateBackup} disabled={creatingBackup}>
+                    <FiDownload size={13} /> {creatingBackup ? 'Backing up…' : 'Back Up Now'}
+                  </button>
+                </div>
               </div>
+
+              {/* What the owner actually came here to find out: is there a recent
+                  copy, and did the last attempt work? */}
+              {backupState?.isSatellite ? (
+                <div className="s-backup-status">
+                  <FiHardDrive size={15} />
+                  <span>This till mirrors the Main computer. Backups are taken on the Main computer.</span>
+                </div>
+              ) : backupState?.local?.lastError ? (
+                <div className="s-backup-status s-backup-status--error">
+                  <FiAlertTriangle size={15} />
+                  <span>
+                    The last backup did not finish: {backupState.local.lastError}
+                    {backupState.local.lastSuccessAt && (
+                      <> Your most recent checked backup is from{' '}
+                        {new Date(backupState.local.lastSuccessAt).toLocaleString()}.</>
+                    )}
+                  </span>
+                </div>
+              ) : backupState?.local?.lastVerifiedAt ? (
+                <div className="s-backup-status s-backup-status--ok">
+                  <FiCheckCircle size={15} />
+                  <span>Last checked backup: {new Date(backupState.local.lastVerifiedAt).toLocaleString()}</span>
+                </div>
+              ) : null}
 
               {backups.length === 0 ? (
                 <div className="s-empty">
@@ -1058,8 +1231,17 @@ function Settings() {
                     <div className="s-backup-info">
                       <div className="s-backup-date">
                         {new Date(backup.createdAt).toLocaleDateString()} · {new Date(backup.createdAt).toLocaleTimeString()}
+                        {backup.kind === 'safety' && <span className="s-backup-tag">Safety copy</span>}
                       </div>
-                      <div className="s-backup-size">{(backup.sizeBytes / 1024).toFixed(1)} KB</div>
+                      <div className="s-backup-size">
+                        {(backup.sizeBytes / 1024).toFixed(1)} KB
+                        {/* Backups written by older versions of Stocka were never
+                            checked. Saying "Checked" about them would be the same
+                            false assurance this replaced. */}
+                        {backup.verified
+                          ? <span className="s-backup-verified"><FiCheckCircle size={11} /> Checked</span>
+                          : <span className="s-backup-unverified">Not checked</span>}
+                      </div>
                     </div>
                     <div className="s-btn-row">
                       <button className="s-btn-secondary s-btn-sm" onClick={() => handleExportBackup(backup.filename)}>
@@ -1072,6 +1254,210 @@ function Settings() {
                   </div>
                 ))
               )}
+            </div>
+          )}
+
+          {/* ── EXTERNAL BACKUP DRIVE ──
+              The copy that survives losing the computer. Everything above this
+              lives on the same machine as the ledger it is protecting. */}
+          {activeTab === 'backup' && isAdmin && !backupState?.isSatellite && (
+            <div className="s-card" style={{ marginTop: 16 }}>
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiSave size={17} /> Backup Drive</h2>
+                  <p className="s-card-desc">
+                    A backup on this computer cannot help if the computer is stolen or breaks.
+                    Set up a USB stick or external drive and Stocka copies your records to it
+                    automatically whenever you plug it in — then keep it somewhere away from the computer.
+                  </p>
+                </div>
+                {ext?.configured && (
+                  <button className="s-btn-primary" onClick={handleExternalNow} disabled={externalBusy || !ext?.connected}>
+                    <FiUpload size={13} /> {externalBusy ? 'Copying…' : 'Copy Now'}
+                  </button>
+                )}
+              </div>
+
+              {!ext?.configured ? (
+                <>
+                  <div className="s-backup-status">
+                    <FiAlertTriangle size={15} />
+                    <span>No backup drive set up. Your records exist only on this computer.</span>
+                  </div>
+                  {drives.length === 0 ? (
+                    <div className="s-empty">
+                      <div className="s-empty-icon"><FiSave size={30} /></div>
+                      <p>Plug in a USB stick or external drive, then choose it below.</p>
+                      <button className="s-btn-secondary" onClick={loadDrives} disabled={loadingDrives} style={{ marginTop: 12 }}>
+                        <FiRefreshCw size={12} /> {loadingDrives ? 'Looking…' : 'Look for drives'}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {drives.map(drive => (
+                        <div key={drive.letter} className="s-backup-row">
+                          <div className="s-backup-icon"><FiSave size={15} /></div>
+                          <div className="s-backup-info">
+                            <div className="s-backup-date">{drive.label} ({drive.letter})</div>
+                            <div className="s-backup-size">
+                              {(drive.freeBytes / 1073741824).toFixed(1)} GB free
+                              {drive.isBackupDrive && <span className="s-backup-tag">Already set up</span>}
+                            </div>
+                          </div>
+                          <div className="s-btn-row">
+                            <button
+                              className="s-btn-primary s-btn-sm"
+                              onClick={() => handleSetDrive(drive)}
+                              disabled={settingDrive}
+                            >
+                              {settingDrive ? 'Setting up…' : 'Use this drive'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <button className="s-btn-secondary s-btn-sm" onClick={loadDrives} disabled={loadingDrives} style={{ marginTop: 10 }}>
+                        <FiRefreshCw size={11} /> {loadingDrives ? 'Looking…' : 'Refresh'}
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Connected-or-not is the difference between "plug the drive in"
+                      and "the drive is here and something is wrong". */}
+                  {ext.lastError ? (
+                    <div className="s-backup-status s-backup-status--error">
+                      <FiAlertTriangle size={15} />
+                      <span>
+                        The last copy to the drive did not finish: {ext.lastError}
+                        {ext.lastSuccessAt && (
+                          <> The most recent checked copy on the drive is from{' '}
+                            {new Date(ext.lastSuccessAt).toLocaleString()}.</>
+                        )}
+                      </span>
+                    </div>
+                  ) : ext.lastVerifiedAt ? (
+                    <div className="s-backup-status s-backup-status--ok">
+                      <FiCheckCircle size={15} />
+                      <span>Last checked copy on the drive: {new Date(ext.lastVerifiedAt).toLocaleString()}</span>
+                    </div>
+                  ) : (
+                    <div className="s-backup-status">
+                      <FiSave size={15} />
+                      <span>No copy has been made to this drive yet.</span>
+                    </div>
+                  )}
+
+                  <div className="s-backup-row">
+                    <div className="s-backup-icon"><FiSave size={15} /></div>
+                    <div className="s-backup-info">
+                      <div className="s-backup-date">
+                        {ext.driveLabel || 'Backup drive'}
+                        {ext.connected
+                          ? <span className="s-backup-verified"><FiCheckCircle size={11} /> Connected{ext.letter ? ` (${ext.letter})` : ''}</span>
+                          : <span className="s-backup-unverified">Not connected</span>}
+                      </div>
+                      <div className="s-backup-size">
+                        {ext.connected
+                          ? 'Copies are made automatically while this drive is plugged in.'
+                          : 'Plug this drive in and Stocka will update it automatically.'}
+                      </div>
+                    </div>
+                    <div className="s-btn-row">
+                      <button className="s-btn-secondary s-btn-sm" onClick={handleForgetDrive}>
+                        Forget
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="s-card-desc" style={{ marginTop: 12 }}>
+                    Keep this drive somewhere separate from the computer. A drive left beside
+                    it is lost to the same fire, flood or theft.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── OFF-SITE COPY ──
+              The copy that survives losing the shop itself. Everything above this
+              is in one building; this is the only tier that is not. */}
+          {activeTab === 'backup' && isAdmin && !backupState?.isSatellite && (
+            <div className="s-card" style={{ marginTop: 16 }}>
+              <div className="s-card-head">
+                <div>
+                  <h2 className="s-card-title"><FiUpload size={17} /> Copy Kept Outside the Shop</h2>
+                  <p className="s-card-desc">
+                    Your computer and your backup drive are both in this shop. A fire, a flood or a
+                    break-in takes them together. Save a copy and keep it somewhere else — your own
+                    Google Drive, your phone, or a stick you keep at home.
+                  </p>
+                </div>
+                <button className="s-btn-primary" onClick={handleExportOffsite} disabled={exporting}>
+                  <FiDownload size={13} /> {exporting ? 'Saving…' : 'Save a Copy'}
+                </button>
+              </div>
+
+              {/* Stocka does not upload anything. Said plainly, because the whole
+                  promise of an offline product rests on it. */}
+              <div className="s-backup-status">
+                <FiShield size={15} />
+                <span>
+                  Stocka never uploads your records anywhere. It writes a file and you decide
+                  where it goes.
+                </span>
+              </div>
+
+              {offsite?.recorded ? (
+                <div className="s-backup-row">
+                  <div className="s-backup-icon"><FiUpload size={15} /></div>
+                  <div className="s-backup-info">
+                    <div className="s-backup-date">
+                      {offsite.recordedWhere || 'Off-site copy'}
+                      <span className="s-backup-tag">Recorded, not checked</span>
+                    </div>
+                    <div className="s-backup-size">
+                      You recorded this on {new Date(offsite.recordedAt).toLocaleDateString()}
+                      {offsite.recordedFilename ? ` · ${offsite.recordedFilename}` : ''}
+                    </div>
+                  </div>
+                  <div className="s-btn-row">
+                    <button className="s-btn-secondary s-btn-sm" onClick={handleForgetOffsite}>Clear</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="s-backup-status">
+                  <FiAlertTriangle size={15} />
+                  <span>No copy outside the shop has been recorded.</span>
+                </div>
+              )}
+
+              {/* Recording is deliberately a second, separate step. Stocka cannot
+                  see the file once it is gone, so this is the owner's word — and
+                  the wording says exactly that rather than implying a check. */}
+              <div className="s-offsite-record">
+                <label className="s-offsite-label" htmlFor="offsite-where">
+                  Once you have put the file somewhere safe, note it here
+                </label>
+                <div className="s-offsite-row">
+                  <input
+                    id="offsite-where"
+                    className="s-input"
+                    type="text"
+                    value={offsiteWhere}
+                    onChange={(e) => setOffsiteWhere(e.target.value)}
+                    placeholder="Where did you put it? e.g. My Google Drive"
+                    maxLength={60}
+                  />
+                  <button className="s-btn-secondary" onClick={handleRecordOffsite}>
+                    <FiCheck size={13} /> I Saved a Copy
+                  </button>
+                </div>
+                <p className="s-offsite-note">
+                  This only records what you tell it. Stocka cannot open your Google Drive
+                  and has no way to confirm the copy is still there.
+                </p>
+              </div>
             </div>
           )}
 

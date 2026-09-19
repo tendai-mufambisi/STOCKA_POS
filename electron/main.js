@@ -9,6 +9,9 @@ const { verifyLicense, saveLicense, loadLicense, getRawKey } = require('./licens
 const { initDb, saveDb, closeDb } = require('./database/index')
 const { createTables, runMigrations, ensureIndexes } = require('./database/schema')
 const { registerAll: registerDomainIpc } = require('./database/ipc')
+const backupEngine = require('./database/backupEngine')
+const externalBackup = require('./database/externalBackup')
+const offsiteBackup = require('./database/offsiteBackup')
 const { initLan } = require('./lan/index')
 const backgroundServer = require('./backgroundServer')
 const dayRollover = require('./dayRollover')
@@ -64,7 +67,13 @@ function createWindow() {
   // Load Vite dev server in development, built files in production
   if (!app.isPackaged) {
     logger.info('🔧 Development mode - Loading from localhost:5173')
-    mainWindow.loadURL('http://localhost:5173')
+    // Other local dev servers share the http://localhost:5173 origin, and a PWA one
+    // can leave its service worker registered here — it would then serve its own
+    // cached shell instead of Stocka. Wipe those before loading.
+    mainWindow.webContents.session
+      .clearStorageData({ storages: ['serviceworkers', 'cachestorage'] })
+      .catch((err) => logger.warn('Could not clear dev service workers', err))
+      .then(() => mainWindow.loadURL('http://localhost:5173'))
     mainWindow.webContents.openDevTools()
   } else {
     logger.info('📂 Production mode - Loading from dist/index.html')
@@ -136,6 +145,34 @@ app.whenReady().then(async () => {
     // up with no shift row and their takings filed under the previous date.
     dayRollover.init(userDataPath)
     app.on('before-quit', () => dayRollover.stop())
+
+    // Backups only became automatic here. Until now db:backup was wired to a single
+    // button in Settings, while the Settings copy told the owner "automatic backups
+    // run daily" — this is what makes that sentence true.
+    backupEngine.init(userDataPath)
+    externalBackup.init(userDataPath)
+    offsiteBackup.init(userDataPath)
+    // One backup shortly after startup, so a shop that is opened and closed without
+    // ringing up anything still has a recent verified copy.
+    if (!_shuttingDown) backupEngine.requestBackup('startup')
+
+    // Watch for the backup drive. Plugging it in is the whole interaction — there
+    // is nothing to press. Satellites are excluded: the external copy is taken on
+    // the machine that holds the authoritative ledger.
+    //
+    // Not when this instance is already on its way out. A second copy of Stocka
+    // launched while one is running loses the single-instance lock and quits, but
+    // it still gets this far first — and it has no business starting a copy onto
+    // the shop's USB stick moments before its database closes underneath it.
+    if (!_shuttingDown && !backupEngine.isSatellite()) {
+      externalBackup.startWatching((event) => {
+        const win = mainWindow
+        if (win && !win.isDestroyed()) win.webContents.send('backup:external-changed', event)
+      })
+      app.on('before-quit', () => externalBackup.stopWatching())
+    }
+
+    logger.info('✅ Backup engine ready')
   } catch (err) {
     logger.error('❌ Database init failed: ' + err.message)
     dialog.showErrorBox('Stocka - Database Error', 'Failed to initialize database: ' + err.message)
@@ -164,10 +201,45 @@ app.on('window-all-closed', () => {
     logger.info('[Background] Main Computer still running — use the tray icon to reopen')
     return
   }
-  closeDb()
   if (process.platform !== 'darwin') {
+    // Quit rather than closing the database here: before-quit owes the shop one
+    // last verified backup, and it needs the database still open to take it.
     app.quit()
+  } else {
+    closeDb()
   }
+})
+
+// The last thing Stocka does before it goes away is make sure the day it just
+// traded is on disk in a copy that has been read back and checked. A day's takings
+// should never depend on the debounce timer having happened to fire before the
+// owner shut the lid.
+let _shuttingDown = false
+app.on('before-quit', (event) => {
+  if (_shuttingDown) return
+  _shuttingDown = true
+  event.preventDefault()
+
+  // A backup that hangs must not leave the shop unable to close Stocka. If it has
+  // not finished in fifteen seconds we go anyway — the previous verified backup is
+  // still there, and the failure is in the log.
+  const deadline = new Promise(resolve => setTimeout(() => resolve({ timedOut: true }), 15000))
+
+  logger.info('[Backup] Taking a final backup before closing')
+
+  Promise.race([backupEngine.runBackupNow('shutdown'), deadline])
+    .then(result => {
+      if (result && result.timedOut) logger.warn('[Backup] Shutdown backup did not finish in time')
+      else if (result && result.skipped) logger.info('[Backup] Shutdown backup skipped: ' + result.error)
+      else if (result && !result.success) logger.warn('[Backup] Shutdown backup did not succeed: ' + result.error)
+    })
+    .catch(err => logger.error('[Backup] Shutdown backup failed: ' + err.message))
+    .finally(() => {
+      backupEngine.stop()
+      externalBackup.stopWatching()
+      try { closeDb() } catch (_) {}
+      app.quit()
+    })
 })
 
 // Global error handlers
@@ -1019,67 +1091,258 @@ const dbFilePath = path.join(userDataPath, 'stocka.db')
 const backupsDirPath = path.join(userDataPath, 'backups')
 const metaFilePath = path.join(userDataPath, 'stocka_meta.json')
 
-const ensureBackupsDir = () => fsPromises.mkdir(backupsDirPath, { recursive: true }).catch(() => {})
+// Creating, verifying and rotating backups lives in backupEngine — this handler is
+// only the renderer's way in. The old implementation here copied stocka.db with
+// fs.copyFile, which is not safe against a live WAL database; see backupEngine.js.
+ipcMain.handle('db:backup', async () => backupEngine.runBackupNow('manual'))
 
-ipcMain.handle('db:backup', async () => {
+// What the dashboard and the Backups screen read to answer "are we protected?".
+ipcMain.handle('db:backup-state', async () => ({
+  success: true,
+  state: {
+    ...backupEngine.getState(),
+    external: externalBackup.getExternalState(),
+    offsite: offsiteBackup.getOffsiteState(),
+  },
+}))
+
+// ── EXTERNAL BACKUP DRIVE ─────────────────────────────────────────────────────
+//
+// Setting up a drive is a one-time act, and it is a choice between drives rather
+// than a walk through the filesystem. Asking a shopkeeper to navigate to a folder
+// is how you end up with backups written to the desktop.
+ipcMain.handle('backup:list-drives', async () => {
   try {
-    await ensureBackupsDir()
-    await fsPromises.access(dbFilePath)
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const filename = `stocka_${timestamp}.db`
-    const destPath = path.join(backupsDirPath, filename)
-    await fsPromises.copyFile(dbFilePath, destPath)
-    // Keep only the 10 most recent backups
-    const allFiles = await fsPromises.readdir(backupsDirPath)
-    const dbFiles = allFiles
-      .filter(f => f.startsWith('stocka_') && f.endsWith('.db'))
-      .sort()
-      .reverse()
-    if (dbFiles.length > 10) {
-      for (const old of dbFiles.slice(10)) {
-        try { await fsPromises.unlink(path.join(backupsDirPath, old)) } catch (_) {}
-      }
-    }
-    return { success: true, filename }
+    return { success: true, drives: await externalBackup.listRemovableDrives() }
   } catch (err) {
-    if (err.code === 'ENOENT') return { success: false, error: 'No database file to backup' }
-    logger.error('db:backup error: ' + err.message)
+    logger.error('backup:list-drives error: ' + err.message)
+    return { success: false, error: err.message, drives: [] }
+  }
+})
+
+ipcMain.handle('backup:set-drive', async (event, letter, label) => {
+  try {
+    const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+    if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) {
+      return { success: false, error: 'This till mirrors the Main computer. Set the backup drive up there.' }
+    }
+
+    await externalBackup.adoptDrive(letter)
+    if (label) backupEngine.writeStateSection('external', {
+      ...backupEngine.readStateSection('external'),
+      driveLabel: label,
+    })
+
+    // Back up straight away, so setup ends with a verified copy on the drive
+    // rather than a promise that one will appear later.
+    const result = await externalBackup.backupToDrive('drive-set-up')
+    return { success: true, backup: result, state: externalBackup.getExternalState() }
+  } catch (err) {
+    logger.error('backup:set-drive error: ' + err.message)
     return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('backup:forget-drive', async () => {
+  try {
+    externalBackup.forgetDrive()
+    return { success: true, state: externalBackup.getExternalState() }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('backup:external-now', async () => externalBackup.backupToDrive('manual'))
+
+// ── OFF-SITE COPY ─────────────────────────────────────────────────────────────
+//
+// Stocka writes a file and the shop decides where it goes. Nothing is uploaded and
+// no account is connected, so the promise that the records stay in the building
+// holds unless somebody deliberately sends them somewhere.
+ipcMain.handle('backup:export-offsite', async () => {
+  try {
+    const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+    if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) {
+      return { success: false, error: 'This till mirrors the Main computer. Export from the Main computer instead.' }
+    }
+
+    let shopName = null
+    try { shopName = require('./database/domains/shop').getShop()?.name || null } catch (_) {}
+
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save a copy to keep outside the shop',
+      defaultPath: offsiteBackup.suggestedFilename(shopName),
+      filters: [{ name: 'Stocka backup', extensions: ['stockabackup'] }],
+    })
+    if (canceled || !filePath) return { success: false, canceled: true }
+
+    return await offsiteBackup.exportTo(filePath)
+  } catch (err) {
+    logger.error('backup:export-offsite error: ' + err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+// The owner saying they have put a copy somewhere safe. Recorded as testimony —
+// Stocka has no way to look inside their Drive and will never claim otherwise.
+ipcMain.handle('backup:record-offsite', async (event, details) => {
+  try {
+    return { success: true, state: offsiteBackup.recordCopy(details || {}) }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('backup:forget-offsite', async () => {
+  try {
+    return { success: true, state: offsiteBackup.forgetRecord() }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// An exported file is only worth having if it can come back. Restoring from one
+// goes through the same safety net as any other restore: validate the file first,
+// keep a copy of the current ledger, clear the stale WAL sidecars, migrate forward.
+ipcMain.handle('backup:restore-from-file', async () => {
+  let safetyCopy = null
+  try {
+    const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+    if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) {
+      return { success: false, error: 'This till mirrors the Main computer. Restore on the Main computer instead.' }
+    }
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a Stocka backup file',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Stocka backup', extensions: ['stockabackup', 'db'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    })
+    if (canceled || !filePaths?.length) return { success: false, canceled: true }
+
+    const chosen = filePaths[0]
+    const verdict = backupEngine.verifyBackupFile(chosen)
+    if (!verdict.ok) return { success: false, error: `That file cannot be restored: ${verdict.error}` }
+
+    backupEngine.stop()
+    externalBackup.stopWatching()
+    safetyCopy = await backupEngine.createSafetyCopy('pre-restore')
+
+    closeDb()
+    for (const sidecar of ['-wal', '-shm']) {
+      try { await fsPromises.unlink(dbFilePath + sidecar) } catch (_) { /* absent is fine */ }
+    }
+    await fsPromises.copyFile(chosen, dbFilePath)
+
+    const { reopenDb } = require('./database/index')
+    const restoredDb = reopenDb()
+    createTables(restoredDb)
+    runMigrations(restoredDb)
+    ensureIndexes(restoredDb)
+
+    backupEngine.init(userDataPath)
+    externalBackup.init(userDataPath)
+    if (!backupEngine.isSatellite()) externalBackup.startWatching(() => {})
+
+    logger.info(`[Backup] Restored from file ${path.basename(chosen)} (previous ledger kept as ${safetyCopy.filename})`)
+    return { success: true, restored: path.basename(chosen), safetyCopy: safetyCopy.filename }
+  } catch (err) {
+    logger.error('backup:restore-from-file error: ' + err.message)
+    try { require('./database/index').reopenDb() } catch (_) {}
+    backupEngine.init(userDataPath)
+    return { success: false, error: err.message, safetyCopy: safetyCopy ? safetyCopy.filename : null }
   }
 })
 
 ipcMain.handle('db:list-backups', async () => {
   try {
-    await ensureBackupsDir()
-    const files = await fsPromises.readdir(backupsDirPath)
-    const dbFiles = files.filter(f => f.startsWith('stocka_') && f.endsWith('.db'))
-    const backups = []
-    for (const filename of dbFiles) {
-      const filePath = path.join(backupsDirPath, filename)
-      const stat = await fsPromises.stat(filePath)
-      backups.push({ filename, path: filePath, createdAt: stat.mtime.toISOString(), sizeBytes: stat.size })
-    }
-    backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    return { success: true, backups }
+    return { success: true, backups: await backupEngine.listBackups() }
   } catch (err) {
     logger.error('db:list-backups error: ' + err.message)
     return { success: false, error: err.message, backups: [] }
   }
 })
 
+// Restore is the most destructive thing Stocka can do to itself, and the previous
+// implementation did it with no safety net whatsoever: no check that the chosen
+// file was a usable database, no copy of what was about to be overwritten, and —
+// the part that could actually corrupt data — it left the outgoing database's
+// stocka.db-wal and stocka.db-shm sitting beside the newly copied file. On the next
+// open SQLite would find a write-ahead log belonging to a different database and
+// try to recover it against the restored one.
+//
+// Order matters here and every step earns its place:
+//   1. validate the source before anything is touched
+//   2. take a verified safety copy of the current ledger, while the DB is still open
+//   3. close the database, then remove its WAL sidecars
+//   4. copy, reopen, verify the result is live
+// If step 4 goes wrong the shop still has step 2, and the filename is returned so
+// it can be named in the UI rather than hunted for.
 ipcMain.handle('db:restore', async (event, filename) => {
+  let safetyCopy = null
   try {
-    if (!/^[\w\-\.]+\.db$/.test(filename)) return { success: false, error: 'Invalid backup filename' }
+    if (!/^[\w\-.]+\.db$/.test(filename) || filename.includes('..')) {
+      return { success: false, error: 'Invalid backup filename' }
+    }
     const srcPath = path.join(backupsDirPath, filename)
     await fsPromises.access(srcPath)
+
+    // A satellite restoring its own partial mirror over itself would look like it
+    // worked and then be overwritten by the next delta from Main anyway.
+    const { getLanConfig, LAN_MODES } = require('./lan/lanConfig')
+    if (getLanConfig(userDataPath).mode === LAN_MODES.CLIENT) {
+      return { success: false, error: 'This till mirrors the Main computer. Restore on the Main computer instead.' }
+    }
+
+    const verdict = backupEngine.verifyBackupFile(srcPath)
+    if (!verdict.ok) {
+      return { success: false, error: `This backup cannot be restored: ${verdict.error}` }
+    }
+
+    // Stop the debounce firing a backup into the middle of the swap.
+    backupEngine.stop()
+
+    safetyCopy = await backupEngine.createSafetyCopy('pre-restore')
+
     closeDb()
+    for (const sidecar of ['-wal', '-shm']) {
+      try { await fsPromises.unlink(dbFilePath + sidecar) } catch (_) { /* absent is fine */ }
+    }
+
     await fsPromises.copyFile(srcPath, dbFilePath)
+
     const { reopenDb } = require('./database/index')
-    reopenDb()
-    return { success: true }
+    const restoredDb = reopenDb()
+
+    // Bring the restored ledger up to the schema this build expects. A backup is
+    // a snapshot of whatever Stocka looked like on the day it was taken, so an
+    // older one can be missing tables, columns and indexes that today's code reads
+    // without checking. Boot does exactly this for the live database; a restore is
+    // the one other moment a database arrives from outside, and skipping it left
+    // the app running against an unmigrated schema until somebody happened to
+    // restart it.
+    createTables(restoredDb)
+    runMigrations(restoredDb)
+    ensureIndexes(restoredDb)
+
+    backupEngine.init(userDataPath)
+    externalBackup.init(userDataPath)
+
+    logger.info(`[Backup] Restored ${filename} (previous ledger kept as ${safetyCopy.filename})`)
+    return { success: true, restored: filename, safetyCopy: safetyCopy.filename }
   } catch (err) {
     logger.error('db:restore error: ' + err.message)
-    return { success: false, error: err.message }
+    // Make sure the app is not left with a closed database whatever went wrong.
+    try { require('./database/index').reopenDb() } catch (_) {}
+    backupEngine.init(userDataPath)
+    externalBackup.init(userDataPath)
+    return {
+      success: false,
+      error: err.message,
+      safetyCopy: safetyCopy ? safetyCopy.filename : null,
+    }
   }
 })
 
@@ -1127,11 +1390,10 @@ ipcMain.handle('maintenance:reset-transactions', async (event, { username, pin }
       return { success: false, error: 'Incorrect admin PIN' }
     }
 
-    // Safety net: full DB file backup before anything is deleted
-    await ensureBackupsDir()
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const backupFilename = `stocka_pre-reset_${timestamp}.db`
-    await fsPromises.copyFile(dbFilePath, path.join(backupsDirPath, backupFilename))
+    // Safety net before anything is deleted. Goes through the backup engine so the
+    // copy is WAL-consistent and read back before the reset is allowed to proceed —
+    // an unverified safety net is not one.
+    const { filename: backupFilename } = await backupEngine.createSafetyCopy('pre-reset')
 
     const { resetTransactionalData } = require('./database/domains/maintenance')
     const result = resetTransactionalData()
@@ -1148,12 +1410,26 @@ ipcMain.handle('maintenance:reset-transactions', async (event, { username, pin }
   }
 })
 
+// Writes a copy of the ledger to somewhere outside Stocka's own folder. Same
+// correction as db:backup: a plain copy of stocka.db can miss whatever is still in
+// the write-ahead log, and an export handed to somebody to keep safe is the worst
+// possible place for that to happen. Verified before we call it a success, because
+// the whole point of an exported copy is that nobody will find out it was bad until
+// the day they need it.
 ipcMain.handle('db:export-file', async (event, destPath) => {
   try {
     if (!path.isAbsolute(destPath)) return { success: false, error: 'Destination path must be absolute' }
-    await fsPromises.access(dbFilePath)
-    await fsPromises.copyFile(dbFilePath, destPath)
-    return { success: true }
+
+    const { getDb } = require('./database/index')
+    await getDb().backup(destPath)
+
+    const verdict = backupEngine.verifyBackupFile(destPath)
+    if (!verdict.ok) {
+      try { await fsPromises.unlink(destPath) } catch (_) {}
+      return { success: false, error: `The exported copy could not be verified: ${verdict.error}` }
+    }
+
+    return { success: true, sizeBytes: verdict.sizeBytes, verified: true }
   } catch (err) {
     logger.error('db:export-file error: ' + err.message)
     return { success: false, error: err.message }
