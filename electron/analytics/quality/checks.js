@@ -297,6 +297,11 @@ defineCheck({
   severity: 'info',
   label: 'Discounts not captured before this release',
   affects: ['sales.discounts'],
+  // Standing: true of the data as a whole, not of this particular day. Until a
+  // discount is ever recorded it fires on every period, and a caveat that is
+  // always there is one nobody reads — including the days it matters. Reports
+  // still carry it; the Dashboard does not.
+  standing: true,
   run(ctx) {
     const w = completedSalesIn(ctx.period, ctx.scope, 's')
     const row = ctx.db

@@ -12,7 +12,12 @@ import './DataConfidenceBanner.css'
 // So: high confidence renders as a quiet single line, and anything less
 // explains itself and can be expanded for the detail.
 
-export default function DataConfidenceBanner({ quality, unreachable, onRetry }) {
+// `showStanding` — whether to include notes that describe a permanent limitation
+// of the data rather than something about this period. The Dashboard sets it
+// false: a caveat that appears every single day trains the owner to skip the
+// banner, and then the one day it says something urgent goes unread. Reports,
+// which are read deliberately and sometimes sent to someone else, keep them.
+export default function DataConfidenceBanner({ quality, unreachable, onRetry, showStanding = true }) {
   const [open, setOpen] = useState(false)
 
   if (unreachable) {
@@ -37,7 +42,8 @@ export default function DataConfidenceBanner({ quality, unreachable, onRetry }) 
 
   if (!quality) return null
 
-  const { confidence, score, blockers = [], warnings = [], notes = [] } = quality
+  const { confidence, score, blockers = [], warnings = [], notes: allNotes = [] } = quality
+  const notes = showStanding ? allNotes : allNotes.filter((n) => !n.standing)
   const issues = [...blockers, ...warnings]
   const pct = Math.round((score ?? 1) * 100)
 

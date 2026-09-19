@@ -1140,6 +1140,7 @@ function DashboardHome({ stats, quickActions, setActivePage, user, shopSettings,
         quality={dataQuality}
         unreachable={metricsUnreachable}
         onRetry={onRetryMetrics}
+        showStanding={false}
       />
 
       {/* Whether today's takings would survive losing this computer. Sits with the
