@@ -4,6 +4,9 @@ import {
   getCashPosition, getMovementTypes,
 } from '../database/db'
 import ConfirmModal from '../components/ConfirmModal'
+import Modal from '../components/Modal'
+import Field from '../components/Field'
+import { toast } from '../store/useToastStore'
 import { localDateStr, formatDbDate } from '../utils/salesDay'
 import { useAuthStore } from '../store/useAuthStore'
 import { useShiftStore } from '../store/useShiftStore'
@@ -46,6 +49,12 @@ function Money() {
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [formData, setFormData] = useState(EMPTY_FORM)
+  const [amountError, setAmountError] = useState(null)
+  const [attempt, setAttempt] = useState(0)
+
+  // A dialog over the page. It used to open above the movements list and push it down.
+  const openForm = () => { setFormData({ ...EMPTY_FORM, date: localDateStr() }); setAmountError(null); setShowForm(true) }
+  const closeForm = () => { if (!saving) setShowForm(false) }
 
   const loadData = async () => {
     setLoading(true)
@@ -70,7 +79,8 @@ function Money() {
   // so the labels and directions the form offers are the ones it validates
   // against.
   useEffect(() => {
-    getMovementTypes().then(setTypes).catch(() => setTypes([]))
+    // Anything other than a list would take the whole page down at types.find below.
+    getMovementTypes().then(t => setTypes(Array.isArray(t) ? t : [])).catch(() => setTypes([]))
   }, [])
 
   const selectedType = types.find(t => t.id === formData.type)
@@ -79,7 +89,8 @@ function Money() {
     e.preventDefault()
     const amount = parseFloat(formData.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
-      setError('Enter an amount greater than zero.')
+      setAmountError('Enter an amount greater than zero')
+      setAttempt(n => n + 1)
       return
     }
     setSaving(true)
@@ -91,11 +102,15 @@ function Money() {
         recorded_by: user?.username || 'unknown',
         shift_id: currentShift?.id || null,
       })
+      const label = selectedType?.label || 'Money movement'
       setFormData(EMPTY_FORM)
       setShowForm(false)
       await loadData()
+      toast.success(`${label} recorded`, {
+        detail: `$${amount.toFixed(2)} · ${formData.payment_method}${formData.counterparty ? ' · ' + formData.counterparty : ''}`,
+      })
     } catch (err) {
-      setError(err.message || 'Failed to record movement')
+      toast.error('Could not record that: ' + (err.message || 'unknown error'))
     } finally {
       setSaving(false)
     }
@@ -182,11 +197,8 @@ function Money() {
       </div>
 
       <div className="toolbar">
-        <button className="btn btn-primary" onClick={() => {
-          setShowForm(!showForm)
-          if (showForm) setFormData(EMPTY_FORM)
-        }}>
-          {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Record Movement</>}
+        <button className="btn btn-primary" onClick={openForm}>
+          <FiPlus size={14} /> Record Movement
         </button>
         <div className="range-filters">
           <label>From <input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
@@ -195,87 +207,93 @@ function Money() {
         </div>
       </div>
 
-      {showForm && (
-        <form className="form-card" onSubmit={handleSubmit}>
-          <div className="form-row">
-            <div className="form-group">
-              <label>What happened? *</label>
-              <select value={formData.type}
-                onChange={e => setFormData(f => ({ ...f, type: e.target.value }))}>
-                <optgroup label="Money coming in">
-                  {inTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </optgroup>
-                <optgroup label="Money going out">
-                  {outTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </optgroup>
-                {otherTypes.length > 0 && (
-                  <optgroup label="Other">
-                    {otherTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                  </optgroup>
-                )}
-              </select>
-              {selectedType?.hint && <div className="field-hint">{selectedType.hint}</div>}
-            </div>
-
-            <div className="form-group">
-              <label>Amount *</label>
-              <input type="number" step="0.01" min="0" autoFocus
-                value={formData.amount} placeholder="0.00"
-                onChange={e => setFormData(f => ({ ...f, amount: e.target.value }))} />
-            </div>
-          </div>
-
-          <div className="form-row">
-            {/* A correction is the one movement whose direction cannot be
-                inferred, so it is the only time this is asked. */}
-            {selectedType && !selectedType.direction && (
-              <div className="form-group">
-                <label>Direction *</label>
-                <select value={formData.direction}
-                  onChange={e => setFormData(f => ({ ...f, direction: e.target.value }))}>
-                  <option value="in">More cash than recorded (add)</option>
-                  <option value="out">Less cash than recorded (remove)</option>
-                </select>
-              </div>
+      <Modal
+        open={showForm}
+        size="medium"
+        title="Record a Money Movement"
+        subtitle="Cash going in or out that is not a sale — change added to the float, money banked, a loan repaid."
+        onClose={closeForm}
+        footer={
+          <>
+            <button type="button" className="smodal-btn-away" onClick={closeForm} disabled={saving}>Cancel</button>
+            <button type="submit" form="money-form" className="smodal-btn-primary" disabled={saving}>
+              {saving ? 'Saving...' : 'Record Movement'}
+            </button>
+          </>
+        }
+      >
+        <form id="money-form" className="fl-stack" onSubmit={handleSubmit} noValidate>
+          <Field
+            as="select" label="What happened?" required
+            value={formData.type}
+            onChange={e => setFormData(f => ({ ...f, type: e.target.value }))}
+            hint={selectedType?.hint}
+          >
+            <optgroup label="Money coming in">
+              {inTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </optgroup>
+            <optgroup label="Money going out">
+              {outTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </optgroup>
+            {otherTypes.length > 0 && (
+              <optgroup label="Other">
+                {otherTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+              </optgroup>
             )}
+          </Field>
 
-            <div className="form-group">
-              <label>Paid in</label>
-              <select value={formData.payment_method}
-                onChange={e => setFormData(f => ({ ...f, payment_method: e.target.value }))}>
-                {PAYMENT_METHODS.map(p => <option key={p}>{p}</option>)}
-              </select>
-              <div className="field-hint">
-                Which pocket the money moves from. It counts either way — this
-                only decides whether it comes off your cash, EcoCash or bank.
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Date</label>
-              <input type="date" value={formData.date}
-                onChange={e => setFormData(f => ({ ...f, date: e.target.value }))} />
-            </div>
+          <div className="fl-row">
+            <Field
+              label="Amount" required prefix="$" type="number" step="0.01" min="0" inputMode="decimal" autoFocus
+              value={formData.amount}
+              onChange={e => { setFormData(f => ({ ...f, amount: e.target.value })); if (amountError) setAmountError(null) }}
+              error={amountError} shakeKey={attempt}
+            />
+            <Field
+              label="Date" type="date"
+              value={formData.date}
+              onChange={e => setFormData(f => ({ ...f, date: e.target.value }))}
+            />
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label>Who or where</label>
-              <input type="text" value={formData.counterparty} placeholder="e.g. Mai Rudo Wholesalers"
-                onChange={e => setFormData(f => ({ ...f, counterparty: e.target.value }))} />
-            </div>
-            <div className="form-group">
-              <label>Note</label>
-              <input type="text" value={formData.note} placeholder="What was it for?"
-                onChange={e => setFormData(f => ({ ...f, note: e.target.value }))} />
-            </div>
-          </div>
+          {/* A correction is the one movement whose direction cannot be
+              inferred, so it is the only time this is asked. */}
+          {selectedType && !selectedType.direction && (
+            <Field
+              as="select" label="Which way?" required
+              value={formData.direction}
+              onChange={e => setFormData(f => ({ ...f, direction: e.target.value }))}
+            >
+              <option value="in">More cash than recorded (add)</option>
+              <option value="out">Less cash than recorded (remove)</option>
+            </Field>
+          )}
 
-          <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? 'Saving...' : 'Record Movement'}
-          </button>
+          <Field
+            as="select" label="Paid in"
+            value={formData.payment_method}
+            onChange={e => setFormData(f => ({ ...f, payment_method: e.target.value }))}
+            hint="Which pocket it moves through — your cash, EcoCash or the bank."
+          >
+            {PAYMENT_METHODS.map(pm => <option key={pm}>{pm}</option>)}
+          </Field>
+
+          <div className="fl-row">
+            <Field
+              label="Who or where"
+              value={formData.counterparty}
+              onChange={e => setFormData(f => ({ ...f, counterparty: e.target.value }))}
+              placeholder="e.g. Mai Rudo Wholesalers"
+            />
+            <Field
+              label="Note"
+              value={formData.note}
+              onChange={e => setFormData(f => ({ ...f, note: e.target.value }))}
+              placeholder="What was it for?"
+            />
+          </div>
         </form>
-      )}
+      </Modal>
 
       {position?.by_type?.length > 0 && (
         <div className="by-type-grid">

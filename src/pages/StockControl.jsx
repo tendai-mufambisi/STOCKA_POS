@@ -7,10 +7,14 @@ import { localDateStr } from '../utils/salesDay'
 import { useLanSync } from '../hooks/useLanSync'
 import { FiSearch, FiArrowUp, FiArrowDown, FiPlus, FiX, FiTruck, FiShoppingBag, FiCheck, FiUpload, FiEdit3, FiClock, FiWifiOff } from 'react-icons/fi'
 import { utils, writeFile, read } from 'xlsx'
+import Modal from '../components/Modal'
+import Field from '../components/Field'
+import Stepper from '../components/Stepper'
+import { toast } from '../store/useToastStore'
 import './StockControl.css'
 
 // Inline searchable dropdown component used for product and supplier selection
-function SearchableSelect({ options, value, onChange, placeholder, disabled, onQuickAdd }) {
+function SearchableSelect({ options, value, onChange, placeholder, disabled, onQuickAdd, addLabel = 'Add new' }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -29,10 +33,38 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, onQ
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
 
+  // Inside a dialog the list can open below the visible area — the supplier picker
+  // sits near the bottom of Record Stock. Scroll it into view when it opens.
+  useEffect(() => {
+    if (!open) return
+    const id = requestAnimationFrame(() => {
+      ref.current?.querySelector('.ss-dropdown')?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [open])
+
   const handleSelect = (opt) => {
     onChange(opt.value)
     setQuery('')
     setOpen(false)
+  }
+
+  // Adding something new is always one click away at the foot of the list —
+  // it used to appear only after typing a name that matched nothing.
+  const quickAdd = () => {
+    onQuickAdd(query.trim())
+    setQuery('')
+    setOpen(false)
+  }
+
+  // The search box sits inside the Record Stock form, so Enter must not submit
+  // it. Enter picks the first match, or offers to add the name if none matches.
+  const handleSearchKey = (e) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    e.stopPropagation()
+    if (filtered.length > 0) handleSelect(filtered[0])
+    else if (onQuickAdd && query.trim()) quickAdd()
   }
 
   const handleClear = (e) => {
@@ -64,21 +96,13 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, onQ
               placeholder="Type to search..."
               className="ss-search-input"
               onClick={e => e.stopPropagation()}
+              onKeyDown={handleSearchKey}
             />
           </div>
           <div className="ss-options">
             {filtered.length === 0 ? (
               <div className="ss-empty">
-                <span>No results found</span>
-                {onQuickAdd && query.trim() && (
-                  <button
-                    type="button"
-                    className="ss-quick-add-btn"
-                    onMouseDown={e => { e.preventDefault(); onQuickAdd(query.trim()); setOpen(false) }}
-                  >
-                    <FiPlus size={12} /> Add "{query.trim()}"
-                  </button>
-                )}
+                <span>{query.trim() ? `Nothing called "${query.trim()}" yet` : 'Nothing here yet'}</span>
               </div>
             ) : (
               filtered.map(opt => (
@@ -92,6 +116,16 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, onQ
               ))
             )}
           </div>
+          {onQuickAdd && (
+            <button
+              type="button"
+              className="ss-add-row"
+              onMouseDown={e => { e.preventDefault(); quickAdd() }}
+            >
+              <FiPlus size={14} />
+              <span>{query.trim() ? <>Add &ldquo;<strong>{query.trim()}</strong>&rdquo;</> : addLabel}</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -115,6 +149,14 @@ function StockControl() {
   // sale-complete flash on the POS so a save is never ambiguous.
   const [saveResult, setSaveResult] = useState(null)
   const { user } = useAuthStore()
+
+  // Record Stock is a two-step dialog: what came in, then how much and at what
+  // cost. It started as four steps, which meant pressing Next three times for every
+  // delivery line — too much for something done many times a day.
+  const RS_STEPS = ['What came in', 'Quantity & cost']
+  const [step, setStep] = useState(0)
+  const [stepErrors, setStepErrors] = useState({})
+  const [stepAttempt, setStepAttempt] = useState(0)
 
   const [purchaseType, setPurchaseType] = useState('supplier')
   const [productPriceInfo, setProductPriceInfo] = useState(null)
@@ -159,18 +201,35 @@ function StockControl() {
     try {
       if (quickAddMode === 'product') {
         if (!quickProductForm.name.trim()) { setQuickAddError('Product name is required'); setQuickAddSaving(false); return }
+        const same = products.find(p => p.name.trim().toLowerCase() === quickProductForm.name.trim().toLowerCase())
+        if (same) {
+          // Already on the list — pick it rather than make a second copy.
+          handleFieldChange('product_id', same.id)
+          toast.info(`${same.name} is already in your products — selected it`)
+          setQuickAddMode(null)
+          return
+        }
         await addProduct({ ...quickProductForm, name: quickProductForm.name.trim(), selling_price: parseFloat(quickProductForm.selling_price) || 0 })
         const fresh = await getProducts()
         setProducts(fresh)
         const created = fresh.find(p => p.name.toLowerCase() === quickProductForm.name.trim().toLowerCase())
         if (created) handleFieldChange('product_id', created.id)
+        toast.success(`${quickProductForm.name.trim()} added to your products`)
       } else {
         if (!quickSupplierForm.name.trim()) { setQuickAddError('Supplier name is required'); setQuickAddSaving(false); return }
+        const same = suppliers.find(x => x.name.trim().toLowerCase() === quickSupplierForm.name.trim().toLowerCase())
+        if (same) {
+          handleFieldChange('supplier_id', same.id)
+          toast.info(`${same.name} is already one of your suppliers — selected it`)
+          setQuickAddMode(null)
+          return
+        }
         await addSupplier({ ...quickSupplierForm, name: quickSupplierForm.name.trim() })
         const fresh = await getSuppliers()
         setSuppliers(fresh)
         const created = fresh.find(s => s.name.toLowerCase() === quickSupplierForm.name.trim().toLowerCase())
         if (created) handleFieldChange('supplier_id', created.id)
+        toast.success(`${quickSupplierForm.name.trim()} added to your suppliers`, { detail: 'Selected for this delivery.' })
       }
       setQuickAddMode(null)
     } catch (err) {
@@ -384,51 +443,44 @@ function StockControl() {
   const totalProfit = profitPerUnit * directQty
   const profitMarginPct = effectiveSP > 0 ? (profitPerUnit / effectiveSP) * 100 : 0
 
-  // Shared between supplier and direct purchase forms: shows the previous cost
-  // with an edit button, or a manual input when there is no previous cost / editing
+  // Cost per unit: last time's cost is used unless the person chooses to change it,
+  // because on a busy delivery most lines cost exactly what they did last time.
   const costPerUnitField = usingPrevCost ? (
-    <div className="form-group">
-      <label>Cost per Unit (USD)</label>
-      <div className="prev-cost-display">
-        <span className="prev-cost-value">${prevCpu.toFixed(2)}</span>
-        <button
-          type="button"
-          className="btn-edit-cost"
-          onClick={() => { setFormData(prev => ({ ...prev, cost_per_unit: prevCpu.toFixed(2) })); setEditingCost(true) }}
-        >
-          <FiEdit3 size={12} /> Edit previous cost per unit
-        </button>
+    <div className="rs-prevcost">
+      <div className="rs-prevcost-words">
+        <span className="rs-prevcost-label">Cost per unit</span>
+        <span className="rs-prevcost-value">${prevCpu.toFixed(2)}</span>
+        <span className="rs-prevcost-sub">Same as the last delivery</span>
       </div>
-      <p className="field-hint">Using the previous restock cost automatically</p>
+      <button
+        type="button"
+        className="smodal-btn"
+        onClick={() => { setFormData(prev => ({ ...prev, cost_per_unit: prevCpu.toFixed(2) })); setEditingCost(true) }}
+      >
+        <FiEdit3 size={13} /> Change
+      </button>
     </div>
   ) : (
-    <div className="form-group">
-      <label>Cost per Unit (USD)</label>
-      <input
-        type="number"
-        value={formData.cost_per_unit}
-        onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
-        placeholder="0.00"
-        step="any"
-        min="0"
-        autoFocus={editingCost}
-      />
-      {hasPrevCost ? (
-        <button
-          type="button"
-          className="btn-use-prev-cost"
-          onClick={() => { setEditingCost(false); setFormData(prev => ({ ...prev, cost_per_unit: '' })) }}
-        >
-          <FiX size={11} /> Cancel — keep previous cost (${prevCpu.toFixed(2)})
-        </button>
-      ) : (
-        <p className="field-hint">What you paid per individual unit</p>
-      )}
-    </div>
+    <Field
+      label="Cost per unit" prefix="$" type="number" step="any" min="0" inputMode="decimal"
+      value={formData.cost_per_unit}
+      onChange={e => handleFieldChange('cost_per_unit', e.target.value)}
+      error={stepErrors.cost_per_unit} shakeKey={stepAttempt}
+      autoFocus={editingCost}
+      hint={hasPrevCost ? (
+        <>Last delivery was ${prevCpu.toFixed(2)}.{' '}
+          <button type="button" className="rs-linkbtn"
+            onClick={() => { setEditingCost(false); setFormData(prev => ({ ...prev, cost_per_unit: '' })) }}>
+            Use that instead
+          </button>
+        </>
+      ) : 'What you paid for one unit. Leave blank if you do not know.'}
+    />
   )
 
   const handleFieldChange = (name, value) => {
     setFormData(prev => ({ ...prev, [name]: value }))
+    setStepErrors(se => (se[name] ? { ...se, [name]: null } : se))
     if (name === 'product_id') {
       setEditingCost(false)
       setFormData(prev => ({ ...prev, product_id: value, cost_per_unit: '' }))
@@ -440,12 +492,84 @@ function StockControl() {
     }
   }
 
-  const handleTypeChange = (type) => {
-    setPurchaseType(type)
+  const openRecord = () => {
     setFormData(emptyForm)
+    setPurchaseType('supplier')
     setProductPriceInfo(null)
     setEditingCost(false)
+    setStepErrors({})
+    setStep(0)
     setError('')
+    setShowForm(true)
+  }
+
+  const closeRecord = () => {
+    if (submitting) return
+    setShowForm(false)
+    handleCloseQuickAdd()
+  }
+
+  // Switching between supplier and bought-directly keeps everything already filled
+  // in; only the supplier (meaningless for a direct purchase) is cleared.
+  const chooseType = (type) => {
+    if (type === purchaseType) return
+    setPurchaseType(type)
+    setFormData(f => ({ ...f, supplier_id: '', notes: type === 'direct' ? f.notes : '' }))
+    setStepErrors(se => ({ ...se, supplier_id: null }))
+  }
+
+  // What is wrong with a given step, keyed by field, so each box can say so itself.
+  const stepProblems = (n) => {
+    const e = {}
+    if (n === 0) {
+      if (!formData.product_id) e.product_id = 'Choose the product that came in'
+      if (purchaseType === 'supplier' && !formData.supplier_id) e.supplier_id = 'Choose who supplied it'
+      if (!formData.date_received) e.date_received = 'When did it arrive?'
+    }
+    if (n === 1) {
+      if (!formData.quantity || directQty <= 0) e.quantity = 'How many units came in?'
+      if (!usingPrevCost && formData.cost_per_unit !== '') {
+        const c = parseFloat(formData.cost_per_unit)
+        if (!Number.isFinite(c) || c < 0) e.cost_per_unit = 'Enter a cost of 0 or more'
+      }
+      if (formData.new_selling_price !== '') {
+        const sp = parseFloat(formData.new_selling_price)
+        if (!Number.isFinite(sp) || sp <= 0) e.new_selling_price = 'Enter a price above 0, or leave it blank'
+      }
+      if (formData.expiry_date && formData.date_received && formData.expiry_date < formData.date_received) {
+        e.expiry_date = 'It cannot expire before the day it arrived'
+      }
+    }
+    return e
+  }
+
+  const failStep = (e) => {
+    setStepErrors(e)
+    setStepAttempt(a => a + 1)
+    requestAnimationFrame(() => {
+      const bad = document.querySelector('#record-stock-form [aria-invalid="true"]')
+      if (bad) bad.focus()
+    })
+  }
+
+  const goNext = () => {
+    const e = stepProblems(step)
+    if (Object.keys(e).length) { failStep(e); return }
+    setStepErrors({})
+    setStep(n => Math.min(n + 1, RS_STEPS.length - 1))
+  }
+
+  const goBack = () => {
+    setStepErrors({})
+    setStep(n => Math.max(n - 1, 0))
+  }
+
+  // Enter moves forward through the steps and saves on the last one — the tills are
+  // keyboard-first.
+  const onRecordSubmit = (e) => {
+    e.preventDefault()
+    if (step < RS_STEPS.length - 1) goNext()
+    else handleSubmit(e)
   }
 
   const handleSubmit = async (e) => {
@@ -454,12 +578,11 @@ function StockControl() {
     setError('')
     setSuccessMessage('')
 
-    if (!formData.product_id) { setError('Please select a product'); return }
-    if (formData.expiry_date && formData.expiry_date < formData.date_received) {
-      setError('Expiry date cannot be before the date received'); return
+    // A last check across every step; if something slipped through, go back to it.
+    for (const n of [0, 1]) {
+      const e = stepProblems(n)
+      if (Object.keys(e).length) { setStep(n); failStep(e); return }
     }
-    if (purchaseType === 'supplier' && !formData.supplier_id) { setError('Please select a supplier'); return }
-    if (!formData.quantity || directQty <= 0) { setError('Enter a valid quantity'); return }
 
     const productName = products.find(p => p.id === parseInt(formData.product_id))?.name || 'Stock'
     setSubmitting(true)
@@ -512,25 +635,35 @@ function StockControl() {
         try { pendingCount = (await window.stocka?.lan?.getStatus())?.queueBusinessSize ?? 0 } catch (_) {}
       }
 
-      setSaveResult({
-        queued,
-        pendingCount,
-        productName,
-        units: directQty,
-        costPerUnit: directCpu,
-        totalValue: directTotalValue,
-        kind: purchaseType,
-        priceNote,
-      })
+      // A clean save is a toast. A QUEUED save keeps the full card, because it is
+      // the one somebody has to actually read: "I saw nothing happen" is what makes
+      // people capture the same delivery twice.
+      if (queued) {
+        setSaveResult({
+          queued,
+          pendingCount,
+          productName,
+          units: directQty,
+          costPerUnit: directCpu,
+          totalValue: directTotalValue,
+          kind: purchaseType,
+          priceNote,
+        })
+      } else {
+        toast.success(`${productName}: +${directQty} received`, {
+          detail: `${directQty} units at $${directCpu.toFixed(2)} = $${directTotalValue.toFixed(2)}${priceNote ? ' · ' + priceNote : ''}`,
+        })
+      }
 
       setFormData(emptyForm)
       setPurchaseType('supplier')
       setProductPriceInfo(null)
       setEditingCost(false)
       setShowForm(false)
+      setStep(0)
       await loadData()
     } catch (err) {
-      setError(`Failed to record: ${err.message || err}`)
+      toast.error(`Could not record that stock: ${err.message || err}`)
       console.error(err)
     } finally {
       setSubmitting(false)
@@ -676,8 +809,8 @@ function StockControl() {
       {successMessage && <div className="success-banner">{successMessage}</div>}
 
       <div className="toolbar">
-        <button className="btn btn-primary" onClick={() => { setShowForm(s => !s); setError(''); setFormData(emptyForm); setProductPriceInfo(null) }}>
-          {showForm ? <><FiX size={16} />Cancel</> : <><FiPlus size={16} />Record Stock</>}
+        <button className="btn btn-primary" onClick={openRecord}>
+          <FiPlus size={16} /> Record Stock
         </button>
         <button className="btn btn-secondary" onClick={() => importFileRef.current.click()}>
           <FiUpload size={15} /> Import Sheet
@@ -691,357 +824,290 @@ function StockControl() {
         />
       </div>
 
-      {showForm && (
-        <div className="form-card">
-          <h3>Record Stock</h3>
-          <form onSubmit={handleSubmit}>
+      {/* ── Record Stock ──
+             Two steps over the history table: what came in, then how much and at
+             what cost. Saving happens from step two — no separate confirm step. */}
+      <Modal
+        open={showForm}
+        size="large"
+        title="Record Stock"
+        subtitle="Stock that has arrived in the shop. Stock levels update the moment you save."
+        onClose={closeRecord}
+        closeOnBackdrop={false}
+        footer={
+          <>
+            {step === 0 ? (
+              <button type="button" className="smodal-btn-away" onClick={closeRecord}>Cancel</button>
+            ) : (
+              <button type="button" className="smodal-btn-away" onClick={goBack} disabled={submitting}>Back</button>
+            )}
+            <button type="submit" form="record-stock-form" className="smodal-btn-primary" disabled={submitting}>
+              {step === 0
+                ? 'Next'
+                : submitting ? 'Saving...' : purchaseType === 'supplier' ? 'Record Stock' : 'Record Purchase'}
+            </button>
+          </>
+        }
+      >
+        <Stepper steps={RS_STEPS} current={step} onStepClick={(i) => { setStepErrors({}); setStep(i) }} />
 
-            {/* ── Step 1: Purchase Type ── */}
-            <div className="form-row">
-              <div className="form-group">
-                <label>Purchase Type *</label>
-                <div className="form-actions">
-                  {['supplier', 'direct'].map(type => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => handleTypeChange(type)}
-                      className={`purchase-type-btn ${purchaseType === type ? 'active' : ''}`}
-                    >
-                      {type === 'supplier' ? <><FiTruck size={15} /> From Supplier</> : <><FiShoppingBag size={15} /> Direct Purchase</>}
-                    </button>
-                  ))}
-                </div>
+        <form id="record-stock-form" onSubmit={onRecordSubmit} noValidate>
+
+          {/* ── 1. What came in ── */}
+          {step === 0 && (
+            <div className="rs-step fl-stack">
+              <div className="rs-toggle" role="radiogroup" aria-label="Where did it come from?">
+                <button
+                  type="button" role="radio" aria-checked={purchaseType === 'supplier'}
+                  className={`rs-toggle-opt${purchaseType === 'supplier' ? ' is-on' : ''}`}
+                  onClick={() => chooseType('supplier')}
+                >
+                  <FiTruck size={16} />
+                  <span><strong>From a supplier</strong><small>A delivery or an order</small></span>
+                </button>
+                <button
+                  type="button" role="radio" aria-checked={purchaseType === 'direct'}
+                  className={`rs-toggle-opt${purchaseType === 'direct' ? ' is-on' : ''}`}
+                  onClick={() => chooseType('direct')}
+                >
+                  <FiShoppingBag size={16} />
+                  <span><strong>Bought it myself</strong><small>Market, shop, donation, another branch</small></span>
+                </button>
               </div>
-            </div>
 
-            {/* ── Step 2: Product (both types) ── */}
-            <div className="form-row">
-              <div className="form-group">
-                <label>Product *</label>
+              <div className={`rs-pick${stepErrors.product_id ? ' rs-pick-invalid' : ''}`}>
+                <span className="rs-pick-label">
+                  Product <span className="fl-req">*</span>
+                  <button type="button" className="rs-pick-add" onClick={() => handleOpenQuickAdd('product', '')}>
+                    <FiPlus size={12} /> New product
+                  </button>
+                </span>
                 <SearchableSelect
+                  addLabel="New product" 
                   options={productOptions}
                   value={formData.product_id}
                   onChange={val => { handleFieldChange('product_id', val); handleCloseQuickAdd() }}
-                  placeholder="Search and select a product..."
+                  placeholder="Search your products..."
                   onQuickAdd={name => handleOpenQuickAdd('product', name)}
                 />
+                {stepErrors.product_id
+                  ? <p className="fl-msg fl-msg-err" role="alert">{stepErrors.product_id}</p>
+                  : <p className="fl-msg">Not in the list? Add it here — no need to leave this form.</p>}
               </div>
-            </div>
 
-            {quickAddMode === 'product' && (
-              <div className="quick-add-form">
-                <div className="quick-add-header">
-                  <FiPlus size={13} /> New Product
-                  <button type="button" className="btn-icon" onClick={handleCloseQuickAdd}><FiX size={13} /></button>
-                </div>
-                {quickAddError && <div className="error-banner">{quickAddError}</div>}
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Name *</label>
-                    <input type="text" value={quickProductForm.name} onChange={e => setQuickProductForm(p => ({ ...p, name: e.target.value }))} placeholder="Product name" autoFocus />
+              <div className="fl-row">
+                {purchaseType === 'supplier' ? (
+                  <div className={`rs-pick${stepErrors.supplier_id ? ' rs-pick-invalid' : ''}`}>
+                    <span className="rs-pick-label">
+                      Supplier <span className="fl-req">*</span>
+                      <button type="button" className="rs-pick-add" onClick={() => handleOpenQuickAdd('supplier', '')}>
+                        <FiPlus size={12} /> New supplier
+                      </button>
+                    </span>
+                    <SearchableSelect
+                      addLabel="New supplier" 
+                      options={supplierOptions}
+                      value={formData.supplier_id}
+                      onChange={val => { handleFieldChange('supplier_id', val); handleCloseQuickAdd() }}
+                      placeholder="Search your suppliers..."
+                      onQuickAdd={name => handleOpenQuickAdd('supplier', name)}
+                    />
+                    {stepErrors.supplier_id && <p className="fl-msg fl-msg-err" role="alert">{stepErrors.supplier_id}</p>}
                   </div>
-                  <div className="form-group">
-                    <label>Category</label>
-                    <select value={quickProductForm.category} onChange={e => setQuickProductForm(p => ({ ...p, category: e.target.value }))}>
-                      <option value="">Select category</option>
-                      {['Food', 'Non-Food', 'Drinks', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Unit</label>
-                    <select value={quickProductForm.unit} onChange={e => setQuickProductForm(p => ({ ...p, unit: e.target.value }))}>
-                      <option value="each">each</option>
-                      <option value="pack">pack</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Selling Price (USD)</label>
-                    <input type="number" value={quickProductForm.selling_price} onChange={e => setQuickProductForm(p => ({ ...p, selling_price: e.target.value }))} placeholder="0.00" step="any" min="0" />
-                  </div>
-                  <div className="form-group">
-                    <label>Reorder Level</label>
-                    <input type="number" value={quickProductForm.reorder_level} onChange={e => setQuickProductForm(p => ({ ...p, reorder_level: parseInt(e.target.value) || 0 }))} min="0" />
-                  </div>
-                </div>
-                <div className="quick-add-actions">
-                  <button type="button" className="btn btn-secondary" onClick={handleCloseQuickAdd} disabled={quickAddSaving}>Cancel</button>
-                  <button type="button" className="btn btn-primary" onClick={handleQuickAddSave} disabled={quickAddSaving}>
-                    {quickAddSaving ? 'Saving…' : 'Save & Select Product'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── Product price context panel ── */}
-            {productPriceInfo && formData.product_id && quickAddMode !== 'product' && (
-              <div className="product-price-info">
-                <div className="ppi-item">
-                  <span className="ppi-label">Current Selling Price</span>
-                  <span className={`ppi-value ${productPriceInfo.selling_price_per_unit > 0 ? 'ppi-selling' : 'ppi-none'}`}>
-                    {productPriceInfo.selling_price_per_unit > 0 ? `$${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'Not set'}
-                  </span>
-                </div>
-                <div className="ppi-divider" />
-                <div className="ppi-item">
-                  <span className="ppi-label">Last Restock Cost/Unit</span>
-                  <span className={`ppi-value ${productPriceInfo.cost_per_unit > 0 ? 'ppi-cost' : 'ppi-none'}`}>
-                    {productPriceInfo.cost_per_unit > 0 ? `$${productPriceInfo.cost_per_unit.toFixed(2)}` : 'No previous restock'}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* ── Step 3: Supplier (supplier type only) ── */}
-            {purchaseType === 'supplier' && (
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Supplier *</label>
-                  <SearchableSelect
-                    options={supplierOptions}
-                    value={formData.supplier_id}
-                    onChange={val => { handleFieldChange('supplier_id', val); handleCloseQuickAdd() }}
-                    placeholder="Search and select a supplier..."
-                    onQuickAdd={name => handleOpenQuickAdd('supplier', name)}
-                  />
-                </div>
-              </div>
-            )}
-
-            {purchaseType === 'supplier' && quickAddMode === 'supplier' && (
-              <div className="quick-add-form">
-                <div className="quick-add-header">
-                  <FiPlus size={13} /> New Supplier
-                  <button type="button" className="btn-icon" onClick={handleCloseQuickAdd}><FiX size={13} /></button>
-                </div>
-                {quickAddError && <div className="error-banner">{quickAddError}</div>}
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Name *</label>
-                    <input type="text" value={quickSupplierForm.name} onChange={e => setQuickSupplierForm(p => ({ ...p, name: e.target.value }))} placeholder="Supplier name" autoFocus />
-                  </div>
-                  <div className="form-group">
-                    <label>Contact Person</label>
-                    <input type="text" value={quickSupplierForm.contact_person} onChange={e => setQuickSupplierForm(p => ({ ...p, contact_person: e.target.value }))} placeholder="e.g. John Moyo" />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Phone</label>
-                    <input type="text" value={quickSupplierForm.phone} onChange={e => setQuickSupplierForm(p => ({ ...p, phone: e.target.value }))} placeholder="e.g. 0771234567" />
-                  </div>
-                </div>
-                <div className="quick-add-actions">
-                  <button type="button" className="btn btn-secondary" onClick={handleCloseQuickAdd} disabled={quickAddSaving}>Cancel</button>
-                  <button type="button" className="btn btn-primary" onClick={handleQuickAddSave} disabled={quickAddSaving}>
-                    {quickAddSaving ? 'Saving…' : 'Save & Select Supplier'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── Step 4: Date Received + Expiry Date (both types) ── */}
-            <div className="form-row">
-              <div className="form-group">
-                <label>Date Received *</label>
-                <input
-                  type="date"
+                ) : <div />}
+                <Field
+                  label="Arrived on" required type="date"
                   value={formData.date_received}
                   onChange={e => handleFieldChange('date_received', e.target.value)}
-                  required
+                  error={stepErrors.date_received} shakeKey={stepAttempt}
                 />
               </div>
-              <div className="form-group">
-                <label>Expiry Date</label>
-                <input
-                  type="date"
+
+              {productPriceInfo && formData.product_id && (
+                <div className="rs-context">
+                  <div>
+                    <span className="rs-context-label">Sells for</span>
+                    <span className="rs-context-value">
+                      {productPriceInfo.selling_price_per_unit > 0 ? `$${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'Not set'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="rs-context-label">Last cost</span>
+                    <span className="rs-context-value">
+                      {productPriceInfo.cost_per_unit > 0 ? `$${productPriceInfo.cost_per_unit.toFixed(2)}` : 'No earlier delivery'}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── 2. How many, at what cost — and save ── */}
+          {step === 1 && (
+            <div className="rs-step fl-stack">
+              {/* What step one chose, so it is still in view while you fill this in. */}
+              <div className="rs-recap">
+                <strong>{products.find(p => String(p.id) === String(formData.product_id))?.name || '—'}</strong>
+                <span>
+                  {purchaseType === 'supplier'
+                    ? `from ${suppliers.find(x => String(x.id) === String(formData.supplier_id))?.name || '—'}`
+                    : 'bought directly'}
+                  {' · arrived '}{formData.date_received}
+                </span>
+                <button type="button" className="rs-linkbtn" onClick={goBack}>Change</button>
+              </div>
+
+              <div className="fl-row">
+                <Field
+                  label="Units received" required type="number" min="1" step="1" inputMode="numeric"
+                  value={formData.quantity}
+                  onChange={e => handleFieldChange('quantity', e.target.value)}
+                  error={stepErrors.quantity} shakeKey={stepAttempt}
+                  autoFocus
+                  hint="Count single items, not boxes."
+                />
+                {costPerUnitField}
+              </div>
+
+              <div className="fl-row">
+                <Field
+                  label="New selling price" prefix="$" type="number" step="any" min="0" inputMode="decimal"
+                  value={formData.new_selling_price}
+                  onChange={e => handleFieldChange('new_selling_price', e.target.value)}
+                  error={stepErrors.new_selling_price} shakeKey={stepAttempt}
+                  hint={productPriceInfo?.selling_price_per_unit > 0
+                    ? `Leave blank to keep $${productPriceInfo.selling_price_per_unit.toFixed(2)}.`
+                    : 'No selling price yet — set one here if you know it.'}
+                />
+                <Field
+                  label="Expires on" type="date"
                   value={formData.expiry_date}
-                  onChange={e => handleFieldChange('expiry_date', e.target.value)}
                   min={formData.date_received}
+                  onChange={e => handleFieldChange('expiry_date', e.target.value)}
+                  error={stepErrors.expiry_date} shakeKey={stepAttempt}
+                  hint="Optional. Leave blank if it does not go off."
                 />
-                <p className="field-hint">Optional — leave blank for non-perishables. Shown in Expiry Tracking.</p>
               </div>
+
+              {directQty > 0 && (
+                <div className="rs-calc">
+                  <div className="rs-calc-cell">
+                    <span className="rs-calc-label">Total cost</span>
+                    <span className="rs-calc-value">${directTotalValue.toFixed(2)}</span>
+                  </div>
+                  {showProfit && (
+                    <>
+                      <div className="rs-calc-cell">
+                        <span className="rs-calc-label">Profit each</span>
+                        <span className={`rs-calc-value ${profitPerUnit >= 0 ? 'is-good' : 'is-bad'}`}>${profitPerUnit.toFixed(2)}</span>
+                      </div>
+                      <div className="rs-calc-cell">
+                        <span className="rs-calc-label">Profit on this lot</span>
+                        <span className={`rs-calc-value ${totalProfit >= 0 ? 'is-good' : 'is-bad'}`}>${totalProfit.toFixed(2)}</span>
+                      </div>
+                      <div className="rs-calc-cell">
+                        <span className="rs-calc-label">Margin</span>
+                        <span className={`rs-calc-value ${profitMarginPct >= 0 ? 'is-good' : 'is-bad'}`}>{profitMarginPct.toFixed(0)}%</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {purchaseType === 'direct' && (
+                <Field
+                  as="textarea" label="Note" rows={2}
+                  value={formData.notes}
+                  onChange={e => handleFieldChange('notes', e.target.value)}
+                  placeholder="e.g. Bought at Mbare market, donation, moved from the other branch"
+                />
+              )}
             </div>
+          )}
+        </form>
+      </Modal>
 
-            {/* ── Supplier Purchase: quantity fields ── */}
-            {purchaseType === 'supplier' && (
-              <>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Quantity to Add *</label>
-                    <input
-                      type="number"
-                      value={formData.quantity}
-                      onChange={e => handleFieldChange('quantity', e.target.value)}
-                      placeholder="e.g. 24"
-                      min="1"
-                      step="1"
-                    />
-                    <p className="field-hint">Total individual units being added to stock</p>
-                  </div>
-                  {costPerUnitField}
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Update Selling Price (USD)</label>
-                    <input
-                      type="number"
-                      value={formData.new_selling_price}
-                      onChange={e => handleFieldChange('new_selling_price', e.target.value)}
-                      placeholder={productPriceInfo?.selling_price_per_unit > 0 ? `Current: $${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'e.g. 1.50'}
-                      step="any"
-                      min="0"
-                    />
-                    <p className="field-hint">Leave blank to keep the current selling price</p>
-                  </div>
-                </div>
-
-                {directQty > 0 && (
-                  <div className="calculations-panel">
-                    <div className="calc-row">
-                      <div className="calc-item">
-                        <span className="calc-label">Total Units to Add:</span>
-                        <span className="calc-value">{directQty}</span>
-                      </div>
-                      <div className="calc-item">
-                        <span className="calc-label">Total Cost:</span>
-                        <span className="calc-value">${directTotalValue.toFixed(2)}</span>
-                      </div>
-                      {showProfit && (
-                        <div className="calc-item">
-                          <span className="calc-label">Profit per Unit:</span>
-                          <span className={`calc-value ${profitPerUnit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {profitPerUnit >= 0 ? '+' : ''}${profitPerUnit.toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                      {showProfit && directQty > 0 && (
-                        <div className="calc-item">
-                          <span className="calc-label">Total Profit:</span>
-                          <span className={`calc-value ${totalProfit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                      {showProfit && (
-                        <div className="calc-item">
-                          <span className="calc-label">Margin:</span>
-                          <span className={`calc-value ${profitMarginPct >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {profitMarginPct.toFixed(1)}%
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* ── Direct Purchase: quantity fields ── */}
-            {purchaseType === 'direct' && (
-              <>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Quantity to Add *</label>
-                    <input
-                      type="number"
-                      value={formData.quantity}
-                      onChange={e => handleFieldChange('quantity', e.target.value)}
-                      placeholder="e.g. 24"
-                      min="1"
-                      step="1"
-                    />
-                    <p className="field-hint">Total individual units being added to stock</p>
-                  </div>
-                  {costPerUnitField}
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Update Selling Price (USD)</label>
-                    <input
-                      type="number"
-                      value={formData.new_selling_price}
-                      onChange={e => handleFieldChange('new_selling_price', e.target.value)}
-                      placeholder={productPriceInfo?.selling_price_per_unit > 0 ? `Current: $${productPriceInfo.selling_price_per_unit.toFixed(2)}` : 'e.g. 1.50'}
-                      step="any"
-                      min="0"
-                    />
-                    <p className="field-hint">Leave blank to keep the current selling price</p>
-                  </div>
-                </div>
-
-                {directQty > 0 && (
-                  <div className="calculations-panel">
-                    <div className="calc-row">
-                      <div className="calc-item">
-                        <span className="calc-label">Total Units to Add:</span>
-                        <span className="calc-value">{directQty}</span>
-                      </div>
-                      <div className="calc-item">
-                        <span className="calc-label">Total Cost:</span>
-                        <span className="calc-value">${directTotalValue.toFixed(2)}</span>
-                      </div>
-                      {showProfit && (
-                        <div className="calc-item">
-                          <span className="calc-label">Profit per Unit:</span>
-                          <span className={`calc-value ${profitPerUnit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {profitPerUnit >= 0 ? '+' : ''}${profitPerUnit.toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                      {showProfit && directQty > 0 && (
-                        <div className="calc-item">
-                          <span className="calc-label">Total Profit:</span>
-                          <span className={`calc-value ${totalProfit >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                      {showProfit && (
-                        <div className="calc-item">
-                          <span className="calc-label">Margin:</span>
-                          <span className={`calc-value ${profitMarginPct >= 0 ? 'calc-profit' : 'calc-loss'}`}>
-                            {profitMarginPct.toFixed(1)}%
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Notes</label>
-                    <textarea
-                      value={formData.notes}
-                      onChange={e => handleFieldChange('notes', e.target.value)}
-                      placeholder="e.g. Personal purchase, donation, inter-branch transfer..."
-                      rows="2"
-                      />
-                  </div>
-                </div>
-              </>
-            )}
-
-            <div className="form-actions">
-              <button type="submit" className="btn btn-primary" disabled={submitting}>
-                {submitting
-                  ? <><span className="stk-spinner" /> Saving…</>
-                  : purchaseType === 'supplier'
-                    ? <><FiCheck size={14} /> Record Stock Receiving</>
-                    : <><FiCheck size={14} /> Confirm Direct Purchase</>}
-              </button>
-              <button type="button" className="btn btn-secondary" disabled={submitting} onClick={() => { setShowForm(false); setFormData(emptyForm); setProductPriceInfo(null); setEditingCost(false); setError('') }}>
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+      {/* ── Quick add: a product or supplier that is not in the list yet ──
+             A dialog on top of Record Stock rather than a form wedged inside it. */}
+      <Modal
+        open={!!quickAddMode}
+        size="medium"
+        level={1100}
+        title={quickAddMode === 'supplier' ? 'New supplier' : 'New product'}
+        subtitle="Saved straight away and picked for this delivery."
+        onClose={handleCloseQuickAdd}
+        footer={
+          <>
+            <button type="button" className="smodal-btn-away" onClick={handleCloseQuickAdd} disabled={quickAddSaving}>Cancel</button>
+            <button type="submit" form="quick-add-form" className="smodal-btn-primary" disabled={quickAddSaving}>
+              {quickAddSaving ? 'Saving...' : quickAddMode === 'supplier' ? 'Save Supplier' : 'Save Product'}
+            </button>
+          </>
+        }
+      >
+        <form
+          id="quick-add-form"
+          className="fl-stack"
+          onSubmit={e => { e.preventDefault(); handleQuickAddSave() }}
+          noValidate
+        >
+          {quickAddMode === 'product' ? (
+            <>
+              <Field
+                label="Product name" required autoFocus
+                value={quickProductForm.name}
+                onChange={e => setQuickProductForm(p => ({ ...p, name: e.target.value }))}
+                error={quickAddError || undefined}
+              />
+              <div className="fl-row">
+                <Field as="select" label="Category"
+                  value={quickProductForm.category}
+                  onChange={e => setQuickProductForm(p => ({ ...p, category: e.target.value }))}>
+                  <option value="">No category</option>
+                  {['Food', 'Non-Food', 'Drinks', 'Other'].map(c => <option key={c} value={c}>{c}</option>)}
+                </Field>
+                <Field as="select" label="Sold by the"
+                  value={quickProductForm.unit}
+                  onChange={e => setQuickProductForm(p => ({ ...p, unit: e.target.value }))}>
+                  <option value="each">Each (single item)</option>
+                  <option value="pack">Pack</option>
+                </Field>
+              </div>
+              <div className="fl-row">
+                <Field label="Selling price" prefix="$" type="number" step="any" min="0" inputMode="decimal"
+                  value={quickProductForm.selling_price}
+                  onChange={e => setQuickProductForm(p => ({ ...p, selling_price: e.target.value }))}
+                />
+                <Field label="Reorder level" type="number" min="0"
+                  value={quickProductForm.reorder_level}
+                  onChange={e => setQuickProductForm(p => ({ ...p, reorder_level: parseInt(e.target.value) || 0 }))}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <Field
+                label="Supplier name" required autoFocus
+                value={quickSupplierForm.name}
+                onChange={e => setQuickSupplierForm(p => ({ ...p, name: e.target.value }))}
+                error={quickAddError || undefined}
+              />
+              <div className="fl-row">
+                <Field label="Contact person"
+                  value={quickSupplierForm.contact_person}
+                  onChange={e => setQuickSupplierForm(p => ({ ...p, contact_person: e.target.value }))}
+                  placeholder="e.g. John Moyo"
+                />
+                <Field label="Phone" type="tel"
+                  value={quickSupplierForm.phone}
+                  onChange={e => setQuickSupplierForm(p => ({ ...p, phone: e.target.value }))}
+                  placeholder="e.g. 0771 234 567"
+                />
+              </div>
+            </>
+          )}
+        </form>
+      </Modal>
 
       {/* ── Import Modal ── */}
       {showImportModal && (

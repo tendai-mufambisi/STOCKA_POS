@@ -1003,3 +1003,249 @@
   color: #94a3b8;
   margin-top: 9px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Record Stock dialog (rs-*)
+   ════════════════════════════════════════════════════════════════════ */
+
+.rs-step { animation: rs-in 0.24s cubic-bezier(0.2, 0.9, 0.3, 1); }
+
+@keyframes rs-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Where it came from: a compact two-way toggle, not a step of its own ── */
+
+.rs-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rs-toggle-opt {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  border: 1.5px solid var(--slate-300);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--slate-500);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, box-shadow 0.2s;
+}
+
+.rs-toggle-opt span { display: flex; flex-direction: column; gap: 2px; }
+.rs-toggle-opt strong { font-size: 13.5px; font-weight: 700; color: var(--slate-800); }
+.rs-toggle-opt small { font-size: 11.5px; color: var(--slate-500); }
+.rs-toggle-opt:hover { border-color: #16a34a; }
+.rs-toggle-opt:focus-visible { outline: none; border-color: #16a34a; box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.16); }
+.rs-toggle-opt.is-on { border-color: #16a34a; background: #f4fbf6; color: #15803d; box-shadow: inset 0 0 0 1px #16a34a; }
+
+/* ── Step 2 opens with what step 1 chose ── */
+
+.rs-recap {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--slate-50, #f8fafc);
+  border: 1px solid var(--slate-200);
+  font-size: 13px;
+}
+
+.rs-recap strong { color: var(--slate-900); font-size: 14px; }
+.rs-recap span { color: var(--slate-500); }
+.rs-recap .rs-linkbtn { margin-left: auto; }
+
+/* ── Step 2: searchable pickers ── */
+
+.rs-pick { display: flex; flex-direction: column; gap: 7px; }
+
+.rs-pick-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--slate-600);
+  letter-spacing: 0.01em;
+}
+
+/* The shared searchable select, brought into line with the Field look. */
+.rs-pick .ss-trigger {
+  min-height: 50px;
+  border: 1.5px solid var(--slate-300);
+  border-radius: 11px;
+  transition: border-color 0.18s, box-shadow 0.2s;
+}
+
+.rs-pick .ss-trigger:hover { border-color: var(--slate-400); }
+
+.rs-pick-invalid .ss-trigger {
+  border-color: #dc2626;
+  background: #fffafa;
+  animation: fl-shake 0.42s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+.rs-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rs-context > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 13px;
+  border-radius: 10px;
+  background: var(--slate-50);
+  border: 1px solid var(--slate-200);
+}
+
+.rs-context-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate-400); }
+.rs-context-value { font-size: 15px; font-weight: 700; color: var(--slate-900); }
+
+/* ── Step 3: cost and live figures ── */
+
+.rs-prevcost {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 10px 8px 14px;
+  border: 1.5px solid #bbf7d0;
+  border-radius: 11px;
+  background: #f4fbf6;
+}
+
+.rs-prevcost-words { display: flex; flex-direction: column; min-width: 0; }
+.rs-prevcost-label { font-size: 11px; font-weight: 650; color: #15803d; }
+.rs-prevcost-value { font-size: 15px; font-weight: 750; color: var(--slate-900); }
+.rs-prevcost-sub { font-size: 11px; color: var(--slate-500); }
+
+.rs-linkbtn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--green-main);
+  cursor: pointer;
+}
+
+.rs-linkbtn:hover { text-decoration: underline; }
+
+.rs-calc {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+  border: 1px solid var(--slate-200);
+  animation: rs-in 0.24s ease;
+}
+
+.rs-calc-cell { display: flex; flex-direction: column; gap: 3px; }
+.rs-calc-label { font-size: 11px; font-weight: 650; color: var(--slate-500); }
+.rs-calc-value { font-size: 17px; font-weight: 750; color: var(--slate-900); font-variant-numeric: tabular-nums; }
+.rs-calc-value.is-good { color: #15803d; }
+.rs-calc-value.is-bad  { color: #b91c1c; }
+
+@media (max-width: 620px) {
+  .rs-toggle, .rs-context { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rs-step, .rs-calc { animation: none; }
+  .rs-toggle-opt { transition: none; }
+  .rs-pick-invalid .ss-trigger { animation: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Scroll containment — the toolbar, the "Purchase History" heading and the
+   search/filter bar stay put; only the rows of the history table scroll.
+   ════════════════════════════════════════════════════════════════════ */
+
+.stock-control-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.stock-control-page > * { flex: 0 0 auto; }
+
+/* Covers both the history and the (rare) waiting-to-sync block. */
+.stock-control-page > .receivings-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.receivings-list > * { flex: 0 0 auto; }
+
+.receivings-list > .receivings-table {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.receivings-table table { border-collapse: separate; border-spacing: 0; }
+.receivings-table thead tr { background: none; }
+
+.receivings-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+/* ── Add a product / supplier without leaving Record Stock ── */
+
+.rs-pick-label { display: flex; align-items: center; gap: 4px; }
+
+.rs-pick-add {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  background: #f0fdf4;
+  color: #15803d;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.rs-pick-add:hover { background: #dcfce7; border-color: #4ade80; }
+.rs-pick-add:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.2); }
+
+.ss-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-top: 1px solid var(--slate-200, #e2e8f0);
+  background: #f8fdf9;
+  color: #15803d;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.ss-add-row:hover { background: #dcfce7; }
+.ss-add-row strong { font-weight: 750; }

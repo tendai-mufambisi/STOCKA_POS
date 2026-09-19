@@ -345,3 +345,30 @@
   color: #94a3b8;
   font-size: 14px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Sticky column headings.
+   This page is deliberately NOT pinned top-to-bottom like the others: the
+   money summary above the table is tall, and freezing it would leave a sliver
+   of screen for the movements themselves. So the page scrolls as a whole, and
+   only the table's headings stay on screen as you scroll down the list.
+   ════════════════════════════════════════════════════════════════════ */
+
+.money-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  /* `hidden` here would make the table its own scroll box and pin the headings
+     to it instead of to the page. The corners are rounded on the cells below. */
+  overflow: visible;
+}
+
+.money-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.money-table thead th:first-child { border-top-left-radius: 14px; }
+.money-table thead th:last-child  { border-top-right-radius: 14px; }
+.money-table tbody tr:last-child td:first-child { border-bottom-left-radius: 14px; }
+.money-table tbody tr:last-child td:last-child  { border-bottom-right-radius: 14px; }

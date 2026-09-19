@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { addExpense, getExpenses, updateExpense, deleteExpense } from '../database/db'
 import ConfirmModal from '../components/ConfirmModal'
+import Modal from '../components/Modal'
+import Field from '../components/Field'
+import { toast } from '../store/useToastStore'
 import { validateRequired, validateCurrency, validateDate } from '../utils/validation'
 import { formatDbDate, localDateStr } from '../utils/salesDay'
 import { useAuthStore } from '../store/useAuthStore'
@@ -30,6 +33,18 @@ function Expenses() {
 
   const categories = ['Rent', 'Salaries', 'Utilities', 'Transport', 'Supplies', 'Other']
 
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [attempt, setAttempt] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  const emptyExpense = () => ({
+    description: '', amount: '', category: 'Other', date: localDateStr(), payment_method: 'Cash', notes: '',
+  })
+
+  // A dialog over the table. It used to open above the expenses table and push it down.
+  const openAdd = () => { setEditingId(null); setFormData(emptyExpense()); setFieldErrors({}); setShowForm(true) }
+  const closeForm = () => { setShowForm(false); setEditingId(null); setFieldErrors({}) }
+
   useEffect(() => {
     loadData()
   }, [])
@@ -49,65 +64,58 @@ function Expenses() {
   const handleChange = (e) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
+    if (fieldErrors[name]) setFieldErrors(fe => ({ ...fe, [name]: null }))
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setError('')
 
-    // Validate required fields
-    const descriptionValidation = validateRequired(formData.description, 'Description')
-    if (!descriptionValidation.valid) {
-      setError(descriptionValidation.error)
+    const errs = {}
+    const descCheck = validateRequired(formData.description, 'Description')
+    if (!descCheck.valid) errs.description = descCheck.error
+    const amountCheck = validateCurrency(formData.amount, 'Amount')
+    if (!amountCheck.valid) errs.amount = amountCheck.error
+    else if (parseFloat(formData.amount) <= 0) errs.amount = 'Amount must be more than 0'
+    const dateCheck = validateDate(formData.date)
+    if (!dateCheck.valid) errs.date = dateCheck.error
+    if (Object.keys(errs).length) {
+      setFieldErrors(errs)
+      setAttempt(n => n + 1)
+      requestAnimationFrame(() => document.querySelector('#expense-form [aria-invalid="true"]')?.focus())
       return
     }
 
-    const amountValidation = validateCurrency(formData.amount, 'Amount')
-    if (!amountValidation.valid) {
-      setError(amountValidation.error)
-      return
-    }
-
-    // Validate date
-    const dateValidation = validateDate(formData.date)
-    if (!dateValidation.valid) {
-      setError(dateValidation.error)
-      return
-    }
-
+    const amount = parseFloat(formData.amount)
+    const label = formData.description.trim()
+    setSaving(true)
     try {
       if (editingId) {
-        await updateExpense(editingId, {
-          ...formData,
-          amount: parseFloat(formData.amount)
-        })
+        await updateExpense(editingId, { ...formData, description: label, amount })
       } else {
         await addExpense({
           ...formData,
-          amount: parseFloat(formData.amount),
+          description: label,
+          amount,
           recorded_by: user?.username || 'System',
           shift_id: currentShift?.id || null
         })
       }
+      const wasEditing = Boolean(editingId)
       await loadData()
-      setFormData({
-        description: '',
-        amount: '',
-        category: 'Other',
-        date: localDateStr(),
-        payment_method: 'Cash',
-        notes: ''
-      })
-      setEditingId(null)
-      setShowForm(false)
+      closeForm()
+      setFormData(emptyExpense())
+      toast.success(wasEditing ? `${label} updated` : `Expense recorded: ${label}`, { detail: `$${amount.toFixed(2)} · ${formData.category}` })
     } catch (err) {
-      setError('Failed to save expense')
+      toast.error('Could not save that expense: ' + (err.message || 'unknown error'))
+    } finally {
+      setSaving(false)
     }
   }
 
   const handleEdit = (expense) => {
-    setFormData(expense)
+    setFormData({ ...emptyExpense(), ...expense, notes: expense.notes || '' })
     setEditingId(expense.id)
+    setFieldErrors({})
     setShowForm(true)
   }
 
@@ -121,8 +129,9 @@ function Expenses() {
     try {
       await deleteExpense(id)
       await loadData()
+      toast.success(`${confirmDelete.description} removed`)
     } catch (err) {
-      setError('Failed to delete expense')
+      toast.error('Could not remove that expense')
     }
   }
 
@@ -175,21 +184,8 @@ function Expenses() {
       {error && <div className="error-banner">{error}</div>}
 
       <div className="toolbar">
-        <button className="btn btn-primary" onClick={() => {
-          setShowForm(!showForm)
-          if (showForm) {
-            setEditingId(null)
-            setFormData({
-              description: '',
-              amount: '',
-              category: 'Other',
-              date: localDateStr(),
-              payment_method: 'Cash',
-              notes: ''
-            })
-          }
-        }}>
-          {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Add Expense</>}
+        <button className="btn btn-primary" onClick={openAdd}>
+          <FiPlus size={14} /> Add Expense
         </button>
         <input type="text" placeholder="Search..." value={search} 
           onChange={(e) => setSearch(e.target.value)} className="search-input" />
@@ -199,50 +195,53 @@ function Expenses() {
         </select>
       </div>
 
-      {showForm && (
-        <div className="form-card">
-          <h3>{editingId ? <><FiEdit2 size={14} /> Edit</> : <><FiPlus size={14} /> Add</>} Expense</h3>
-          <form onSubmit={handleSubmit}>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Description *</label>
-                <input type="text" name="description" value={formData.description} 
-                  onChange={handleChange} required />
-              </div>
-              <div className="form-group">
-                <label>Amount (USD) *</label>
-                <input type="number" name="amount" step="any" value={formData.amount} 
-                  onChange={handleChange} required />
-              </div>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Category</label>
-                <select name="category" value={formData.category} onChange={handleChange}>
-                  {categories.map(c => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Payment Method</label>
-                <select name="payment_method" value={formData.payment_method} onChange={handleChange}>
-                  <option value="Cash">Cash</option>
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Date</label>
-                <input type="date" name="date" value={formData.date} onChange={handleChange} />
-              </div>
-            </div>
-            <div className="form-group">
-              <label>Notes</label>
-              <textarea name="notes" value={formData.notes} onChange={handleChange} rows="2" />
-            </div>
-            <button type="submit" className="btn btn-primary">
-              {editingId ? 'Update' : 'Add'} Expense
+      <Modal
+        open={showForm}
+        size="medium"
+        title={editingId ? 'Edit Expense' : 'Record an Expense'}
+        subtitle="Money that left the business — rent, wages, transport, supplies."
+        onClose={closeForm}
+        footer={
+          <>
+            <button type="button" className="smodal-btn-away" onClick={closeForm}>Cancel</button>
+            <button type="submit" form="expense-form" className="smodal-btn-primary" disabled={saving}>
+              {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Record Expense'}
             </button>
-          </form>
-        </div>
-      )}
+          </>
+        }
+      >
+        <form id="expense-form" className="fl-stack" onSubmit={handleSubmit} noValidate>
+          <Field
+            label="What was it for?" required name="description" autoFocus
+            value={formData.description} onChange={handleChange}
+            error={fieldErrors.description} shakeKey={attempt}
+            placeholder="e.g. Electricity tokens"
+          />
+          <div className="fl-row">
+            <Field
+              label="Amount" required prefix="$" name="amount" type="number" step="any" min="0" inputMode="decimal"
+              value={formData.amount} onChange={handleChange}
+              error={fieldErrors.amount} shakeKey={attempt}
+            />
+            <Field
+              label="Date" required name="date" type="date"
+              value={formData.date} onChange={handleChange}
+              error={fieldErrors.date} shakeKey={attempt}
+            />
+          </div>
+          <div className="fl-row">
+            <Field as="select" label="Category" name="category" value={formData.category} onChange={handleChange}>
+              {categories.map(c => <option key={c}>{c}</option>)}
+            </Field>
+            <Field as="select" label="Paid with" name="payment_method" value={formData.payment_method} onChange={handleChange}>
+              <option value="Cash">Cash</option>
+            </Field>
+          </div>
+          <Field as="textarea" label="Notes" name="notes" rows={2}
+            value={formData.notes} onChange={handleChange}
+            placeholder="Receipt number, who was paid, anything worth keeping" />
+        </form>
+      </Modal>
 
       <div className="expenses-table">
         {filteredExpenses.length === 0 ? (

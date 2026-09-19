@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLanSync } from '../hooks/useLanSync'
 import ConfirmModal from '../components/ConfirmModal'
+import Modal from '../components/Modal'
+import Field from '../components/Field'
+import { toast } from '../store/useToastStore'
 import { FiPackage, FiEdit2, FiTrash2, FiDownload, FiUpload, FiPlus, FiX, FiGrid, FiList, FiImage } from 'react-icons/fi'
 import { getProducts, addProduct, updateProduct, deleteProduct, getSuppliers, getLatestProductPrice, getLowStockItems, getShop, updateProductQuantity, addProductsBatch, recordInitialCost } from '../database/db'
 import { validateRequired, validateCurrency, validateNonNegativeNumber } from '../utils/validation'
@@ -39,6 +42,11 @@ function Products() {
     initial_cost_price: ''
   })
   const [error, setError] = useState('')
+  // Per-field problems, so the box that is wrong says so itself instead of a
+  // banner at the top of the page. `attempt` replays the shake on a resubmit.
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [attempt, setAttempt] = useState(0)
+  const [saving, setSaving] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(25)
   const [defaultReorderLevel, setDefaultReorderLevel] = useState(5)
@@ -86,70 +94,102 @@ function Products() {
       ...prev,
       [name]: (name === 'reorder_level') ? parseFloat(value) || 0 : value
     }))
+    if (fieldErrors[name]) setFieldErrors(fe => ({ ...fe, [name]: null }))
+  }
+
+  const EMPTY_FORM = {
+    name: '', category: '', supplier_id: '', unit: 'each', selling_price: '',
+    reorder_level: defaultReorderLevel, description: '', image_data: null, initial_cost_price: '',
+  }
+
+  // Adding and editing share one dialog. It used to be two things: an add form that
+  // opened above the list and shoved every product down, and an edit form that
+  // replaced the row and shoved everything below it down.
+  const openAdd = () => {
+    setEditingId(null)
+    setFormData(EMPTY_FORM)
+    setFieldErrors({})
+    setError('')
+    setShowForm(true)
+  }
+
+  const closeForm = () => {
+    setShowForm(false)
+    setEditingId(null)
+    setFieldErrors({})
+    setError('')
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
 
-    // Validate required fields
-    const nameValidation = validateRequired(formData.name, 'Product name')
-    if (!nameValidation.valid) {
-      setError(nameValidation.error)
+    const errs = {}
+    const nameCheck = validateRequired(formData.name, 'Product name')
+    if (!nameCheck.valid) errs.name = nameCheck.error
+
+    if (formData.selling_price === '' || formData.selling_price === null) {
+      errs.selling_price = 'Selling price is required'
+    } else {
+      const priceCheck = validateCurrency(formData.selling_price, 'Selling price')
+      if (!priceCheck.valid) errs.selling_price = priceCheck.error
+    }
+
+    if (formData.initial_cost_price !== '' && formData.initial_cost_price != null) {
+      const costCheck = validateCurrency(formData.initial_cost_price, 'Cost price')
+      if (!costCheck.valid) errs.initial_cost_price = costCheck.error
+    }
+
+    const reorderCheck = validateNonNegativeNumber(formData.reorder_level, 'Reorder level')
+    if (!reorderCheck.valid) errs.reorder_level = reorderCheck.error
+
+    if (Object.keys(errs).length) {
+      setFieldErrors(errs)
+      setAttempt(a => a + 1)
+      // Put the cursor in the first box that needs fixing.
+      requestAnimationFrame(() => document.querySelector('#product-form [aria-invalid="true"]')?.focus())
       return
     }
 
-    // Validate price if provided
-    if (formData.selling_price) {
-      const priceValidation = validateCurrency(formData.selling_price, 'Selling price')
-      if (!priceValidation.valid) {
-        setError(priceValidation.error)
-        return
-      }
-    }
-
-    // Validate reorder level
-    const reorderValidation = validateNonNegativeNumber(formData.reorder_level, 'Reorder level')
-    if (!reorderValidation.valid) {
-      setError(reorderValidation.error)
-      return
-    }
-
+    const name = formData.name.trim()
+    setSaving(true)
     try {
       if (editingId) {
         await updateProduct(editingId, {
           ...formData,
+          name,
           selling_price: parseFloat(formData.selling_price) || 0
         })
       } else {
         await addProduct({
           ...formData,
+          name,
           selling_price: parseFloat(formData.selling_price) || 0
         })
         const initialCost = parseFloat(formData.initial_cost_price)
         if (initialCost > 0) {
           const allProducts = await getProducts()
-          const created = allProducts.find(p => p.name.toLowerCase() === formData.name.trim().toLowerCase())
+          const created = allProducts.find(p => p.name.toLowerCase() === name.toLowerCase())
           if (created) await recordInitialCost(created.id, initialCost, 'Initial setup')
         }
       }
       await loadData()
-      setFormData({
-        name: '',
-        category: '',
-        supplier_id: '',
-        unit: 'each',
-        selling_price: '',
-        reorder_level: 5,
-        description: '',
-        image_data: null,
-        initial_cost_price: ''
-      })
-      setEditingId(null)
-      setShowForm(false)
+      const wasEditing = Boolean(editingId)
+      closeForm()
+      setFormData(EMPTY_FORM)
+      toast.success(wasEditing ? `${name} updated` : `${name} added to your products`)
     } catch (err) {
-      setError(translateDbError(err))
+      const msg = translateDbError(err)
+      // A duplicate name is a problem with one field, so it belongs on that field.
+      if (/already exists/i.test(msg)) {
+        setFieldErrors({ name: msg })
+        setAttempt(a => a + 1)
+      } else {
+        toast.error(msg)
+      }
       console.error(err)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -165,13 +205,8 @@ function Products() {
       image_data: product.image_data || null
     })
     setEditingId(product.id)
-    setShowForm(false)
-    setError('')
-  }
-
-  const handleCancelEdit = () => {
-    setEditingId(null)
-    setFormData({ name: '', category: '', supplier_id: '', unit: 'each', selling_price: '', reorder_level: defaultReorderLevel, description: '', image_data: null, initial_cost_price: '' })
+    setFieldErrors({})
+    setShowForm(true)
     setError('')
   }
 
@@ -444,55 +479,6 @@ function Products() {
     }
   }
 
-  const renderInlineEditForm = (product) => (
-    <div key={product.id} className="product-inline-edit">
-      <div className="inline-edit-header">
-        <span><FiEdit2 size={13} /> Editing: <strong>{product.name}</strong></span>
-        <button type="button" className="btn-icon" onClick={handleCancelEdit} title="Cancel edit"><FiX size={14} /></button>
-      </div>
-      {error && <div className="error-banner">{error}</div>}
-      <form onSubmit={handleSubmit}>
-        <div className="form-row">
-          <div className="form-group">
-            <label>Product Name *</label>
-            <input type="text" name="name" value={formData.name} onChange={handleChange} placeholder="Enter product name" />
-          </div>
-          <div className="form-group">
-            <label>Category</label>
-            <select name="category" value={formData.category} onChange={handleChange}>
-              <option value="">Select category</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label>Unit of Measure</label>
-            <select name="unit" value={formData.unit} onChange={handleChange}>
-              {units.map(u => <option key={u} value={u}>{u}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Selling Price (USD) *</label>
-            <input type="number" name="selling_price" value={formData.selling_price} onChange={handleChange} placeholder="0.00" step="any" min="0" required />
-          </div>
-          <div className="form-group">
-            <label>Reorder Level</label>
-            <input type="number" name="reorder_level" value={formData.reorder_level} onChange={handleChange} min="0" />
-          </div>
-        </div>
-        <div className="form-group">
-          <label>Description</label>
-          <textarea name="description" value={formData.description} onChange={handleChange} placeholder="Product description" rows="2" />
-        </div>
-        <div className="inline-edit-actions">
-          <button type="button" className="btn btn-secondary" onClick={handleCancelEdit}>Cancel</button>
-          <button type="submit" className="btn btn-primary">Save Changes</button>
-        </div>
-      </form>
-    </div>
-  )
-
   if (loading) {
     return <div className="products-page"><div className="loading">Loading products...</div></div>
   }
@@ -515,22 +501,8 @@ function Products() {
 
       <div className="products-toolbar">
         <div className="toolbar-actions">
-          <button className="btn btn-primary" onClick={() => {
-            setShowForm(!showForm)
-            if (showForm) {
-              setEditingId(null)
-              setFormData({
-                name: '',
-                category: '',
-                supplier_id: '',
-                unit: 'each',
-                reorder_level: 5,
-                description: '',
-                image_data: null
-              })
-            }
-          }}>
-            {showForm ? <><FiX size={14} /> Cancel</> : <><FiPlus size={14} /> Add Product</>}
+          <button className="btn btn-primary" onClick={openAdd}>
+            <FiPlus size={14} /> Add Product
           </button>
           <button className="btn btn-secondary" onClick={handleExport}>
             <FiDownload size={14} /> Export
@@ -728,125 +700,125 @@ function Products() {
         )
       })()}
 
-      {showForm && !editingId && (
-        <div className="form-card">
-          <h3>{editingId ? <><FiEdit2 size={14} /> Edit Product</> : <><FiPlus size={14} /> Add New Product</>}</h3>
-          <form onSubmit={handleSubmit}>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Product Name *</label>
-                <input
-                  type="text"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleChange}
-                  placeholder="Enter product name"
-                />
-              </div>
-              <div className="form-group">
-                <label>Category</label>
-                <select name="category" value={formData.category} onChange={handleChange}>
-                  <option value="">Select category</option>
-                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Unit of Measure</label>
-                <select name="unit" value={formData.unit} onChange={handleChange}>
-                  {units.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Selling Price (USD) *</label>
-                <input
-                  type="number"
-                  name="selling_price"
-                  value={formData.selling_price}
-                  onChange={handleChange}
-                  placeholder="0.00"
-                  step="any"
-                  min="0"
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Initial Cost Price (USD)</label>
-                <input
-                  type="number"
-                  name="initial_cost_price"
-                  value={formData.initial_cost_price}
-                  onChange={handleChange}
-                  placeholder="0.00"
-                  step="any"
-                  min="0"
-                />
-                <p className="field-hint">What you paid per unit — optional, for reference</p>
-              </div>
-              <div className="form-group">
-                <label>Reorder Level</label>
-                <input
-                  type="number"
-                  name="reorder_level"
-                  value={formData.reorder_level}
-                  onChange={handleChange}
-                  min="0"
-                />
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Product Image (Optional)</label>
-              <div className="form-image-input">
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const file = e.target.files[0]
-                    if (file) {
-                      const reader = new FileReader()
-                      reader.onload = (event) => {
-                        setFormData({ ...formData, image_data: event.target.result })
-                      }
-                      reader.readAsDataURL(file)
-                    }
-                  }}
-                  id="image-input"
-                  className="image-file-input"
-                />
-                <label htmlFor="image-input" className="image-input-label">
-                  <FiImage size={14} /> {formData.image_data ? 'Change Image' : 'Select Image'}
-                </label>
-                {formData.image_data && (
-                  <div className="image-preview">
-                    <img src={formData.image_data} alt="Preview" />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Description</label>
-              <textarea
-                name="description"
-                value={formData.description}
-                onChange={handleChange}
-                placeholder="Product description"
-                rows="3"
-              />
-            </div>
-
-            <button type="submit" className="btn btn-primary">
-              {editingId ? 'Update Product' : 'Add Product'}
+      {/* ── Add / edit product ──
+             A dialog over the list, not a form that opens above it. It used to
+             push the whole catalogue down to make room for itself. */}
+      <Modal
+        open={showForm}
+        size="large"
+        title={editingId ? `Edit ${formData.name || 'product'}` : 'Add a Product'}
+        subtitle={editingId
+          ? 'Change the details below. Stock levels are changed from Receive Stock, not here.'
+          : 'The name and selling price are all you need to start selling it. Everything else can be added later.'}
+        onClose={closeForm}
+        footer={
+          <>
+            <button type="button" className="smodal-btn-away" onClick={closeForm}>Cancel</button>
+            <button type="submit" form="product-form" className="smodal-btn-primary" disabled={saving}>
+              {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Add Product'}
             </button>
-          </form>
-        </div>
-      )}
+          </>
+        }
+      >
+        <form id="product-form" className="fl-stack" onSubmit={handleSubmit} noValidate>
+          <div className="fl-row">
+            <Field
+              label="Product name" required name="name"
+              value={formData.name} onChange={handleChange}
+              error={fieldErrors.name} shakeKey={attempt}
+              autoFocus placeholder="e.g. Coca-Cola 500ml"
+            />
+            <Field as="select" label="Category" name="category" value={formData.category} onChange={handleChange}>
+              <option value="">No category</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </Field>
+          </div>
+
+          <div className="fl-row">
+            <Field
+              label="Selling price" required prefix="$" name="selling_price"
+              type="number" step="any" min="0" inputMode="decimal"
+              value={formData.selling_price} onChange={handleChange}
+              error={fieldErrors.selling_price} shakeKey={attempt}
+              hint="What the customer pays for one."
+            />
+            {!editingId ? (
+              <Field
+                label="Cost price" prefix="$" name="initial_cost_price"
+                type="number" step="any" min="0" inputMode="decimal"
+                value={formData.initial_cost_price} onChange={handleChange}
+                error={fieldErrors.initial_cost_price} shakeKey={attempt}
+                hint="What you paid for one. Optional — it is what makes profit figures real."
+              />
+            ) : (
+              <Field
+                label="Reorder level" name="reorder_level" type="number" min="0"
+                value={formData.reorder_level} onChange={handleChange}
+                error={fieldErrors.reorder_level} shakeKey={attempt}
+                hint="Warn me when stock drops to this."
+              />
+            )}
+          </div>
+
+          <div className="fl-row">
+            <Field as="select" label="Sold by the" name="unit" value={formData.unit} onChange={handleChange}>
+              {units.map(u => <option key={u} value={u}>{u === 'each' ? 'Each (single item)' : 'Pack'}</option>)}
+            </Field>
+            {!editingId && (
+              <Field
+                label="Reorder level" name="reorder_level" type="number" min="0"
+                value={formData.reorder_level} onChange={handleChange}
+                error={fieldErrors.reorder_level} shakeKey={attempt}
+                hint="Warn me when stock drops to this."
+              />
+            )}
+          </div>
+
+          {/* Picture — a tile rather than a bare file input, which cannot be styled
+              and only ever says "No file chosen". */}
+          <div className="fl-upload">
+            <div className="fl-upload-thumb">
+              {formData.image_data
+                ? <img src={formData.image_data} alt="" />
+                : <FiImage size={22} />}
+            </div>
+            <div className="fl-upload-words">
+              <span className="fl-upload-title">Product picture</span>
+              <span className="fl-upload-sub">Optional. Helps cashiers find it on the till.</span>
+            </div>
+            <div className="fl-upload-actions">
+              <label className="smodal-btn" htmlFor="product-image-input">
+                {formData.image_data ? 'Change' : 'Choose picture'}
+              </label>
+              {formData.image_data && (
+                <button type="button" className="smodal-btn" onClick={() => setFormData(f => ({ ...f, image_data: null }))}>
+                  Remove
+                </button>
+              )}
+            </div>
+            <input
+              id="product-image-input"
+              type="file"
+              accept="image/*"
+              className="fl-upload-input"
+              onChange={(e) => {
+                const file = e.target.files[0]
+                if (!file) return
+                const reader = new FileReader()
+                reader.onload = (ev) => setFormData(f => ({ ...f, image_data: ev.target.result }))
+                reader.readAsDataURL(file)
+                e.target.value = ''
+              }}
+            />
+          </div>
+
+          <Field
+            as="textarea" label="Description" name="description" rows={2}
+            value={formData.description} onChange={handleChange}
+            placeholder="Anything worth knowing about it"
+          />
+        </form>
+      </Modal>
 
       <div className="products-list">
         {filteredProducts.length === 0 ? (
@@ -860,7 +832,6 @@ function Products() {
               const status = getStockStatus(product.current_quantity, product.reorder_level)
               
               if (viewMode === 'list') {
-                if (editingId === product.id) return renderInlineEditForm(product)
                 return (
                   <div key={product.id} className="product-list-item">
                     <div className="list-item-top">
@@ -894,7 +865,6 @@ function Products() {
                 )
               }
 
-              if (editingId === product.id) return renderInlineEditForm(product)
               return (
                 <div key={product.id} className="product-card">
                   {product.image_data && (

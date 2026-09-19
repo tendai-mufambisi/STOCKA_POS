@@ -4,6 +4,9 @@ import { getUsers, getShop, loginUser, resetOwnerPin } from '../database/db'
 import iconPng from '../assets/icon.png'
 import fullLogo from '../assets/full_logo.png'
 import { useAuthStore } from '../store/useAuthStore'
+import Modal from '../components/Modal'
+import Field from '../components/Field'
+import './Login.css'
 
 function getClockData() {
   const now = new Date()
@@ -173,6 +176,7 @@ function ForgotPinModal({ selectedUser, onClose, onReset }) {
   const [confirmPin, setConfirmPin] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [attempt, setAttempt] = useState(0)
 
   const keyComplete = keyInput.replace(/-/g, '').length === 16
 
@@ -187,6 +191,7 @@ function ForgotPinModal({ selectedUser, onClose, onReset }) {
         setModalStep('newpin')
       } else {
         setError("That key doesn't match. Check for typos and try again.")
+        setAttempt(n => n + 1)
       }
     } catch {
       setError('Could not verify key. Please restart the app and try again.')
@@ -196,8 +201,8 @@ function ForgotPinModal({ selectedUser, onClose, onReset }) {
   }
 
   const handleSavePin = async () => {
-    if (newPin.length !== 4) { setError('PIN must be 4 digits.'); return }
-    if (newPin !== confirmPin) { setError('PINs do not match.'); return }
+    if (newPin.length !== 4) { setError('PIN must be 4 digits.'); setAttempt(n => n + 1); return }
+    if (newPin !== confirmPin) { setError('PINs do not match.'); setAttempt(n => n + 1); return }
     setLoading(true)
     setError('')
     try {
@@ -246,112 +251,74 @@ function ForgotPinModal({ selectedUser, onClose, onReset }) {
     )
   }
 
+  // On the shared dialog now: portalled, Escape closes it, focus stays inside, and
+  // the licence key uses the same field as everywhere else — floating label, drawn
+  // focus edge, and a shake when the key is wrong.
+  const verifying = modalStep === 'key'
   return (
-    <div style={{
-      position: 'fixed', inset: 0,
-      background: 'rgba(0,0,0,0.5)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      zIndex: 1000, padding: '24px',
-    }}>
-      <div style={{
-        background: '#fff',
-        borderRadius: '16px',
-        padding: '40px 36px',
-        maxWidth: '420px',
-        width: '100%',
-        boxShadow: '0 24px 64px rgba(0,0,0,0.2)',
-        textAlign: 'center',
-      }}>
-        {modalStep === 'done' ? (
-          <>
-            <FiCheckCircle size={52} color="#2e7d32" style={{ marginBottom: '16px' }} />
-            <h2 style={{ margin: '0 0 6px', color: '#2e7d32', fontSize: '22px' }}>PIN Reset!</h2>
-            <p style={{ color: '#999', fontSize: '14px', margin: 0 }}>Logging you in...</p>
-          </>
-        ) : modalStep === 'newpin' ? (
-          <>
-            <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#1a1a1a' }}>Set a new PIN</h2>
-            <p style={{ color: '#999', fontSize: '13px', margin: '0 0 24px' }}>
-              Choose a new 4-digit PIN for {selectedUser?.username}.
-            </p>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '10px', fontSize: '13px', fontWeight: 600, color: '#333' }}>New PIN</label>
-              <PinBoxes4 value={newPin} onChange={(v) => { setNewPin(v); setError('') }} />
-            </div>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '10px', fontSize: '13px', fontWeight: 600, color: '#333' }}>Confirm PIN</label>
-              <PinBoxes4 value={confirmPin} onChange={(v) => { setConfirmPin(v); setError('') }} />
-            </div>
-            {error && <p style={{ color: '#e53935', fontSize: '13px', margin: '0 0 12px' }}>{error}</p>}
-            <button
-              onClick={handleSavePin}
-              disabled={loading}
-              style={{
-                width: '100%', padding: '13px',
-                background: 'linear-gradient(135deg, #2e7d32, #1b5e20)',
-                color: '#fff', border: 'none', borderRadius: '10px',
-                fontSize: '15px', fontWeight: 600, cursor: 'pointer',
-                marginBottom: '10px',
-              }}
-            >
-              {loading ? 'Saving…' : 'Save New PIN'}
+    <Modal
+      open
+      size="small"
+      title={modalStep === 'done' ? undefined : verifying ? 'Forgot your PIN?' : 'Set a new PIN'}
+      subtitle={modalStep === 'done' ? undefined : verifying
+        ? 'Enter your Stocka activation key to prove it is you, then choose a new PIN.'
+        : `Choose a new 4-digit PIN for ${selectedUser?.username}.`}
+      onClose={onClose}
+      closeOnBackdrop={false}
+      footer={modalStep === 'done' ? null : (
+        <>
+          <button type="button" className="smodal-btn-away" onClick={onClose}>Cancel</button>
+          {verifying ? (
+            <button type="button" className="smodal-btn-primary" onClick={handleVerifyKey} disabled={!keyComplete || loading}>
+              {loading ? 'Checking...' : 'Verify Key'}
             </button>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#bbb', cursor: 'pointer', fontSize: '13px' }}>
-              Cancel
+          ) : (
+            <button type="button" className="smodal-btn-primary" onClick={handleSavePin} disabled={loading}>
+              {loading ? 'Saving...' : 'Save New PIN'}
             </button>
-          </>
-        ) : (
-          <>
-            <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#1a1a1a' }}>Forgot your PIN?</h2>
-            <p style={{ color: '#999', fontSize: '13px', margin: '0 0 24px', lineHeight: 1.6 }}>
-              Enter your Stocka activation key to verify your identity and reset your PIN.
-            </p>
-            <div style={{ textAlign: 'left', marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: '#333' }}>
-                Activation Key
-              </label>
-              <input
-                type="text"
-                value={keyInput}
-                onChange={(e) => {
-                  const clean = e.target.value.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 16)
-                  setKeyInput(clean.match(/.{1,4}/g)?.join('-') || '')
-                  setError('')
-                }}
-                placeholder="XXXX-XXXX-XXXX-XXXX"
-                spellCheck={false}
-                autoFocus
-                style={{
-                  width: '100%', padding: '12px 14px',
-                  fontSize: '17px', fontFamily: 'monospace',
-                  letterSpacing: '2px', textAlign: 'center',
-                  border: `2px solid ${error ? '#e53935' : keyComplete ? '#2e7d32' : '#ddd'}`,
-                  borderRadius: '8px', boxSizing: 'border-box', outline: 'none',
-                }}
-              />
-              {error && <p style={{ color: '#e53935', fontSize: '13px', margin: '6px 0 0', lineHeight: 1.4 }}>{error}</p>}
-            </div>
-            <button
-              onClick={handleVerifyKey}
-              disabled={!keyComplete || loading}
-              style={{
-                width: '100%', padding: '13px',
-                background: keyComplete ? 'linear-gradient(135deg, #2e7d32, #1b5e20)' : '#e0e0e0',
-                color: keyComplete ? '#fff' : '#aaa', border: 'none', borderRadius: '10px',
-                fontSize: '15px', fontWeight: 600,
-                cursor: keyComplete && !loading ? 'pointer' : 'not-allowed',
-                marginBottom: '10px', transition: 'all 0.2s',
-              }}
-            >
-              {loading ? 'Verifying…' : 'Verify Key'}
-            </button>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#bbb', cursor: 'pointer', fontSize: '13px' }}>
-              Cancel
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+          )}
+        </>
+      )}
+    >
+      {modalStep === 'done' ? (
+        <div className="lg-done">
+          <FiCheckCircle size={48} />
+          <h2>PIN reset</h2>
+          <p>Signing you in...</p>
+        </div>
+      ) : verifying ? (
+        <form onSubmit={(e) => { e.preventDefault(); handleVerifyKey() }} noValidate>
+          <Field
+            label="Activation key"
+            className="lg-key"
+            value={keyInput}
+            onChange={(e) => {
+              const clean = e.target.value.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 16)
+              setKeyInput(clean.match(/.{1,4}/g)?.join('-') || '')
+              setError('')
+            }}
+            placeholder="XXXX-XXXX-XXXX-XXXX"
+            spellCheck={false}
+            autoFocus
+            error={error || undefined}
+            shakeKey={attempt}
+            hint={keyComplete ? 'Looks complete — press Verify Key.' : 'The 16 characters you entered when Stocka was first set up.'}
+          />
+        </form>
+      ) : (
+        <div className={`lg-pins${error ? ' lg-pins-bad' : ''}`} key={`p-${attempt}`}>
+          <div className="lg-pin-group">
+            <span className="lg-pin-label">New PIN</span>
+            <PinBoxes4 value={newPin} onChange={(v) => { setNewPin(v); setError('') }} />
+          </div>
+          <div className="lg-pin-group">
+            <span className="lg-pin-label">Type it again</span>
+            <PinBoxes4 value={confirmPin} onChange={(v) => { setConfirmPin(v); setError('') }} />
+          </div>
+          {error && <p className="fl-msg fl-msg-err" role="alert">{error}</p>}
+        </div>
+      )}
+    </Modal>
   )
 }
 
